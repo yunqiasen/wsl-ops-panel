@@ -1,0 +1,9 @@
+id: cpa
+category: docker
+type: docker_compose
+name: CPA / CLIProxyAPI
+enabled: true
+config:
+  project_dir: "/home/div/1_Project_dir/AI/CLIProxyAPI"
+  compose_file: "docker-compose.yml"
+  primary_container: "cli-proxy-api"

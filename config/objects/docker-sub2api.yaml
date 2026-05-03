@@ -1,0 +1,8 @@
+id: sub2api
+category: docker
+type: docker_compose
+name: sub2api
+enabled: true
+config:
+  project_dir: "/home/div/1_Project_dir/AI/sub2api"
+  compose_file: "docker-compose.yml"

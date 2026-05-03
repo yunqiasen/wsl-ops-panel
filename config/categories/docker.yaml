@@ -1,0 +1,5 @@
+id: docker
+label: Docker
+order: 10
+description: Docker projects and containers
+enabled: true

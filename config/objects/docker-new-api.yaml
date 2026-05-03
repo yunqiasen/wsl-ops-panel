@@ -1,0 +1,8 @@
+id: new_api
+category: docker
+type: docker_compose
+name: New API
+enabled: true
+config:
+  project_dir: "/home/div/1_Project_dir/AI/new-api"
+  compose_file: "docker-compose.yml"

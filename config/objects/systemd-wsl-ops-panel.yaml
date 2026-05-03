@@ -1,0 +1,8 @@
+id: wsl_ops_panel
+category: systemd
+type: systemd_unit
+name: WSL Ops Panel
+enabled: true
+config:
+  unit_name: "wsl-ops-panel.service"
+  working_dir: "/home/div/1_Project_dir/AI/wsl-ops-panel"
