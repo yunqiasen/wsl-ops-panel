@@ -21,4 +21,4 @@ def test_logout_clears_session_cookie() -> None:
     client.post('/auth/login', data={'username': '875133228', 'password': 'qaz11789652'})
     response = client.post('/auth/logout')
     assert response.status_code == 302
-    assert response.cookies.get('wsl_ops_session') == ''
+    assert client.cookies.get('wsl_ops_session') is None

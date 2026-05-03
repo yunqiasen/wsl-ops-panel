@@ -20,5 +20,5 @@ def login(username: str = Form(...), password: str = Form(...)) -> RedirectRespo
 @router.post('/logout')
 def logout() -> RedirectResponse:
     response = RedirectResponse(url='/login', status_code=302)
-    response.headers['set-cookie'] = f'{COOKIE_NAME}=; Path=/; SameSite=lax'
+    response.delete_cookie(COOKIE_NAME)
     return response
