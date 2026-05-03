@@ -11,8 +11,8 @@ class RegistryService:
 
     @property
     def snapshot(self) -> RegistrySnapshot:
-        return self._snapshot
+        return self._snapshot.model_copy(deep=True)
 
     def reload(self) -> RegistrySnapshot:
         self._snapshot = load_registry(self._config_root)
-        return self._snapshot
+        return self._snapshot.model_copy(deep=True)
