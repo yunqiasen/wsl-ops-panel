@@ -1,9 +1,11 @@
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CategoryDefinition(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     id: str
     label: str
     order: int = Field(default=100)
@@ -12,6 +14,8 @@ class CategoryDefinition(BaseModel):
 
 
 class ObjectDefinition(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     id: str
     category: str
     type: str
