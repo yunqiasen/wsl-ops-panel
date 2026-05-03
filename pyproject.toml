@@ -1,0 +1,28 @@
+[project]
+name = "wsl-ops-panel"
+version = "0.1.0"
+description = "WSL Ops Panel"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.32,<1.0",
+  "jinja2>=3.1,<4.0",
+  "python-multipart>=0.0.12,<1.0",
+  "sqlalchemy>=2.0,<3.0",
+  "pydantic>=2.9,<3.0",
+  "pydantic-settings>=2.6,<3.0",
+  "itsdangerous>=2.2,<3.0",
+  "httpx>=0.28,<1.0",
+  "pyyaml>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-asyncio>=0.24,<1.0",
+  "ruff>=0.7,<1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
