@@ -23,6 +23,10 @@ def create_app() -> FastAPI:
     def login_page(request: Request) -> HTMLResponse:
         return TEMPLATES.TemplateResponse(request, 'login.html')
 
+    @app.get('/terminals', response_class=HTMLResponse)
+    def terminals_page(request: Request) -> HTMLResponse:
+        return TEMPLATES.TemplateResponse(request, 'terminals.html')
+
     return app
 
 
