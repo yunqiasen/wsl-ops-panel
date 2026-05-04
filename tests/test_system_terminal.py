@@ -3,10 +3,8 @@ from pathlib import Path
 from threading import Thread
 from time import sleep
 
-from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
-from app.api import terminals as terminals_api
 from app.main import create_app
 from app.models.tasks import TaskRecord
 from app.tasks.executor import append_task_chunk
@@ -43,14 +41,30 @@ def test_terminals_page_renders_template() -> None:
     assert 'System Terminal' in response.text
 
 
-def test_system_terminal_stream_route_returns_streaming_response(tmp_path: Path, monkeypatch) -> None:
+def test_system_terminal_stream_route_returns_sse_content(tmp_path: Path, monkeypatch) -> None:
+    from app.api import terminals as terminals_api
+
     log_path = tmp_path / 'system.log'
     log_path.write_text('boot ok\n', encoding='utf-8')
     monkeypatch.setattr(terminals_api, 'SYSTEM_TERMINAL_LOG_PATH', log_path)
 
-    route_response = terminals_api.stream_system_terminal()
+    original_iter = terminals_api.iter_sse_events
 
-    assert isinstance(route_response, StreamingResponse)
+    def one_event_stream(path: Path, *, last_event_id: str | None = None):
+        events = original_iter(path, last_event_id=last_event_id, poll_interval=0.01)
+        try:
+            yield next(events)
+        finally:
+            events.close()
+
+    monkeypatch.setattr(terminals_api, 'iter_sse_events', one_event_stream)
+
+    client = TestClient(create_app())
+    response = client.get('/api/terminals/system/stream')
+
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith('text/event-stream')
+    assert 'data: boot ok' in response.text
 
 
 def test_iter_sse_events_emits_existing_and_appended_lines(tmp_path: Path) -> None:
@@ -58,7 +72,7 @@ def test_iter_sse_events_emits_existing_and_appended_lines(tmp_path: Path) -> No
     log_path.write_text('boot ok\n', encoding='utf-8')
     events = iter_sse_events(log_path, poll_interval=0.01)
 
-    assert next(events) == 'data: boot ok\n\n'
+    assert next(events) == 'id: 0\ndata: boot ok\n\n'
 
     writer = Thread(
         target=lambda: (sleep(0.03), log_path.open('a', encoding='utf-8').write('second line\n')),
@@ -66,9 +80,30 @@ def test_iter_sse_events_emits_existing_and_appended_lines(tmp_path: Path) -> No
     )
     writer.start()
 
-    assert next(events) == 'data: second line\n\n'
+    assert next(events) == 'id: 1\ndata: second line\n\n'
     events.close()
     writer.join(timeout=0.2)
+
+
+def test_iter_sse_events_resumes_from_last_event_id(tmp_path: Path) -> None:
+    log_path = tmp_path / 'system.log'
+    log_path.write_text('first\nsecond\nthird\n', encoding='utf-8')
+
+    events = iter_sse_events(log_path, last_event_id='1', poll_interval=0.01)
+
+    assert next(events) == 'id: 2\ndata: third\n\n'
+    events.close()
+
+
+def test_iter_sse_events_preserves_trailing_spaces_and_tabs(tmp_path: Path) -> None:
+    log_path = tmp_path / 'system.log'
+    log_path.write_text('keep space   \nkeep tab\t\n', encoding='utf-8')
+
+    events = iter_sse_events(log_path, poll_interval=0.01)
+
+    assert next(events) == 'id: 0\ndata: keep space   \n\n'
+    assert next(events) == 'id: 1\ndata: keep tab\t\n\n'
+    events.close()
 
 
 def test_append_task_chunk_writes_sink_and_stream_logs(tmp_path: Path) -> None:
