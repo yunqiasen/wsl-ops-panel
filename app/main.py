@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.api.auth import router as auth_router
+from app.api.terminals import router as terminals_router
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / 'templates'))
 
@@ -12,6 +13,7 @@ TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / 'templates'))
 def create_app() -> FastAPI:
     app = FastAPI(title='WSL Ops Panel')
     app.include_router(auth_router)
+    app.include_router(terminals_router)
 
     @app.get('/healthz')
     def healthcheck() -> dict[str, str]:
