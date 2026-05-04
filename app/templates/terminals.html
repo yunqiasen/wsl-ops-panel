@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>System Terminal</title>
+  </head>
+  <body>
+    <main>
+      <h1>System Terminal</h1>
+      <pre id="system-terminal" aria-label="system terminal"></pre>
+    </main>
+    <script>
+      const terminal = document.getElementById('system-terminal');
+      const events = new EventSource('/api/terminals/system/stream');
+      events.onmessage = (event) => {
+        terminal.textContent += `${event.data}\n`;
+      };
+    </script>
+  </body>
+</html>
