@@ -64,15 +64,25 @@ def test_system_terminal_stream_route_returns_sse_content(tmp_path: Path, monkey
 
     assert response.status_code == 200
     assert response.headers['content-type'].startswith('text/event-stream')
-    assert 'data: boot ok' in response.text
+    assert 'id: 8' in response.text
+    assert 'data: {"chunk":"boot ok\\n"}' in response.text
 
 
-def test_iter_sse_events_emits_existing_and_appended_lines(tmp_path: Path) -> None:
+def test_iter_sse_events_emits_existing_chunk(tmp_path: Path) -> None:
+    log_path = tmp_path / 'system.log'
+    log_path.write_text('boot ok\n', encoding='utf-8')
+
+    events = iter_sse_events(log_path, poll_interval=0.01)
+
+    assert next(events) == 'id: 8\ndata: {"chunk":"boot ok\\n"}\n\n'
+    events.close()
+
+
+def test_iter_sse_events_emits_appended_chunk(tmp_path: Path) -> None:
     log_path = tmp_path / 'system.log'
     log_path.write_text('boot ok\n', encoding='utf-8')
     events = iter_sse_events(log_path, poll_interval=0.01)
-
-    assert next(events) == 'id: 0\ndata: boot ok\n\n'
+    assert next(events) == 'id: 8\ndata: {"chunk":"boot ok\\n"}\n\n'
 
     writer = Thread(
         target=lambda: (sleep(0.03), log_path.open('a', encoding='utf-8').write('second line\n')),
@@ -80,29 +90,38 @@ def test_iter_sse_events_emits_existing_and_appended_lines(tmp_path: Path) -> No
     )
     writer.start()
 
-    assert next(events) == 'id: 1\ndata: second line\n\n'
+    assert next(events) == 'id: 20\ndata: {"chunk":"second line\\n"}\n\n'
     events.close()
     writer.join(timeout=0.2)
 
 
-def test_iter_sse_events_resumes_from_last_event_id(tmp_path: Path) -> None:
+def test_iter_sse_events_emits_chunk_without_newline(tmp_path: Path) -> None:
     log_path = tmp_path / 'system.log'
-    log_path.write_text('first\nsecond\nthird\n', encoding='utf-8')
-
-    events = iter_sse_events(log_path, last_event_id='1', poll_interval=0.01)
-
-    assert next(events) == 'id: 2\ndata: third\n\n'
-    events.close()
-
-
-def test_iter_sse_events_preserves_trailing_spaces_and_tabs(tmp_path: Path) -> None:
-    log_path = tmp_path / 'system.log'
-    log_path.write_text('keep space   \nkeep tab\t\n', encoding='utf-8')
+    log_path.write_text('partial chunk', encoding='utf-8')
 
     events = iter_sse_events(log_path, poll_interval=0.01)
 
-    assert next(events) == 'id: 0\ndata: keep space   \n\n'
-    assert next(events) == 'id: 1\ndata: keep tab\t\n\n'
+    assert next(events) == 'id: 13\ndata: {"chunk":"partial chunk"}\n\n'
+    events.close()
+
+
+def test_iter_sse_events_preserves_chunk_whitespace(tmp_path: Path) -> None:
+    log_path = tmp_path / 'system.log'
+    log_path.write_text('keep space   \nkeep tab\t', encoding='utf-8')
+
+    events = iter_sse_events(log_path, poll_interval=0.01)
+
+    assert next(events) == 'id: 23\ndata: {"chunk":"keep space   \\nkeep tab\\t"}\n\n'
+    events.close()
+
+
+def test_iter_sse_events_resumes_from_last_event_id_offset(tmp_path: Path) -> None:
+    log_path = tmp_path / 'system.log'
+    log_path.write_text('first\nsecond\nthird', encoding='utf-8')
+
+    events = iter_sse_events(log_path, last_event_id='6', poll_interval=0.01)
+
+    assert next(events) == 'id: 18\ndata: {"chunk":"second\\nthird"}\n\n'
     events.close()
 
 

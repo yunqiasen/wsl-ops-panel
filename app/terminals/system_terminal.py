@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from time import sleep
@@ -19,53 +20,33 @@ def _parse_last_event_id(last_event_id: str | None) -> int:
         return 0
 
     try:
-        return max(int(last_event_id) + 1, 0)
+        return max(int(last_event_id), 0)
     except ValueError:
         return 0
 
 
-def _strip_line_ending(line: str) -> str:
-    if line.endswith('\r\n'):
-        return line[:-2]
-    if line.endswith('\n') or line.endswith('\r'):
-        return line[:-1]
-    return line
+def _format_sse_event(*, chunk: str, offset: int) -> str:
+    payload = json.dumps({'chunk': chunk}, ensure_ascii=False, separators=(',', ':'))
+    return f'id: {offset}\ndata: {payload}\n\n'
 
 
 def iter_sse_events(path: Path, *, last_event_id: str | None = None, poll_interval: float = 0.1) -> Iterator[str]:
-    offset = 0
-    pending = ''
-    next_event_id = _parse_last_event_id(last_event_id)
-    line_id = 0
+    offset = _parse_last_event_id(last_event_id)
 
     while True:
         if path.exists():
             file_size = path.stat().st_size
             if file_size < offset:
                 offset = 0
-                pending = ''
-                line_id = 0
 
-            with path.open('r', encoding='utf-8') as fh:
+            with path.open('rb') as fh:
                 fh.seek(offset)
                 chunk = fh.read()
-                offset = fh.tell()
+                next_offset = fh.tell()
 
             if chunk:
-                pending += chunk
-                lines = pending.splitlines(keepends=True)
-                if lines and not lines[-1].endswith(('\n', '\r')):
-                    pending = lines.pop()
-                else:
-                    pending = ''
-
-                for line in lines:
-                    event_id = line_id
-                    line_id += 1
-                    if event_id < next_event_id:
-                        continue
-
-                    yield f'id: {event_id}\ndata: {_strip_line_ending(line)}\n\n'
+                yield _format_sse_event(chunk=chunk.decode('utf-8'), offset=next_offset)
+                offset = next_offset
                 continue
 
         sleep(poll_interval)

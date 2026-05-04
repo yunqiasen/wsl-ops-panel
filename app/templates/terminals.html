@@ -13,7 +13,8 @@
       const terminal = document.getElementById('system-terminal');
       const events = new EventSource('/api/terminals/system/stream');
       events.onmessage = (event) => {
-        terminal.textContent += `${event.data}\n`;
+        const payload = JSON.parse(event.data);
+        terminal.textContent += payload.chunk;
       };
     </script>
   </body>
