@@ -17,6 +17,10 @@ class TaskStore(Protocol):
 
     def mark_running_as_interrupted(self) -> None: ...
 
+    def get(self, task_id: str) -> TaskRecord: ...
+
+    def get_first_queued(self) -> TaskRecord | None: ...
+
 
 class InMemoryTaskStore:
     def __init__(self, seed_running: bool = False) -> None:
@@ -54,6 +58,18 @@ class InMemoryTaskStore:
             if task.status == 'running':
                 task.status = 'interrupted'
                 task.finished_at = datetime.now(UTC)
+
+    def get(self, task_id: str) -> TaskRecord:
+        for task in self._items:
+            if task.id == task_id:
+                return task.model_copy(deep=True)
+        raise KeyError(f'unknown task id: {task_id}')
+
+    def get_first_queued(self) -> TaskRecord | None:
+        for task in self._items:
+            if task.status == 'queued':
+                return task.model_copy(deep=True)
+        return None
 
 
 class SQLiteTaskStore:
@@ -164,3 +180,54 @@ class SQLiteTaskStore:
                 (now,),
             )
             self._connection.commit()
+
+    def get(self, task_id: str) -> TaskRecord:
+        with self._lock:
+            row = self._connection.execute(
+                '''
+                SELECT
+                    id,
+                    object_id,
+                    action,
+                    requested_version,
+                    status,
+                    stdout_log_path,
+                    stderr_log_path,
+                    plan_path,
+                    created_at,
+                    started_at,
+                    finished_at
+                FROM tasks
+                WHERE id = ?
+                ''',
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f'unknown task id: {task_id}')
+        return TaskRecord.model_validate(dict(row))
+
+    def get_first_queued(self) -> TaskRecord | None:
+        with self._lock:
+            row = self._connection.execute(
+                '''
+                SELECT
+                    id,
+                    object_id,
+                    action,
+                    requested_version,
+                    status,
+                    stdout_log_path,
+                    stderr_log_path,
+                    plan_path,
+                    created_at,
+                    started_at,
+                    finished_at
+                FROM tasks
+                WHERE status = 'queued'
+                ORDER BY rowid ASC
+                LIMIT 1
+                '''
+            ).fetchone()
+        if row is None:
+            return None
+        return TaskRecord.model_validate(dict(row))

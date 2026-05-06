@@ -60,6 +60,8 @@ Phase 1 支持：
 
 - Docker 在 Phase 1 支持 `full_delete`
 - full delete 只对已注册对象生效
+- 提交后的动作会进入全局串行后台队列自动执行
+- stdout / stderr 会同时写入任务日志和系统终端
 
 ### 3.2 systemd
 
@@ -71,7 +73,8 @@ Phase 1 支持：
 
 - systemd 删除映射为：`sudo systemctl disable --now <unit>`
 - systemd 在 Phase 1 **不支持** `full_delete`
-- `update_latest` / `deploy_version` 暂未实现执行器闭环
+- 提交后的动作会进入全局串行后台队列自动执行
+- `update_latest` / `deploy_version` 暂未实现
 
 ### 3.3 只读分类
 

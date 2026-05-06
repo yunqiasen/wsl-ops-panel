@@ -1,4 +1,5 @@
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -17,6 +18,18 @@ from app.registry.service import RegistryService
 from app.services.assets import AssetService
 from app.tasks.queue import GlobalTaskQueue
 from app.tasks.store import SQLiteTaskStore, TaskStore
+from app.tasks.worker import SerialTaskWorker
+from app.terminals.system_terminal import SystemTerminalSink
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    worker = app.state.task_worker
+    worker.start()
+    try:
+        yield
+    finally:
+        worker.stop()
 
 
 def create_app(
@@ -30,7 +43,7 @@ def create_app(
     system_infra_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     task_store: TaskStore | None = None,
 ) -> FastAPI:
-    app = FastAPI(title='WSL Ops Panel')
+    app = FastAPI(title='WSL Ops Panel', lifespan=lifespan)
     app.include_router(auth_router)
     app.include_router(overview_router)
     app.include_router(tasks_router)
@@ -52,11 +65,15 @@ def create_app(
     queue_store = task_store or SQLiteTaskStore()
     task_queue = GlobalTaskQueue(queue_store)
     task_queue.recover_on_startup()
+    system_terminal_sink = SystemTerminalSink(Path('data/terminals/system.log'))
+    task_worker = SerialTaskWorker(queue=task_queue, sink=system_terminal_sink)
 
     app.state.registry_service = registry_service
     app.state.asset_service = asset_service
     app.state.task_store = queue_store
     app.state.task_queue = task_queue
+    app.state.task_worker = task_worker
+    app.state.system_terminal_sink = system_terminal_sink
 
     @app.api_route('/healthz', methods=['GET', 'HEAD'])
     def healthcheck() -> dict[str, str]:
