@@ -49,6 +49,18 @@ def test_login_required_for_overview() -> None:
     assert response.headers['location'] == '/login'
 
 
+def test_app_boots_with_background_task_worker() -> None:
+    app = create_app()
+    assert hasattr(app.state, 'task_worker')
+
+    with TestClient(app):
+        assert app.state.task_worker._thread is not None
+        assert app.state.task_worker._thread.is_alive()
+
+    assert app.state.task_worker._thread is not None
+    assert not app.state.task_worker._thread.is_alive()
+
+
 def test_protected_pages_render_nav_and_actions(tmp_path: Path) -> None:
     _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
     _write_registry_file(tmp_path, 'categories', 'node.yaml', 'id: node\nlabel: Node\norder: 30\nenabled: true\n')
