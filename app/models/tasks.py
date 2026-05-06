@@ -16,6 +16,7 @@ class TaskRecord(BaseModel):
     status: TaskStatus
     stdout_log_path: str
     stderr_log_path: str
+    plan_path: str | None = None
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None

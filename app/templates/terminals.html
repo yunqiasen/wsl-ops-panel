@@ -1,21 +1,18 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <title>System Terminal</title>
-  </head>
-  <body>
-    <main>
-      <h1>System Terminal</h1>
-      <pre id="system-terminal" aria-label="system terminal"></pre>
-    </main>
-    <script>
-      const terminal = document.getElementById('system-terminal');
-      const events = new EventSource('/api/terminals/system/stream');
-      events.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
-        terminal.textContent += payload.chunk;
-      };
-    </script>
-  </body>
-</html>
+{% extends "base.html" %}
+{% block content %}
+<section class="page-header">
+  <h2>终端中心</h2>
+</section>
+<section class="panel">
+  <h3>System Terminal</h3>
+  <pre id="system-terminal" aria-label="system terminal" class="log-box"></pre>
+</section>
+
+<section class="panel">
+  <div class="section-row">
+    <h3>Debug Terminals</h3>
+    <button id="create-debug-terminal" type="button">+</button>
+  </div>
+  <div id="debug-terminals"></div>
+</section>
+{% endblock %}

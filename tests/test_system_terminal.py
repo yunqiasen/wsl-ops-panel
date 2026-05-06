@@ -5,6 +5,7 @@ from time import sleep
 
 from fastapi.testclient import TestClient
 
+from app.core.security import COOKIE_NAME, issue_session_token
 from app.main import create_app
 from app.models.tasks import TaskRecord
 from app.tasks.executor import append_task_chunk
@@ -34,6 +35,7 @@ def test_system_terminal_sink_is_append_only(tmp_path: Path) -> None:
 
 def test_terminals_page_renders_template() -> None:
     client = TestClient(create_app())
+    client.cookies.set(COOKIE_NAME, issue_session_token())
 
     response = client.get('/terminals')
 
@@ -60,6 +62,7 @@ def test_system_terminal_stream_route_returns_sse_content(tmp_path: Path, monkey
     monkeypatch.setattr(terminals_api, 'iter_sse_events', one_event_stream)
 
     client = TestClient(create_app())
+    client.cookies.set(COOKIE_NAME, issue_session_token())
     response = client.get('/api/terminals/system/stream')
 
     assert response.status_code == 200

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-header">
+  <h2>日志中心</h2>
+</section>
+<section class="panel">
+  <h3>系统终端</h3>
+  <pre class="log-box">{{ system_log or '暂无系统日志' }}</pre>
+</section>
+<section class="panel">
+  <h3>最近任务日志</h3>
+  {% for item in task_logs %}
+  <article class="log-card">
+    <h4>{{ item.task.object_id }} · {{ item.task.action }} · {{ item.task.status }}</h4>
+    <details>
+      <summary>stdout</summary>
+      <pre class="log-box">{{ item.stdout or '暂无 stdout' }}</pre>
+    </details>
+    <details>
+      <summary>stderr</summary>
+      <pre class="log-box">{{ item.stderr or '暂无 stderr' }}</pre>
+    </details>
+  </article>
+  {% else %}
+  <p>暂无任务日志</p>
+  {% endfor %}
+</section>
+{% endblock %}

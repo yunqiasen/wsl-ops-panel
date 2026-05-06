@@ -1,5 +1,19 @@
-<form method="post" action="/auth/login">
-  <input name="username">
-  <input name="password" type="password">
-  <button>Login</button>
-</form>
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ title or '登录' }}</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <form class="login-card" method="post" action="/auth/login">
+        <h1>WSL 维护更新管理面板</h1>
+        <label>账号<input name="username" /></label>
+        <label>密码<input name="password" type="password" /></label>
+        <button type="submit">登录</button>
+      </form>
+    </main>
+  </body>
+</html>

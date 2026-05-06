@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1 class="sidebar-title">WSL Ops Panel</h1>
+        <nav>
+          <section>
+            <div class="nav-section-title">资产分类</div>
+            <ul class="nav-list">
+              <li><a class="nav-link{% if active_page == 'overview' %} is-active{% endif %}" href="/">总览</a></li>
+              {% for category in nav_categories %}
+              <li>
+                <a class="nav-link{% if active_page == category.id %} is-active{% endif %}" href="{{ request.url_for('category_page', category_id=category.id) }}">
+                  {{ category.label }}
+                </a>
+              </li>
+              {% endfor %}
+            </ul>
+          </section>
+          <section>
+            <div class="nav-section-title">中心页面</div>
+            <ul class="nav-list">
+              {% for page in fixed_pages %}
+              <li>
+                <a class="nav-link{% if active_page == page.id %} is-active{% endif %}" href="{{ request.url_for(page.route_name) }}">
+                  {{ page.label }}
+                </a>
+              </li>
+              {% endfor %}
+            </ul>
+          </section>
+        </nav>
+      </aside>
+      <main class="content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>

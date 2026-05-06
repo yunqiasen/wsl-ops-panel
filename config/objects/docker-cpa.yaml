@@ -7,3 +7,4 @@ config:
   project_dir: "/home/div/1_Project_dir/AI/CLIProxyAPI"
   compose_file: "docker-compose.yml"
   primary_container: "cli-proxy-api"
+  compose_service: "cli-proxy-api"

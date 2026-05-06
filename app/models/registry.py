@@ -19,6 +19,7 @@ class DockerComposeConfig(BaseModel):
     project_dir: StrictStr
     compose_file: StrictStr
     primary_container: StrictStr | None = None
+    compose_service: StrictStr | None = None
 
 
 class SystemdUnitConfig(BaseModel):

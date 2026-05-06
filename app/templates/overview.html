@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>总览</h2>
+    <p>分类数：{{ all_categories|length }} · 任务数：{{ task_count }}</p>
+  </div>
+</section>
+
+<section class="card-grid">
+  {% for category in all_categories %}
+  <article class="card">
+    <h3><a href="{{ request.url_for('category_page', category_id=category.id) }}">{{ category.label }}</a></h3>
+    <p>{{ category.description or '暂无说明' }}</p>
+    {% if selected_category and category.id == selected_category.id %}
+    <p>当前展示 {{ assets|length }} 个资产</p>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+
+{% if selected_category %}
+<section class="panel">
+  <h3>{{ selected_category.label }} 预览</h3>
+  <ul class="asset-list compact">
+    {% for asset in assets %}
+    <li>
+      <a href="{{ request.url_for('asset_detail', object_id=asset.object_id) }}">{{ asset.name }}</a>
+      <span class="muted">{{ asset.status }}</span>
+    </li>
+    {% else %}
+    <li>当前分类暂无资产</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

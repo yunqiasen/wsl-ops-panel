@@ -6,3 +6,4 @@ enabled: true
 config:
   project_dir: "/home/div/1_Project_dir/AI/AIClient-2-API"
   compose_file: "docker-compose.yml"
+  compose_service: "aiclient-2-api"

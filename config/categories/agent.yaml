@@ -1,0 +1,5 @@
+id: agent
+label: agent
+order: 60
+description: Agent placeholders
+enabled: true

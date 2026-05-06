@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-header">
+  <h2>任务中心</h2>
+</section>
+<section class="panel">
+  <ul class="asset-list compact">
+    {% for task in tasks %}
+    <li>
+      <strong>{{ task.object_id }}</strong>
+      <div>动作：{{ task.action }}</div>
+      <div>状态：{{ task.status }}</div>
+      <div>版本：{{ task.requested_version or 'none' }}</div>
+      <div>任务 ID：{{ task.id }}</div>
+    </li>
+    {% else %}
+    <li>暂无任务</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h2>{{ heading }}</h2>
+    <p>{{ selected_category.description or '分类资产列表' if selected_category else '分类资产列表' }}</p>
+  </div>
+</section>
+
+<ul class="asset-list">
+  {% for asset in assets %}
+  <li class="asset-card">
+    <div class="asset-header">
+      <h3><a href="{{ request.url_for('asset_detail', object_id=asset.object_id) }}">{{ asset.name }}</a></h3>
+      <span class="status-pill">{{ asset.status }}</span>
+    </div>
+
+    {% if asset.category == 'docker' %}
+    <div class="asset-meta">版本：{{ asset.current_version or 'unknown' }}</div>
+    <div class="asset-meta">项目目录：{{ asset.metadata.project_dir }}</div>
+    <div class="asset-meta">Compose：{{ asset.metadata.compose_file }}</div>
+    <div class="asset-meta">主容器：{{ asset.primary_container_name or 'none' }}</div>
+    {% elif asset.category == 'systemd' %}
+    <div class="asset-meta">Unit：{{ asset.metadata.unit_name }}</div>
+    <div class="asset-meta">工作目录：{{ asset.metadata.working_dir }}</div>
+    <div class="asset-meta">子状态：{{ asset.metadata.sub }}</div>
+    <div class="asset-meta">描述：{{ asset.metadata.description or 'none' }}</div>
+    {% elif asset.category in ['node', 'python'] %}
+    <div class="asset-meta">版本：{{ asset.current_version or 'unknown' }}</div>
+    <div class="asset-meta">来源：{{ asset.metadata.package_manager }}</div>
+    {% elif asset.category == 'host' %}
+    <div class="asset-meta">监听地址：{{ asset.metadata.local_address }}:{{ asset.metadata.port }}</div>
+    <div class="asset-meta">进程：{{ asset.metadata.process_name or 'unknown' }}</div>
+    <div class="asset-meta">PID：{{ asset.metadata.pid or 'unknown' }}</div>
+    {% elif asset.category == 'system' %}
+    <div class="asset-meta">版本：{{ asset.current_version or 'unknown' }}</div>
+    <div class="asset-meta">输出：{{ asset.metadata.raw_output or asset.metadata.error or 'none' }}</div>
+    {% endif %}
+  </li>
+  {% else %}
+  <li class="asset-card">当前分类暂无资产</li>
+  {% endfor %}
+</ul>
+{% endblock %}

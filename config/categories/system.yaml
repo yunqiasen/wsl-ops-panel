@@ -1,0 +1,5 @@
+id: system
+label: 系统基础设施
+order: 90
+description: System infrastructure versions
+enabled: true

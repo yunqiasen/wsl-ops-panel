@@ -1,0 +1,124 @@
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app.core.security import COOKIE_NAME, issue_session_token
+from app.main import create_app
+from app.scanners.docker_scanner import parse_docker_ps_lines
+from app.tasks.store import InMemoryTaskStore
+
+
+def _write_registry_file(root: Path, folder: str, name: str, content: str) -> None:
+    directory = root / folder
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_text(content, encoding='utf-8')
+
+
+def _docker_object_yaml() -> str:
+    return (
+        'id: cpa\n'
+        'category: docker\n'
+        'type: docker_compose\n'
+        'name: CPA / CLIProxyAPI\n'
+        'config:\n'
+        '  project_dir: /srv/cpa\n'
+        '  compose_file: docker-compose.yml\n'
+        '  primary_container: cli-proxy-api\n'
+        '  compose_service: cli-proxy-api\n'
+    )
+
+
+def _docker_ps_line() -> str:
+    return (
+        '{"ID":"abc123","Image":"eceasy/cli-proxy-api:latest",'
+        '"Labels":"com.docker.compose.project=test,com.docker.compose.project.working_dir=/srv/cpa,com.docker.compose.service=cli-proxy-api",'
+        '"Names":"cli-proxy-api","State":"running","Status":"Up 3 days","Ports":"8317/tcp"}'
+    )
+
+
+def _login(client: TestClient) -> None:
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+
+def test_login_required_for_overview() -> None:
+    client = TestClient(create_app(), follow_redirects=False)
+
+    response = client.get('/')
+
+    assert response.status_code == 302
+    assert response.headers['location'] == '/login'
+
+
+def test_protected_pages_render_nav_and_actions(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    _write_registry_file(tmp_path, 'categories', 'node.yaml', 'id: node\nlabel: Node\norder: 30\nenabled: true\n')
+    _write_registry_file(tmp_path, 'objects', 'cpa.yaml', _docker_object_yaml())
+
+    containers = parse_docker_ps_lines([_docker_ps_line()])
+    store = InMemoryTaskStore()
+    store.insert(
+        create_app(task_store=store).state.task_queue.enqueue('seed', 'update_latest')
+    ) if False else None
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=store))
+    _login(client)
+
+    overview = client.get('/')
+    assert overview.status_code == 200
+    assert '总览' in overview.text
+    assert 'Node' in overview.text
+    assert '任务中心' in overview.text
+
+    category = client.get('/categories/docker')
+    assert category.status_code == 200
+    assert 'CPA / CLIProxyAPI' in category.text
+
+    detail = client.get('/assets/cpa')
+    assert detail.status_code == 200
+    assert 'hx-post="/api/assets/cpa/actions/update-latest"' in detail.text
+    assert 'hx-post="/api/assets/cpa/actions/full-delete"' in detail.text
+
+    tasks_page = client.get('/tasks')
+    assert tasks_page.status_code == 200
+    assert '任务中心' in tasks_page.text
+
+    logs_page = client.get('/logs')
+    assert logs_page.status_code == 200
+    assert '日志中心' in logs_page.text
+
+    settings_page = client.get('/settings')
+    assert settings_page.status_code == 200
+    assert '重载注册表' in settings_page.text
+
+
+def test_settings_reload_registry_picks_up_new_category(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+
+    client = TestClient(create_app(config_root=tmp_path), follow_redirects=False)
+    _login(client)
+
+    before = client.get('/settings')
+    assert before.status_code == 200
+    assert '分类数：1' in before.text
+
+    _write_registry_file(tmp_path, 'categories', 'node.yaml', 'id: node\nlabel: Node\norder: 30\nenabled: true\n')
+    reload_response = client.post('/settings/reload-registry')
+
+    assert reload_response.status_code == 302
+    assert reload_response.headers['location'] == '/settings'
+
+    category_response = client.get('/categories/node')
+    assert category_response.status_code == 200
+    assert 'Node' in category_response.text
+
+
+def test_hx_reload_registry_unauthenticated_returns_redirect_headers(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+
+    client = TestClient(create_app(config_root=tmp_path), follow_redirects=False)
+    response = client.post('/settings/reload-registry', headers={'HX-Request': 'true'})
+
+    assert response.status_code == 401
+    assert response.headers['hx-redirect'] == '/login'
+    assert response.headers['x-login-redirect'] == '/login'

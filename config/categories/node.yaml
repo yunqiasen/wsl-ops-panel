@@ -1,0 +1,5 @@
+id: node
+label: Node
+order: 30
+description: Node global tools
+enabled: true

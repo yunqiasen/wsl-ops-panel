@@ -6,3 +6,4 @@ enabled: true
 config:
   project_dir: "/home/div/1_Project_dir/AI/sub2api"
   compose_file: "docker-compose.yml"
+  compose_service: "sub2api"

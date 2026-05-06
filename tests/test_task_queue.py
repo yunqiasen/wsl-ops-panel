@@ -31,3 +31,19 @@ def test_sqlite_store_persists_tasks_in_submission_order(tmp_path: Path) -> None
 
     assert [task.id for task in tasks] == [first.id, second.id]
     assert tasks[1].requested_version == '2026.05'
+
+
+
+def test_queue_persists_unique_log_paths_and_plan_snapshot(tmp_path: Path) -> None:
+    from app.adapters.base import ActionPlan
+
+    store = InMemoryTaskStore()
+    queue = GlobalTaskQueue(store=store)
+    plan = ActionPlan(commands=[['echo', 'ok']], working_dir=str(tmp_path))
+
+    task = queue.enqueue('cpa', 'update_latest', plan=plan)
+
+    assert task.stdout_log_path.endswith('/stdout.log')
+    assert task.stderr_log_path.endswith('/stderr.log')
+    assert task.plan_path is not None
+    assert Path(task.plan_path).exists()

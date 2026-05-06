@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-header">
+  <h2>设置</h2>
+</section>
+<div id="settings-flash">
+  {% if reload_message %}
+  <div class="flash flash-success">{{ reload_message }}</div>
+  {% endif %}
+</div>
+<section class="panel">
+  <p>分类数：{{ registry_snapshot.categories|length }}</p>
+  <p>对象数：{{ registry_snapshot.objects|length }}</p>
+  <button hx-post="/settings/reload-registry" hx-target="#settings-flash" hx-swap="innerHTML">重载注册表</button>
+</section>
+{% endblock %}

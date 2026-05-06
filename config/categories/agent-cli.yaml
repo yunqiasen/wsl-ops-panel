@@ -1,0 +1,5 @@
+id: agent_cli
+label: agent cli
+order: 50
+description: Agent CLI placeholders
+enabled: true
