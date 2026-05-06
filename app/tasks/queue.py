@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -11,6 +12,13 @@ from app.tasks.store import TaskStore
 class GlobalTaskQueue:
     def __init__(self, store: TaskStore) -> None:
         self.store = store
+        self._enqueue_notifier: Callable[[], None] | None = None
+
+    def set_enqueue_notifier(self, notifier: Callable[[], None]) -> None:
+        self._enqueue_notifier = notifier
+
+    def peek_next_queued_task(self) -> TaskRecord | None:
+        return self.store.get_first_queued()
 
     def enqueue(
         self,
@@ -38,6 +46,8 @@ class GlobalTaskQueue:
         if plan is not None:
             plan_path.write_text(json.dumps(plan.model_dump(mode='json'), ensure_ascii=False, indent=2), encoding='utf-8')
         self.store.insert(task)
+        if self._enqueue_notifier is not None:
+            self._enqueue_notifier()
         return task
 
     def recover_on_startup(self) -> None:
