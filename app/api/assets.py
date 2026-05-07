@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.adapters.base import ActionPlan
 from app.adapters.docker_adapter import DockerComposeAdapter, detect_image_repository_from_compose, parse_image_repository
+from app.adapters.node_adapter import NodePackageAdapter
 from app.adapters.systemd_adapter import SystemdUnitAdapter
 from app.core.security import require_authenticated_request
 from app.models.assets import AssetSnapshot
@@ -148,12 +149,25 @@ def _get_asset(request: Request, object_id: str) -> AssetSnapshot:
 
 
 def _build_adapter(request: Request, object_id: str, asset: AssetSnapshot) -> ActionAdapter:
+    if asset.category == 'node':
+        _ensure_asset_actionable(asset)
+        return NodePackageAdapter(
+            package_name=asset.name,
+            current_version=asset.current_version,
+            full_delete_paths=list(asset.metadata.get('full_delete_paths', [])),
+        )
     obj = _get_registry_object(request, object_id)
     if obj.type == 'docker_compose':
         return _build_docker_adapter(obj, asset)
     if obj.type == 'systemd_unit':
         return SystemdUnitAdapter(unit_name=obj.config['unit_name'], working_dir=obj.config['working_dir'])
     raise HTTPException(status_code=400, detail=f'unsupported object type: {obj.type}')
+
+
+def _ensure_asset_actionable(asset: AssetSnapshot) -> None:
+    if asset.actionable:
+        return
+    raise HTTPException(status_code=409, detail=asset.blocked_reason or 'asset is read only')
 
 
 def _build_docker_adapter(obj: ObjectDefinition, asset: AssetSnapshot) -> DockerComposeAdapter:
