@@ -6,7 +6,10 @@ WSL 维护更新管理面板。
 
 - Docker 资产扫描、详情、动作与后台串行执行
 - systemd 资产扫描与 delete 动作执行
-- Node / Python / 宿主机进程 / 系统基础设施只读扫描
+- Node 分类支持 npm 全局包四控
+- Python 分类支持 Miniconda base 白名单包四控
+- agent CLI 相关 npm 包当前在 Node 分类中只展示，不执行
+- 宿主机进程 / 系统基础设施继续只读扫描
 - 任务中心、日志中心、终端中心、设置页
 - 默认系统终端 + 可交互调试终端
 - registry 重载

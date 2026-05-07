@@ -51,7 +51,7 @@ def test_login_required_for_overview() -> None:
 
 
 def test_app_boots_with_background_task_worker() -> None:
-    app = create_app()
+    app = create_app(task_store=InMemoryTaskStore())
     assert hasattr(app.state, 'task_worker')
 
     with TestClient(app):
