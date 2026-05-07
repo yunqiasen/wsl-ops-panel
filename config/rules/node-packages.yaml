@@ -1,0 +1,21 @@
+packages:
+  - name: "@openai/codex"
+    managed_by: agent_cli
+    protected: true
+    blocked_reason: 保留给 agent cli
+  - name: "@anthropic-ai/claude-code"
+    managed_by: agent_cli
+    protected: true
+    blocked_reason: 保留给 agent cli
+  - name: "@google/gemini-cli"
+    managed_by: agent_cli
+    protected: true
+    blocked_reason: 保留给 agent cli
+  - name: "@jackwener/opencli"
+    managed_by: agent_cli
+    protected: true
+    blocked_reason: 保留给 agent cli
+  - name: "@qingchencloud/openclaw-zh"
+    managed_by: agent_cli
+    protected: true
+    blocked_reason: 保留给 agent cli

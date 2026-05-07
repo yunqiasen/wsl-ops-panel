@@ -32,3 +32,7 @@ class AssetSnapshot(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     containers: list[DockerContainerSnapshot] = Field(default_factory=list)
     primary_container_name: str | None = None
+    actionable: bool = False
+    blocked_reason: str | None = None
+    managed_by: str | None = None
+    policy_source: str | None = None
