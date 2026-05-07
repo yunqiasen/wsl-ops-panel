@@ -36,3 +36,13 @@ class AssetSnapshot(BaseModel):
     blocked_reason: str | None = None
     managed_by: str | None = None
     policy_source: str | None = None
+
+
+class PackageVersionInfo(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    current_version: str | None = None
+    latest_version: str | None = None
+    versions: list[str] = Field(default_factory=list)
+    source_status: str = 'ok'
+    error: str | None = None
