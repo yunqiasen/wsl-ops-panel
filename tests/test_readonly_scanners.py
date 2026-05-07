@@ -118,3 +118,38 @@ def test_readonly_category_pages_and_detail_render_assets(tmp_path: Path) -> Non
     assert detail_response.status_code == 200
     assert '@openai/codex' in detail_response.text
     assert '0.128.0' in detail_response.text
+
+
+def test_node_and_python_pages_show_policy_badges_and_block_reasons(tmp_path: Path) -> None:
+    categories = tmp_path / 'categories'
+    categories.mkdir(parents=True, exist_ok=True)
+    (categories / 'node.yaml').write_text('id: node\nlabel: Node\norder: 30\nenabled: true\n', encoding='utf-8')
+    (categories / 'python.yaml').write_text('id: python\nlabel: Python\norder: 40\nenabled: true\n', encoding='utf-8')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    rules = tmp_path / 'rules'
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / 'node-packages.yaml').write_text(
+        'packages:\n  - name: "@openai/codex"\n    managed_by: agent_cli\n    protected: true\n    blocked_reason: 保留给 agent cli\n',
+        encoding='utf-8',
+    )
+    (rules / 'python-packages.yaml').write_text(
+        'packages:\n  - name: fastapi\n    managed_by: python\n    allowed_actions: [update_latest, deploy_version, delete, full_delete]\n',
+        encoding='utf-8',
+    )
+
+    client = TestClient(
+        create_app(
+            config_root=tmp_path,
+            node_scanner=lambda: [parse_npm_package('@openai/codex@0.128.0')],
+            python_scanner=lambda: [parse_pip_package({'name': 'fastapi', 'version': '0.115.0'})],
+        )
+    )
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    node_page = client.get('/categories/node')
+    assert '保留给 agent cli' in node_page.text
+    assert '只读' in node_page.text
+
+    python_page = client.get('/categories/python')
+    assert '可操作' in python_page.text
+    assert 'fastapi' in python_page.text

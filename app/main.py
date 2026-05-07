@@ -61,6 +61,7 @@ def create_app(
         python_scanner=python_scanner,
         host_process_scanner=host_process_scanner,
         system_infra_scanner=system_infra_scanner,
+        config_root=Path(config_root),
     )
     queue_store = task_store or SQLiteTaskStore()
     task_queue = GlobalTaskQueue(queue_store)

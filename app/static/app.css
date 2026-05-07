@@ -115,6 +115,31 @@ body {
   margin-top: 0.35rem;
 }
 
+.policy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.policy-pill {
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.8rem;
+  background: #273449;
+  color: #d5e2f3;
+}
+
+.policy-pill-ok {
+  background: #1f5133;
+  color: #d7f7e5;
+}
+
+.policy-pill-blocked {
+  background: #5a2d2d;
+  color: #ffd8d8;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
