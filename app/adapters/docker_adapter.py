@@ -6,7 +6,7 @@ from typing import Literal
 import yaml
 
 from app.adapters.base import ActionPlan
-from app.models.assets import PackageVersionInfo
+from app.models.assets import PackageVersionInfo, RuntimeVersionInfo
 from app.services.docker_versions import DockerVersionService
 
 DockerAction = Literal['update_latest', 'deploy_version', 'delete', 'full_delete']
@@ -53,6 +53,9 @@ class DockerComposeAdapter:
         local_image_repository: str | None = None,
         local_image_tag_template: str | None = None,
         healthcheck_url: str | None = None,
+        runtime: RuntimeVersionInfo | None = None,
+        managed_services: list[str] | None = None,
+        ignored_services: list[str] | None = None,
         version_service: DockerVersionService | None = None,
     ) -> None:
         self.project_dir = project_dir
@@ -67,6 +70,9 @@ class DockerComposeAdapter:
         self.local_image_repository = local_image_repository
         self.local_image_tag_template = local_image_tag_template
         self.healthcheck_url = healthcheck_url
+        self.runtime = runtime
+        self.managed_services = list(managed_services or [])
+        self.ignored_services = list(ignored_services or [])
         self._version_service = version_service or DockerVersionService()
 
     def plan_action(self, action: DockerAction, version: str | None = None) -> ActionPlan:
@@ -87,6 +93,9 @@ class DockerComposeAdapter:
                     current_version=self.current_version,
                     lifecycle_strategy=self.lifecycle_strategy,
                     version_source='registry_tags',
+                    runtime=self.runtime,
+                    managed_services=self.managed_services,
+                    ignored_services=self.ignored_services,
                 )
             info = self._version_service.get_registry_tag_version_info(
                 self.image_repository,
@@ -99,6 +108,9 @@ class DockerComposeAdapter:
                 'version_source': (
                     'git_tags' if self.lifecycle_strategy == 'compose_local_build_git_tag' else 'registry_tags'
                 ),
+                'runtime': self.runtime,
+                'managed_services': self.managed_services,
+                'ignored_services': self.ignored_services,
             }
         )
 

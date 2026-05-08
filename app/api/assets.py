@@ -226,6 +226,10 @@ def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetS
             compose_service,
         )
     primary_name = primary_container_name or compose_service
+    docker_version_service = getattr(request.app.state, 'docker_version_service', None)
+    runtime = docker_version_service.build_runtime_version_info(primary_container) if docker_version_service else None
+    managed_services = recipe.managed_services if recipe is not None else obj.config.get('managed_services', [])
+    ignored_services = recipe.ignored_services if recipe is not None else obj.config.get('ignored_services', [])
 
     return DockerComposeAdapter(
         project_dir=obj.config['project_dir'],
@@ -240,7 +244,10 @@ def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetS
         local_image_repository=recipe.local_image_repository if recipe is not None else None,
         local_image_tag_template=recipe.local_image_tag_template if recipe is not None else None,
         healthcheck_url=recipe.healthcheck.url if recipe is not None and recipe.healthcheck is not None else None,
-        version_service=getattr(request.app.state, 'docker_version_service', None),
+        runtime=runtime,
+        managed_services=managed_services,
+        ignored_services=ignored_services,
+        version_service=docker_version_service,
     )
 
 
