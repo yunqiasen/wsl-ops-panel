@@ -56,31 +56,38 @@ def create_app(
     app.mount('/static', StaticFiles(directory=str(Path(__file__).parent / 'static')), name='static')
 
     config_root = Path(config_root)
-    registry_service = RegistryService(Path(config_root))
-    docker_recipe_service = _build_docker_recipe_service(config_root, registry_service.snapshot)
     docker_version_service = DockerVersionService()
-    asset_service = AssetService(
-        registry_service,
+    runtime_services = _build_runtime_services(
+        config_root,
         docker_scanner=docker_scanner,
         systemd_scanner=systemd_scanner,
         node_scanner=node_scanner,
         python_scanner=python_scanner,
         host_process_scanner=host_process_scanner,
         system_infra_scanner=system_infra_scanner,
-        docker_recipe_service=docker_recipe_service,
         docker_version_service=docker_version_service,
-        config_root=config_root,
     )
+    registry_service = runtime_services.registry_service
+    docker_recipe_service = runtime_services.docker_recipe_service
+    asset_service = runtime_services.asset_service
     queue_store = task_store or SQLiteTaskStore()
     task_queue = GlobalTaskQueue(queue_store)
     task_queue.recover_on_startup()
     system_terminal_sink = SystemTerminalSink(Path('data/terminals/system.log'))
     task_worker = SerialTaskWorker(queue=task_queue, sink=system_terminal_sink)
 
+    app.state.config_root = config_root
+    app.state.docker_scanner = docker_scanner
+    app.state.systemd_scanner = systemd_scanner
+    app.state.node_scanner = node_scanner
+    app.state.python_scanner = python_scanner
+    app.state.host_process_scanner = host_process_scanner
+    app.state.system_infra_scanner = system_infra_scanner
     app.state.registry_service = registry_service
     app.state.asset_service = asset_service
     app.state.docker_recipe_service = docker_recipe_service
     app.state.docker_version_service = docker_version_service
+    app.state.rebuild_registry_runtime = lambda: _rebuild_registry_runtime(app)
     app.state.task_store = queue_store
     app.state.task_queue = task_queue
     app.state.task_worker = task_worker
@@ -106,13 +113,75 @@ def create_app(
 
 
 def _build_docker_recipe_service(config_root: Path, registry_snapshot: RegistrySnapshot) -> DockerRecipeService | None:
-    recipes_dir = config_root / 'recipes' / 'docker'
-    has_referenced_recipe = any(
-        obj.type == 'docker_compose' and bool(obj.config.get('recipe_id')) for obj in registry_snapshot.objects
-    )
-    if not has_referenced_recipe or not recipes_dir.is_dir():
+    recipe_ids = _collect_referenced_recipe_ids(registry_snapshot)
+    if not recipe_ids:
         return None
-    return DockerRecipeService(config_root)
+    return DockerRecipeService(config_root, recipe_ids=recipe_ids)
+
+
+def _collect_referenced_recipe_ids(registry_snapshot: RegistrySnapshot) -> set[str]:
+    return {
+        obj.config['recipe_id']
+        for obj in registry_snapshot.objects
+        if obj.type == 'docker_compose' and bool(obj.config.get('recipe_id'))
+    }
+
+
+class RuntimeServices:
+    def __init__(
+        self,
+        registry_service: RegistryService,
+        docker_recipe_service: DockerRecipeService | None,
+        asset_service: AssetService,
+    ) -> None:
+        self.registry_service = registry_service
+        self.docker_recipe_service = docker_recipe_service
+        self.asset_service = asset_service
+
+
+def _build_runtime_services(
+    config_root: Path,
+    *,
+    docker_scanner: Callable[[], list[DockerContainerSnapshot]] | None = None,
+    systemd_scanner: Callable[[], list[AssetSnapshot]] | None = None,
+    node_scanner: Callable[[], list[AssetSnapshot]] | None = None,
+    python_scanner: Callable[[], list[AssetSnapshot]] | None = None,
+    host_process_scanner: Callable[[], list[AssetSnapshot]] | None = None,
+    system_infra_scanner: Callable[[], list[AssetSnapshot]] | None = None,
+    docker_version_service: DockerVersionService | None = None,
+) -> RuntimeServices:
+    registry_service = RegistryService(config_root)
+    docker_recipe_service = _build_docker_recipe_service(config_root, registry_service.snapshot)
+    asset_service = AssetService(
+        registry_service,
+        docker_scanner=docker_scanner,
+        systemd_scanner=systemd_scanner,
+        node_scanner=node_scanner,
+        python_scanner=python_scanner,
+        host_process_scanner=host_process_scanner,
+        system_infra_scanner=system_infra_scanner,
+        docker_recipe_service=docker_recipe_service,
+        docker_version_service=docker_version_service,
+        config_root=config_root,
+    )
+    return RuntimeServices(registry_service, docker_recipe_service, asset_service)
+
+
+def _rebuild_registry_runtime(app: FastAPI) -> RegistrySnapshot:
+    runtime_services = _build_runtime_services(
+        app.state.config_root,
+        docker_scanner=app.state.docker_scanner,
+        systemd_scanner=app.state.systemd_scanner,
+        node_scanner=app.state.node_scanner,
+        python_scanner=app.state.python_scanner,
+        host_process_scanner=app.state.host_process_scanner,
+        system_infra_scanner=app.state.system_infra_scanner,
+        docker_version_service=app.state.docker_version_service,
+    )
+    app.state.registry_service = runtime_services.registry_service
+    app.state.docker_recipe_service = runtime_services.docker_recipe_service
+    app.state.asset_service = runtime_services.asset_service
+    return runtime_services.registry_service.snapshot
 
 
 app = create_app()

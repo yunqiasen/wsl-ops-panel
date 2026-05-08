@@ -222,3 +222,43 @@ def test_repo_openai_cpa_object_recipe_reference_resolves_and_matches_fields() -
     assert obj.config['primary_container'] == recipe.primary_container
     assert obj.config['lifecycle_strategy'] == recipe.lifecycle_strategy
     assert obj.config['version_source'] == recipe.version_source
+
+
+def test_load_registry_ignores_unreferenced_invalid_recipe_when_referenced_recipe_is_valid(tmp_path: Path) -> None:
+    _write(tmp_path / 'categories' / 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    _write(
+        tmp_path / 'objects' / 'openai-cpa.yaml',
+        'id: openai_cpa\n'
+        'category: docker\n'
+        'type: docker_compose\n'
+        'name: openai-cpa\n'
+        'config:\n'
+        '  project_dir: /srv/openai-cpa\n'
+        '  compose_file: docker-compose.yml\n'
+        '  primary_container: wenfxl_codex_manager\n'
+        '  compose_service: codex-web\n'
+        '  lifecycle_strategy: compose_local_build_git_tag\n'
+        '  version_source: git_tags\n'
+        '  recipe_id: openai-cpa\n'
+        '  managed_services: [codex-web]\n'
+        '  ignored_services: [watchtower]\n',
+    )
+    _write_override(tmp_path / 'recipes' / 'docker' / 'overrides' / 'openai-cpa.compose.override.yaml')
+    _write(
+        tmp_path / 'recipes' / 'docker' / 'openai-cpa.yaml',
+        'id: openai-cpa\n'
+        'lifecycle_strategy: compose_local_build_git_tag\n'
+        'version_source: git_tags\n'
+        'repo_dir: /srv/openai-cpa\n'
+        'compose_file: docker-compose.yml\n'
+        'compose_service: codex-web\n'
+        'primary_container: wenfxl_codex_manager\n'
+        'override_file: overrides/openai-cpa.compose.override.yaml\n'
+        'managed_services: [codex-web]\n'
+        'ignored_services: [watchtower]\n',
+    )
+    _write(tmp_path / 'recipes' / 'docker' / 'broken.yaml', 'id: broken\ncompose_file: docker-compose.yml\n')
+
+    registry = load_registry(tmp_path)
+
+    assert [obj.id for obj in registry.objects] == ['openai_cpa']

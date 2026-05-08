@@ -245,3 +245,50 @@ def test_app_boots_when_unreferenced_docker_recipe_is_invalid(tmp_path: Path) ->
     app = create_app(config_root=tmp_path, task_store=InMemoryTaskStore())
 
     assert app.state.docker_recipe_service is None
+
+
+def test_app_boots_with_referenced_valid_recipe_and_unreferenced_invalid_recipe(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'openai-cpa.yaml',
+        'id: openai_cpa\n'
+        'category: docker\n'
+        'type: docker_compose\n'
+        'name: openai-cpa\n'
+        'config:\n'
+        '  project_dir: /srv/openai-cpa\n'
+        '  compose_file: docker-compose.yml\n'
+        '  primary_container: wenfxl_codex_manager\n'
+        '  compose_service: codex-web\n'
+        '  lifecycle_strategy: compose_local_build_git_tag\n'
+        '  version_source: git_tags\n'
+        '  recipe_id: openai-cpa\n'
+        '  managed_services: [codex-web]\n'
+        '  ignored_services: [watchtower]\n',
+    )
+    (tmp_path / 'recipes' / 'docker' / 'overrides').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'openai-cpa.yaml').write_text(
+        'id: openai-cpa\n'
+        'lifecycle_strategy: compose_local_build_git_tag\n'
+        'version_source: git_tags\n'
+        'repo_dir: /srv/openai-cpa\n'
+        'compose_file: docker-compose.yml\n'
+        'compose_service: codex-web\n'
+        'primary_container: wenfxl_codex_manager\n'
+        'override_file: overrides/openai-cpa.compose.override.yaml\n'
+        'managed_services: [codex-web]\n'
+        'ignored_services: [watchtower]\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'recipes' / 'docker' / 'overrides' / 'openai-cpa.compose.override.yaml').write_text(
+        'services:\n  codex-web:\n    image: ${WSL_OPS_IMAGE}\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'recipes' / 'docker' / 'broken.yaml').write_text('id: broken\ncompose_file: docker-compose.yml\n', encoding='utf-8')
+
+    app = create_app(config_root=tmp_path, task_store=InMemoryTaskStore())
+
+    assert app.state.docker_recipe_service is not None
+    assert app.state.docker_recipe_service.require('openai-cpa').repo_dir == '/srv/openai-cpa'

@@ -87,13 +87,13 @@ def _validate_docker_recipe_references(
     docker_objects = [obj for obj in objects if obj.type == 'docker_compose' and obj.config.get('recipe_id')]
     if not docker_objects:
         return
+    referenced_recipe_ids = {obj.config['recipe_id'] for obj in docker_objects}
 
     try:
-        recipes = load_docker_recipes(config_root / 'recipes' / 'docker')
+        recipes = load_docker_recipes(config_root / 'recipes' / 'docker', recipe_ids=referenced_recipe_ids)
     except FileNotFoundError as exc:
-        referenced_recipe_ids = sorted({obj.config['recipe_id'] for obj in docker_objects})
         raise ValueError(
-            f"Docker objects reference recipe ids {referenced_recipe_ids}, but recipes directory is unavailable: {exc}"
+            f"Docker objects reference recipe ids {sorted(referenced_recipe_ids)}, but recipes directory is unavailable: {exc}"
         ) from exc
 
     for obj in docker_objects:

@@ -33,7 +33,7 @@ def reload_registry(request: Request):
         if redirect is not None:
             return redirect
 
-    snapshot = request.app.state.registry_service.reload()
+    snapshot = request.app.state.rebuild_registry_runtime()
     if request.headers.get('hx-request') == 'true':
         markup = (
             '<div class="flash flash-success">'

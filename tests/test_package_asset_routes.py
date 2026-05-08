@@ -231,3 +231,98 @@ def test_docker_versions_route_reuses_snapshot_git_tag_result(tmp_path: Path, mo
     assert response.status_code == 200
     assert response.json()['versions'] == ['v14.2.7', 'v14.2.6']
     assert call_counter['count'] == 1
+
+
+def test_reload_registry_rebuilds_recipe_and_asset_services_for_new_openai_cpa(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'categories' / 'docker.yaml').write_text('id: docker\nlabel: Docker\norder: 10\n', encoding='utf-8')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+    from app.services.docker_versions import DockerVersionService
+
+    git_tag_calls: list[tuple[str, bool]] = []
+
+    def _stub_get_git_tags(self, repo_dir, *, runner=None, fetch=False) -> PackageVersionInfo:
+        git_tag_calls.append((repo_dir, fetch))
+        return PackageVersionInfo(
+            current_version='v14.2.6',
+            latest_version='v14.2.7',
+            versions=['v14.2.7', 'v14.2.6'],
+            source_status='ok',
+        )
+
+    monkeypatch.setattr(DockerVersionService, 'get_git_tag_version_info', _stub_get_git_tags)
+
+    containers = parse_docker_ps_lines(
+        [
+            '{"ID":"1","Image":"local/wenfxl-codex-manager:v14.2.6-overlay","Labels":"com.docker.compose.project=openai-cpa,com.docker.compose.project.working_dir=/srv/openai-cpa,com.docker.compose.service=codex-web,org.opencontainers.image.version=14.2.4,org.opencontainers.image.revision=ece08961","Names":"wenfxl_codex_manager","State":"running","Status":"Up 2 days","Ports":"8128/tcp"}'
+        ]
+    )
+    client = TestClient(
+        create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=InMemoryTaskStore()),
+        follow_redirects=False,
+    )
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    (tmp_path / 'objects' / 'openai-cpa.yaml').write_text(
+        'id: openai_cpa\ncategory: docker\ntype: docker_compose\nname: openai-cpa\nconfig:\n'
+        '  project_dir: /srv/openai-cpa\n  compose_file: docker-compose.yml\n'
+        '  primary_container: wenfxl_codex_manager\n  compose_service: codex-web\n'
+        '  lifecycle_strategy: compose_local_build_git_tag\n  version_source: git_tags\n  recipe_id: openai-cpa\n'
+        '  managed_services: [codex-web]\n  ignored_services: [watchtower]\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'recipes' / 'docker' / 'overrides').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'openai-cpa.yaml').write_text(
+        'id: openai-cpa\nlifecycle_strategy: compose_local_build_git_tag\nversion_source: git_tags\n'
+        'repo_dir: /srv/openai-cpa\ncompose_file: docker-compose.yml\ncompose_service: codex-web\n'
+        'primary_container: wenfxl_codex_manager\noverride_file: overrides/openai-cpa.compose.override.yaml\n'
+        'managed_services: [codex-web]\nignored_services: [watchtower]\n'
+        'local_image_repository: local/wenfxl-codex-manager\nlocal_image_tag_template: "{version}-overlay"\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'recipes' / 'docker' / 'overrides' / 'openai-cpa.compose.override.yaml').write_text(
+        'services:\n  codex-web:\n    image: ${WSL_OPS_IMAGE}\n',
+        encoding='utf-8',
+    )
+
+    reload_response = client.post('/settings/reload-registry')
+    assert reload_response.status_code == 302
+
+    versions_response = client.get('/api/assets/openai_cpa/versions')
+    assert versions_response.status_code == 200
+    assert versions_response.json()['versions'] == ['v14.2.7', 'v14.2.6']
+
+    action_response = client.post('/api/assets/openai_cpa/actions/update-latest')
+    assert action_response.status_code == 202
+    action_plan = action_response.json()['plan']
+    assert action_plan['working_dir'] == '/srv/openai-cpa'
+    assert action_plan['commands'][:2] == [
+        ['git', '-C', '/srv/openai-cpa', 'fetch', '--tags', '--force', 'origin'],
+        ['git', '-C', '/srv/openai-cpa', 'checkout', 'v14.2.7'],
+    ]
+    assert action_plan['commands'][2] == [
+        'docker',
+        'build',
+        '-t',
+        'local/wenfxl-codex-manager:v14.2.7-overlay',
+        '-f',
+        'Dockerfile',
+        '.',
+    ]
+    assert action_plan['commands'][3] == [
+        'env',
+        'WSL_OPS_IMAGE=local/wenfxl-codex-manager:v14.2.7-overlay',
+        'docker',
+        'compose',
+        '-f',
+        'docker-compose.yml',
+        '-f',
+        str((tmp_path / 'recipes' / 'docker' / 'overrides' / 'openai-cpa.compose.override.yaml').resolve()),
+        'up',
+        '-d',
+        '--no-build',
+        'codex-web',
+    ]
+    assert ('/srv/openai-cpa', False) in git_tag_calls
