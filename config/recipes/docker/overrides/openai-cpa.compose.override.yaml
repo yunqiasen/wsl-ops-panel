@@ -1,0 +1,14 @@
+services:
+  codex-web:
+    image: ${WSL_OPS_IMAGE}
+    ports:
+      - "8128:8000"
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      TZ: Asia/Shanghai
+      HOST_PROJECT_PATH: /home/div/1_Project_dir/regmail-2api/资源/openai-cpa
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock

@@ -1,0 +1,17 @@
+id: openai-cpa
+lifecycle_strategy: compose_local_build_git_tag
+version_source: git_tags
+repo_dir: /home/div/1_Project_dir/regmail-2api/资源/openai-cpa
+compose_file: docker-compose.yml
+compose_service: codex-web
+primary_container: wenfxl_codex_manager
+override_file: overrides/openai-cpa.compose.override.yaml
+managed_services: [codex-web]
+ignored_services: [watchtower]
+local_image_repository: local/wenfxl-codex-manager
+local_image_tag_template: "{version}-overlay"
+healthcheck:
+  url: http://127.0.0.1:8128
+  expect_status: 200
+full_delete_paths:
+  - /home/div/1_Project_dir/regmail-2api/资源/openai-cpa

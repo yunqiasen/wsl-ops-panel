@@ -206,3 +206,33 @@ def test_registry_service_reload_reads_updated_registry(tmp_path: Path) -> None:
     assert snapshot.categories[0].label == 'Docker Engine'
     assert snapshot.objects[0].name == 'CPA Updated'
     assert service.snapshot == snapshot
+
+
+def test_load_registry_accepts_extended_docker_config(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'openai-cpa.yaml',
+        _docker_object_yaml(
+            object_id='openai_cpa',
+            name='openai-cpa',
+            config='  project_dir: /srv/openai-cpa\n'
+            '  compose_file: docker-compose.yml\n'
+            '  primary_container: wenfxl_codex_manager\n'
+            '  compose_service: codex-web\n'
+            '  lifecycle_strategy: compose_local_build_git_tag\n'
+            '  version_source: git_tags\n'
+            '  recipe_id: openai-cpa\n'
+            '  managed_services:\n'
+            '    - codex-web\n'
+            '  ignored_services:\n'
+            '    - watchtower\n'
+            '  healthcheck_url: http://127.0.0.1:8128\n',
+        ),
+    )
+
+    registry = load_registry(tmp_path)
+
+    assert registry.objects[0].config['recipe_id'] == 'openai-cpa'
+    assert registry.objects[0].config['managed_services'] == ['codex-web']

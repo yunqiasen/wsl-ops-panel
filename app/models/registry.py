@@ -20,6 +20,12 @@ class DockerComposeConfig(BaseModel):
     compose_file: StrictStr
     primary_container: StrictStr | None = None
     compose_service: StrictStr | None = None
+    lifecycle_strategy: StrictStr = 'compose_pull'
+    version_source: StrictStr = 'registry_tags'
+    recipe_id: StrictStr | None = None
+    managed_services: list[StrictStr] = Field(default_factory=list)
+    ignored_services: list[StrictStr] = Field(default_factory=list)
+    healthcheck_url: StrictStr | None = None
 
 
 class SystemdUnitConfig(BaseModel):
