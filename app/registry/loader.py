@@ -6,6 +6,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from app.models.registry import CategoryDefinition, ObjectDefinition, RegistrySnapshot
+from app.recipes.loader import load_docker_recipes
 
 ModelT = TypeVar('ModelT', bound=BaseModel)
 
@@ -15,7 +16,8 @@ def load_registry(config_root: Path) -> RegistrySnapshot:
     objects_dir = _require_directory(config_root / 'objects')
 
     categories, category_paths = _load_categories(categories_dir)
-    objects = _load_objects(objects_dir, category_paths)
+    objects, object_paths = _load_objects(objects_dir, category_paths)
+    _validate_docker_recipe_references(config_root, objects, object_paths)
 
     return RegistrySnapshot(categories=categories, objects=objects)
 
@@ -37,7 +39,10 @@ def _load_categories(directory: Path) -> tuple[list[CategoryDefinition], dict[st
     return categories, category_paths
 
 
-def _load_objects(directory: Path, category_paths: dict[str, Path]) -> list[ObjectDefinition]:
+def _load_objects(
+    directory: Path,
+    category_paths: dict[str, Path],
+) -> tuple[list[ObjectDefinition], dict[str, Path]]:
     objects: list[ObjectDefinition] = []
     object_paths: dict[str, Path] = {}
     for path in _iter_yaml_files(directory):
@@ -49,7 +54,7 @@ def _load_objects(directory: Path, category_paths: dict[str, Path]) -> list[Obje
             )
         object_paths[obj.id] = path
         objects.append(obj)
-    return objects
+    return objects, object_paths
 
 
 def _iter_yaml_files(directory: Path) -> Iterable[Path]:
@@ -72,3 +77,60 @@ def _ensure_unique_id(kind: str, definition_id: str, path: Path, seen_paths: dic
         raise ValueError(
             f"Duplicate {kind} id '{definition_id}' in {path}; already defined in {existing_path}"
         )
+
+
+def _validate_docker_recipe_references(
+    config_root: Path,
+    objects: list[ObjectDefinition],
+    object_paths: dict[str, Path],
+) -> None:
+    docker_objects = [obj for obj in objects if obj.type == 'docker_compose' and obj.config.get('recipe_id')]
+    if not docker_objects:
+        return
+
+    try:
+        recipes = load_docker_recipes(config_root / 'recipes' / 'docker')
+    except FileNotFoundError as exc:
+        referenced_recipe_ids = sorted({obj.config['recipe_id'] for obj in docker_objects})
+        raise ValueError(
+            f"Docker objects reference recipe ids {referenced_recipe_ids}, but recipes directory is unavailable: {exc}"
+        ) from exc
+
+    for obj in docker_objects:
+        recipe_id = obj.config['recipe_id']
+        recipe = recipes.get(recipe_id)
+        if recipe is None:
+            raise ValueError(
+                f"Docker object '{obj.id}' in {object_paths[obj.id]} references unknown recipe '{recipe_id}'"
+            )
+        _ensure_recipe_fields_match(obj, recipe_id, recipe, object_paths[obj.id])
+
+
+def _ensure_recipe_fields_match(
+    obj: ObjectDefinition,
+    recipe_id: str,
+    recipe: object,
+    object_path: Path,
+) -> None:
+    comparisons = [
+        ('project_dir', obj.config.get('project_dir'), getattr(recipe, 'repo_dir')),
+        ('compose_file', obj.config.get('compose_file'), getattr(recipe, 'compose_file')),
+        ('compose_service', obj.config.get('compose_service'), getattr(recipe, 'compose_service')),
+        ('primary_container', obj.config.get('primary_container'), getattr(recipe, 'primary_container')),
+        ('lifecycle_strategy', obj.config.get('lifecycle_strategy'), getattr(recipe, 'lifecycle_strategy')),
+        ('version_source', obj.config.get('version_source'), getattr(recipe, 'version_source')),
+        ('managed_services', obj.config.get('managed_services', []), getattr(recipe, 'managed_services')),
+        ('ignored_services', obj.config.get('ignored_services', []), getattr(recipe, 'ignored_services')),
+        ('healthcheck_url', obj.config.get('healthcheck_url'), _recipe_healthcheck_url(recipe)),
+    ]
+    for field_name, object_value, recipe_value in comparisons:
+        if object_value != recipe_value:
+            raise ValueError(
+                f"Docker object '{obj.id}' in {object_path} has {field_name}={object_value!r}, "
+                f"but recipe '{recipe_id}' has {field_name}={recipe_value!r}"
+            )
+
+
+def _recipe_healthcheck_url(recipe: object) -> str | None:
+    healthcheck = getattr(recipe, 'healthcheck')
+    return None if healthcheck is None else healthcheck.url

@@ -14,3 +14,9 @@ class DockerRecipeService:
             return None
         recipe = self._recipes.get(recipe_id)
         return recipe.model_copy(deep=True) if recipe is not None else None
+
+    def require(self, recipe_id: str) -> DockerRecipe:
+        recipe = self.get(recipe_id)
+        if recipe is None:
+            raise ValueError(f"Docker recipe not found: {recipe_id}")
+        return recipe

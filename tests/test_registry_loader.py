@@ -231,6 +231,28 @@ def test_load_registry_accepts_extended_docker_config(tmp_path: Path) -> None:
             '  healthcheck_url: http://127.0.0.1:8128\n',
         ),
     )
+    recipe_dir = tmp_path / 'recipes' / 'docker'
+    recipe_dir.mkdir(parents=True, exist_ok=True)
+    (recipe_dir / 'overrides').mkdir(parents=True, exist_ok=True)
+    (recipe_dir / 'overrides' / 'openai-cpa.compose.override.yaml').write_text(
+        'services:\n  codex-web:\n    image: ${WSL_OPS_IMAGE}\n',
+        encoding='utf-8',
+    )
+    (recipe_dir / 'openai-cpa.yaml').write_text(
+        'id: openai-cpa\n'
+        'lifecycle_strategy: compose_local_build_git_tag\n'
+        'version_source: git_tags\n'
+        'repo_dir: /srv/openai-cpa\n'
+        'compose_file: docker-compose.yml\n'
+        'compose_service: codex-web\n'
+        'primary_container: wenfxl_codex_manager\n'
+        'override_file: overrides/openai-cpa.compose.override.yaml\n'
+        'managed_services: [codex-web]\n'
+        'ignored_services: [watchtower]\n'
+        'healthcheck:\n'
+        '  url: http://127.0.0.1:8128\n',
+        encoding='utf-8',
+    )
 
     registry = load_registry(tmp_path)
 
@@ -257,3 +279,67 @@ def test_load_registry_includes_repo_openai_cpa_object_config() -> None:
         'ignored_services': ['watchtower'],
         'healthcheck_url': 'http://127.0.0.1:8128',
     }
+
+
+def test_load_registry_rejects_missing_recipe_reference(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'openai-cpa.yaml',
+        _docker_object_yaml(
+            object_id='openai_cpa',
+            name='openai-cpa',
+            config='  project_dir: /srv/openai-cpa\n'
+            '  compose_file: docker-compose.yml\n'
+            '  primary_container: wenfxl_codex_manager\n'
+            '  compose_service: codex-web\n'
+            '  lifecycle_strategy: compose_local_build_git_tag\n'
+            '  version_source: git_tags\n'
+            '  recipe_id: openai-cpa\n',
+        ),
+    )
+
+    with pytest.raises((FileNotFoundError, ValueError), match='openai-cpa'):
+        load_registry(tmp_path)
+
+
+def test_load_registry_rejects_recipe_field_drift(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'openai-cpa.yaml',
+        _docker_object_yaml(
+            object_id='openai_cpa',
+            name='openai-cpa',
+            config='  project_dir: /srv/openai-cpa\n'
+            '  compose_file: docker-compose.yml\n'
+            '  primary_container: wenfxl_codex_manager\n'
+            '  compose_service: codex-web\n'
+            '  lifecycle_strategy: compose_local_build_git_tag\n'
+            '  version_source: git_tags\n'
+            '  recipe_id: openai-cpa\n',
+        ),
+    )
+    recipe_dir = tmp_path / 'recipes' / 'docker'
+    recipe_dir.mkdir(parents=True, exist_ok=True)
+    (recipe_dir / 'overrides').mkdir(parents=True, exist_ok=True)
+    (recipe_dir / 'overrides' / 'openai-cpa.compose.override.yaml').write_text(
+        'services:\n  codex-web:\n    image: ${WSL_OPS_IMAGE}\n',
+        encoding='utf-8',
+    )
+    (recipe_dir / 'openai-cpa.yaml').write_text(
+        'id: openai-cpa\n'
+        'lifecycle_strategy: compose_local_build_git_tag\n'
+        'version_source: git_tags\n'
+        'repo_dir: /srv/openai-cpa\n'
+        'compose_file: docker-compose.yml\n'
+        'compose_service: codex-web-drifted\n'
+        'primary_container: wenfxl_codex_manager\n'
+        'override_file: overrides/openai-cpa.compose.override.yaml\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(ValueError, match='compose_service'):
+        load_registry(tmp_path)
