@@ -40,3 +40,29 @@ def test_runtime_version_info_reads_oci_labels() -> None:
     assert runtime.image_tag == 'v14.2.6-overlay-uifix'
     assert runtime.oci_version == '14.2.4'
     assert runtime.oci_revision == 'ece08961'
+
+
+def test_registry_tag_version_info_uses_payload_order_for_versions_and_latest() -> None:
+    service = DockerVersionService()
+
+    def fake_fetcher(image_repository: str) -> dict:
+        assert image_repository == 'library/nginx'
+        return {
+            'results': [
+                {'name': '1.27.0'},
+                {'name': 'mainline'},
+                {'name': '1.26.3'},
+            ]
+        }
+
+    info = service.get_registry_tag_version_info(
+        'library/nginx',
+        current_version='1.26.3',
+        fetcher=fake_fetcher,
+    )
+
+    assert info.current_version == '1.26.3'
+    assert info.latest_version == '1.27.0'
+    assert info.versions == ['1.27.0', 'mainline', '1.26.3']
+    assert info.version_source == 'docker_hub_tags'
+    assert info.source_status == 'ok'

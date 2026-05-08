@@ -46,12 +46,14 @@ class DockerVersionService:
                 latest_version=latest,
                 versions=versions,
                 source_status='ok',
+                version_source='docker_hub_tags',
             )
         except Exception as exc:
             return PackageVersionInfo(
                 current_version=current_version,
                 source_status='error',
                 error=str(exc),
+                version_source='docker_hub_tags',
             )
 
     @staticmethod
