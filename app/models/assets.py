@@ -38,6 +38,16 @@ class AssetSnapshot(BaseModel):
     policy_source: str | None = None
 
 
+class RuntimeVersionInfo(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    image: str | None = None
+    image_tag: str | None = None
+    oci_version: str | None = None
+    oci_revision: str | None = None
+    ports: str | None = None
+
+
 class PackageVersionInfo(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
@@ -46,3 +56,8 @@ class PackageVersionInfo(BaseModel):
     versions: list[str] = Field(default_factory=list)
     source_status: str = 'ok'
     error: str | None = None
+    lifecycle_strategy: str | None = None
+    version_source: str | None = None
+    runtime: RuntimeVersionInfo | None = None
+    managed_services: list[str] = Field(default_factory=list)
+    ignored_services: list[str] = Field(default_factory=list)
