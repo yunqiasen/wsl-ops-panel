@@ -270,7 +270,12 @@ def test_build_docker_asset_snapshots_attach_strategy_and_recipe_metadata() -> N
         def get_git_tag_version_info(repo_dir: str, *, fetch: bool = False):
             assert repo_dir == '/srv/openai-cpa'
             assert fetch is False
-            return PackageVersionInfo(current_version='v14.2.6', latest_version='v14.2.7', source_status='ok')
+            return PackageVersionInfo(
+                current_version='v14.2.6',
+                latest_version='v14.2.7',
+                versions=['v14.2.7', 'v14.2.6'],
+                source_status='ok',
+            )
 
     assets = build_docker_asset_snapshots(
         registry_snapshot,
@@ -286,7 +291,12 @@ def test_build_docker_asset_snapshots_attach_strategy_and_recipe_metadata() -> N
     assert openai_asset.metadata['recipe_id'] == 'openai-cpa'
     assert openai_asset.metadata['lifecycle_strategy'] == 'compose_local_build_git_tag'
     assert openai_asset.metadata['version_source'] == 'git_tags'
+    assert openai_asset.metadata['available_versions'] == ['v14.2.7', 'v14.2.6']
+    assert openai_asset.metadata['managed_services'] == []
+    assert openai_asset.metadata['ignored_services'] == []
+    assert openai_asset.metadata['source_status'] == 'ok'
     assert openai_asset.metadata['version_source_status'] == 'ok'
+    assert openai_asset.metadata['runtime']['image_tag'] == 'v14.2.6-overlay'
     assert openai_asset.metadata['runtime_image_tag'] == 'v14.2.6-overlay'
     assert openai_asset.metadata['runtime_oci_version'] is None
 

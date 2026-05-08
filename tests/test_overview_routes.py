@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.core.security import COOKIE_NAME, issue_session_token
 from app.main import create_app
+from app.models.assets import PackageVersionInfo
 from app.scanners.docker_scanner import parse_docker_ps_lines
 from app.scanners.node_scanner import parse_npm_package
 from app.tasks.store import InMemoryTaskStore
@@ -157,3 +158,79 @@ def test_node_detail_hides_action_buttons_for_protected_package(tmp_path: Path) 
     assert response.status_code == 200
     assert '保留给 agent cli' in response.text
     assert 'hx-post="/api/assets/' not in response.text
+
+
+def test_docker_detail_uses_git_tag_versions_instead_of_runtime_or_latest(tmp_path: Path, monkeypatch) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'openai-cpa.yaml',
+        'id: openai_cpa\n'
+        'category: docker\n'
+        'type: docker_compose\n'
+        'name: openai-cpa\n'
+        'config:\n'
+        '  project_dir: /srv/openai-cpa\n'
+        '  compose_file: docker-compose.yml\n'
+        '  primary_container: wenfxl_codex_manager\n'
+        '  compose_service: codex-web\n'
+        '  lifecycle_strategy: compose_local_build_git_tag\n'
+        '  version_source: git_tags\n'
+        '  recipe_id: openai-cpa\n'
+        '  managed_services: [codex-web]\n'
+        '  ignored_services: [watchtower]\n',
+    )
+    (tmp_path / 'recipes' / 'docker').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'openai-cpa.yaml').write_text(
+        'id: openai-cpa\nlifecycle_strategy: compose_local_build_git_tag\nversion_source: git_tags\n'
+        'repo_dir: /srv/openai-cpa\ncompose_file: docker-compose.yml\ncompose_service: codex-web\n'
+        'primary_container: wenfxl_codex_manager\noverride_file: overrides/openai-cpa.compose.override.yaml\n'
+        'managed_services: [codex-web]\nignored_services: [watchtower]\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'recipes' / 'docker' / 'overrides').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'overrides' / 'openai-cpa.compose.override.yaml').write_text(
+        'services:\n  codex-web:\n    image: ${WSL_OPS_IMAGE}\n',
+        encoding='utf-8',
+    )
+
+    from app.services.docker_versions import DockerVersionService
+
+    monkeypatch.setattr(
+        DockerVersionService,
+        'get_git_tag_version_info',
+        lambda self, repo_dir, *, runner=None, fetch=False: PackageVersionInfo(
+            current_version='v14.2.6',
+            latest_version='v14.2.7',
+            versions=['v14.2.7', 'v14.2.6'],
+            source_status='ok',
+        ),
+    )
+
+    containers = parse_docker_ps_lines(
+        [
+            '{"ID":"1","Image":"local/wenfxl-codex-manager:v14.2.6-overlay","Labels":"com.docker.compose.project=openai-cpa,com.docker.compose.project.working_dir=/srv/openai-cpa,com.docker.compose.service=codex-web","Names":"wenfxl_codex_manager","State":"running","Status":"Up 2 days","Ports":"8128/tcp"}'
+        ]
+    )
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=InMemoryTaskStore()))
+    _login(client)
+
+    response = client.get('/assets/openai_cpa')
+
+    assert response.status_code == 200
+    assert 'value="v14.2.7"' in response.text
+    assert 'value="v14.2.6"' in response.text
+    assert 'value="latest"' not in response.text
+    assert 'value="v14.2.6-overlay"' not in response.text
+
+
+def test_app_boots_when_unreferenced_docker_recipe_is_invalid(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    _write_registry_file(tmp_path, 'objects', 'cpa.yaml', _docker_object_yaml())
+    (tmp_path / 'recipes' / 'docker').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'broken.yaml').write_text('id: broken\ncompose_file: docker-compose.yml\n', encoding='utf-8')
+
+    app = create_app(config_root=tmp_path, task_store=InMemoryTaskStore())
+
+    assert app.state.docker_recipe_service is None

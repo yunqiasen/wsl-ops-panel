@@ -14,6 +14,7 @@ from app.api.tasks import router as tasks_router
 from app.api.terminals import router as terminals_router
 from app.core.ui import TEMPLATES, build_page_context, page_login_redirect
 from app.models.assets import AssetSnapshot, DockerContainerSnapshot
+from app.models.registry import RegistrySnapshot
 from app.recipes.service import DockerRecipeService
 from app.registry.service import RegistryService
 from app.services.assets import AssetService
@@ -56,7 +57,7 @@ def create_app(
 
     config_root = Path(config_root)
     registry_service = RegistryService(Path(config_root))
-    docker_recipe_service = _build_docker_recipe_service(config_root)
+    docker_recipe_service = _build_docker_recipe_service(config_root, registry_service.snapshot)
     docker_version_service = DockerVersionService()
     asset_service = AssetService(
         registry_service,
@@ -104,9 +105,12 @@ def create_app(
     return app
 
 
-def _build_docker_recipe_service(config_root: Path) -> DockerRecipeService | None:
+def _build_docker_recipe_service(config_root: Path, registry_snapshot: RegistrySnapshot) -> DockerRecipeService | None:
     recipes_dir = config_root / 'recipes' / 'docker'
-    if not recipes_dir.is_dir():
+    has_referenced_recipe = any(
+        obj.type == 'docker_compose' and bool(obj.config.get('recipe_id')) for obj in registry_snapshot.objects
+    )
+    if not has_referenced_recipe or not recipes_dir.is_dir():
         return None
     return DockerRecipeService(config_root)
 

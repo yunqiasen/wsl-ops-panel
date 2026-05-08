@@ -170,9 +170,16 @@ def build_docker_asset_snapshots(
                     'recipe_id': recipe.id if recipe is not None else obj.config.get('recipe_id'),
                     'lifecycle_strategy': lifecycle_strategy,
                     'version_source': obj.config.get('version_source', 'registry_tags'),
+                    'available_versions': version_info.versions,
+                    'managed_services': version_info.managed_services,
+                    'ignored_services': version_info.ignored_services,
+                    'runtime': version_info.runtime.model_dump() if version_info.runtime is not None else None,
+                    'source_status': version_info.source_status,
+                    'error': version_info.error,
                     'version_source_status': version_info.source_status,
                     'runtime_image_tag': runtime.image_tag,
                     'runtime_oci_version': runtime.oci_version,
+                    'runtime_oci_revision': runtime.oci_revision,
                 },
                 containers=object_containers,
                 primary_container_name=primary.name if primary is not None else None,
@@ -251,12 +258,16 @@ def _build_docker_version_info(
     lifecycle_strategy: str,
 ) -> PackageVersionInfo:
     runtime = version_service.build_runtime_version_info(primary)
+    managed_services = list(recipe.managed_services) if recipe is not None else list(obj.config.get('managed_services', []))
+    ignored_services = list(recipe.ignored_services) if recipe is not None else list(obj.config.get('ignored_services', []))
     if lifecycle_strategy == 'compose_local_build_git_tag' and recipe is not None:
         return version_service.get_git_tag_version_info(recipe.repo_dir, fetch=False).model_copy(
             update={
                 'runtime': runtime,
                 'lifecycle_strategy': lifecycle_strategy,
                 'version_source': obj.config.get('version_source', 'git_tags'),
+                'managed_services': managed_services,
+                'ignored_services': ignored_services,
             }
         )
 
@@ -269,6 +280,8 @@ def _build_docker_version_info(
             runtime=runtime,
             lifecycle_strategy=lifecycle_strategy,
             version_source=obj.config.get('version_source', 'registry_tags'),
+            managed_services=managed_services,
+            ignored_services=ignored_services,
         )
     return version_service.get_registry_tag_version_info(
         image_repository,
@@ -278,5 +291,7 @@ def _build_docker_version_info(
             'runtime': runtime,
             'lifecycle_strategy': lifecycle_strategy,
             'version_source': obj.config.get('version_source', 'registry_tags'),
+            'managed_services': managed_services,
+            'ignored_services': ignored_services,
         }
     )

@@ -57,12 +57,14 @@ class AssetVersionsResponse(BaseModel):
 @router.get('/{object_id}/versions', response_model=AssetVersionsResponse)
 def get_asset_versions(object_id: str, request: Request) -> AssetVersionsResponse:
     asset = _get_asset(request, object_id)
-    adapter = _build_adapter(request, object_id, asset)
-    version_info = (
-        adapter.get_version_info()
-        if hasattr(adapter, 'get_version_info')
-        else PackageVersionInfo(current_version=asset.current_version, versions=adapter.list_available_versions())
-    )
+    version_info = _get_asset_version_info_from_snapshot(asset)
+    if version_info is None:
+        adapter = _build_adapter(request, object_id, asset)
+        version_info = (
+            adapter.get_version_info()
+            if hasattr(adapter, 'get_version_info')
+            else PackageVersionInfo(current_version=asset.current_version, versions=adapter.list_available_versions())
+        )
     return AssetVersionsResponse(
         object_id=object_id,
         current_version=version_info.current_version,
@@ -116,6 +118,9 @@ def get_page_asset(request: Request, object_id: str) -> AssetSnapshot:
 
 
 def get_page_asset_versions(request: Request, object_id: str, asset: AssetSnapshot) -> list[str]:
+    version_info = _get_asset_version_info_from_snapshot(asset)
+    if version_info is not None:
+        return version_info.versions
     try:
         adapter = _build_adapter(request, object_id, asset)
     except HTTPException:
@@ -124,6 +129,9 @@ def get_page_asset_versions(request: Request, object_id: str, asset: AssetSnapsh
 
 
 def get_page_asset_version_info(request: Request, object_id: str, asset: AssetSnapshot) -> PackageVersionInfo | None:
+    version_info = _get_asset_version_info_from_snapshot(asset)
+    if version_info is not None:
+        return version_info
     try:
         adapter = _build_adapter(request, object_id, asset)
     except HTTPException:
@@ -131,6 +139,54 @@ def get_page_asset_version_info(request: Request, object_id: str, asset: AssetSn
     if hasattr(adapter, 'get_version_info'):
         return adapter.get_version_info()
     return None
+
+
+def _get_asset_version_info_from_snapshot(asset: AssetSnapshot) -> PackageVersionInfo | None:
+    available_versions = asset.metadata.get('available_versions')
+    if not isinstance(available_versions, list):
+        return None
+
+    runtime = _runtime_from_asset_metadata(asset)
+    managed_services = asset.metadata.get('managed_services', [])
+    ignored_services = asset.metadata.get('ignored_services', [])
+    return PackageVersionInfo(
+        current_version=asset.current_version,
+        latest_version=asset.latest_version,
+        versions=[version for version in available_versions if isinstance(version, str)],
+        source_status=str(asset.metadata.get('source_status') or asset.metadata.get('version_source_status') or 'ok'),
+        error=asset.metadata.get('error') if isinstance(asset.metadata.get('error'), str) else None,
+        lifecycle_strategy=asset.metadata.get('lifecycle_strategy')
+        if isinstance(asset.metadata.get('lifecycle_strategy'), str)
+        else None,
+        version_source=asset.metadata.get('version_source') if isinstance(asset.metadata.get('version_source'), str) else None,
+        runtime=runtime,
+        managed_services=[service for service in managed_services if isinstance(service, str)],
+        ignored_services=[service for service in ignored_services if isinstance(service, str)],
+    )
+
+
+def _runtime_from_asset_metadata(asset: AssetSnapshot) -> RuntimeVersionInfo | None:
+    runtime_payload = asset.metadata.get('runtime')
+    if isinstance(runtime_payload, dict):
+        return RuntimeVersionInfo.model_validate(runtime_payload)
+
+    has_runtime_fields = any(
+        asset.metadata.get(key) is not None
+        for key in ('runtime_image_tag', 'runtime_oci_version', 'runtime_oci_revision')
+    )
+    if not has_runtime_fields and not asset.containers:
+        return None
+
+    primary_container = next((item for item in asset.containers if item.name == asset.primary_container_name), None)
+    image = primary_container.image if primary_container is not None else None
+    ports = primary_container.ports if primary_container is not None else None
+    return RuntimeVersionInfo(
+        image=image,
+        image_tag=asset.metadata.get('runtime_image_tag'),
+        oci_version=asset.metadata.get('runtime_oci_version'),
+        oci_revision=asset.metadata.get('runtime_oci_revision'),
+        ports=ports,
+    )
 
 
 async def _extract_requested_version(request: Request) -> str | None:
