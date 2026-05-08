@@ -222,10 +222,12 @@ def test_openai_cpa_detail_shows_strategy_and_runtime_versions(tmp_path: Path, m
 
     assert response.status_code == 200
     assert 'compose_local_build_git_tag' in response.text
+    assert '版本来源：git_tags' in response.text
     assert 'v14.2.6' in response.text
     assert 'v14.2.7' in response.text
     assert 'v14.2.6-overlay' in response.text
     assert '14.2.4' in response.text
+    assert 'OCI Revision：ece08961' in response.text
     assert '完整可部署版本：v14.2.7, v14.2.6' in response.text
     assert 'value="v14.2.7"' in response.text
     assert 'value="v14.2.6"' in response.text

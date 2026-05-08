@@ -25,7 +25,8 @@
     <div class="asset-meta">最新版本：{{ asset.latest_version or 'unknown' }}</div>
     {% endif %}
     <div class="asset-meta">运行镜像：{{ asset.metadata.runtime_image_tag or 'unknown' }}</div>
-    <div class="asset-meta">版本源：{{ asset.metadata.version_source_status or 'unknown' }}</div>
+    <div class="asset-meta">版本源：{{ asset.metadata.version_source or 'unknown' }}</div>
+    <div class="asset-meta">版本源状态：{{ asset.metadata.version_source_status or 'unknown' }}</div>
     <div class="asset-meta">项目目录：{{ asset.metadata.project_dir }}</div>
     <div class="asset-meta">Compose：{{ asset.metadata.compose_file }}</div>
     <div class="asset-meta">主容器：{{ asset.primary_container_name or 'none' }}</div>

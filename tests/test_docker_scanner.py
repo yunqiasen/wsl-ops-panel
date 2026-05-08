@@ -415,6 +415,7 @@ def test_category_route_shows_docker_strategy_and_latest_version(tmp_path: Path,
     assert 'openai-cpa' in response.text
     assert '/assets/openai_cpa' in response.text
     assert 'compose_local_build_git_tag' in response.text
+    assert '版本源：git_tags' in response.text
     assert 'Git 当前：v14.2.6' in response.text
     assert 'Git 最新：v14.2.7' in response.text
     assert '运行镜像：v14.2.6-overlay' in response.text
