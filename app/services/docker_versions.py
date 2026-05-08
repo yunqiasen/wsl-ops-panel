@@ -2,17 +2,20 @@ import re
 import subprocess
 
 import httpx
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 from app.models.assets import PackageVersionInfo, RuntimeVersionInfo
 
 
 class DockerVersionService:
-    def get_git_tag_version_info(self, repo_dir: str, *, runner=None, fetch: bool = True) -> PackageVersionInfo:
+    def get_git_tag_version_info(self, repo_dir: str, *, runner=None, fetch: bool = False) -> PackageVersionInfo:
         run = runner or self._run
         try:
             if fetch:
-                run(['git', '-C', repo_dir, 'fetch', '--tags', '--force', 'origin'])
+                try:
+                    run(['git', '-C', repo_dir, 'fetch', '--tags', '--force', 'origin'])
+                except Exception:
+                    pass
             current = run(['git', '-C', repo_dir, 'tag', '--points-at', 'HEAD']).strip().splitlines()
             tags = [
                 tag
@@ -25,9 +28,10 @@ class DockerVersionService:
                 latest_version=ordered[0] if ordered else None,
                 versions=ordered,
                 source_status='ok',
+                version_source='git_tags',
             )
         except Exception as exc:
-            return PackageVersionInfo(source_status='error', error=str(exc))
+            return PackageVersionInfo(source_status='error', error=str(exc), version_source='git_tags')
 
     def get_registry_tag_version_info(
         self,
@@ -40,20 +44,21 @@ class DockerVersionService:
         try:
             payload = get_json(image_repository)
             versions = [row['name'] for row in payload.get('results', []) if row.get('name')]
-            latest = versions[0] if versions else None
+            semver_versions = [tag for tag in versions if self._is_semver(tag)]
+            latest = max(semver_versions, key=Version) if semver_versions else (versions[0] if versions else None)
             return PackageVersionInfo(
                 current_version=current_version,
                 latest_version=latest,
                 versions=versions,
                 source_status='ok',
-                version_source='docker_hub_tags',
+                version_source='registry_tags',
             )
         except Exception as exc:
             return PackageVersionInfo(
                 current_version=current_version,
                 source_status='error',
                 error=str(exc),
-                version_source='docker_hub_tags',
+                version_source='registry_tags',
             )
 
     @staticmethod
@@ -81,3 +86,11 @@ class DockerVersionService:
         )
         response.raise_for_status()
         return response.json()
+
+    @staticmethod
+    def _is_semver(tag: str) -> bool:
+        try:
+            Version(tag)
+        except InvalidVersion:
+            return False
+        return True
