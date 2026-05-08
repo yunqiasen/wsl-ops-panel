@@ -113,20 +113,11 @@ def test_deploy_version_for_compose_pull_uses_safe_generated_override_file() -> 
 
     plan = adapter.plan_action('deploy_version', version='v1.2.3')
 
+    assert len(plan.commands) == 1
     assert plan.commands[0][:2] == ['python3', '-c']
-    assert plan.commands[1] == [
-        'docker',
-        'compose',
-        '-f',
-        'compose.custom.yml',
-        '-f',
-        '.wsl-ops-panel.override.yml',
-        'up',
-        '-d',
-        '--no-build',
-        'demo-service',
-    ]
-    assert plan.commands[2] == ['rm', '-f', '.wsl-ops-panel.override.yml']
+    assert 'finally:' in plan.commands[0][2]
+    assert plan.commands[0][3:] == ['.wsl-ops-panel.override.yml', 'compose.custom.yml', 'demo-service', 'example/demo:v1.2.3']
+    assert 'subprocess.run(["docker", "compose", "-f", compose_file, "-f", str(override), "up", "-d", "--no-build", service], check=True)' in plan.commands[0][2]
 
 
 def test_openai_cpa_update_latest_builds_local_image_from_latest_git_tag(monkeypatch) -> None:
@@ -143,11 +134,12 @@ def test_openai_cpa_update_latest_builds_local_image_from_latest_git_tag(monkeyp
         healthcheck_url='http://127.0.0.1:8128',
     )
 
-    monkeypatch.setattr(
-        adapter._version_service,
-        'get_git_tag_version_info',
-        lambda repo_dir: PackageVersionInfo(latest_version='v14.2.6', versions=['v14.2.6', 'v14.2.5']),
-    )
+    def fake_git_tags(repo_dir: str, *, fetch: bool = False) -> PackageVersionInfo:
+        assert repo_dir == '/srv/openai-cpa'
+        assert fetch is True
+        return PackageVersionInfo(latest_version='v14.2.6', versions=['v14.2.6', 'v14.2.5'])
+
+    monkeypatch.setattr(adapter._version_service, 'get_git_tag_version_info', fake_git_tags)
 
     plan = adapter.plan_action('update_latest')
 
@@ -171,6 +163,7 @@ def test_openai_cpa_update_latest_builds_local_image_from_latest_git_tag(monkeyp
         ],
     ]
     assert plan.working_dir == '/srv/openai-cpa'
+    assert plan.preview_objects == ['local/wenfxl-codex-manager:v14.2.6-overlay', 'v14.2.6']
 
 
 def test_openai_cpa_deploy_version_builds_from_recipe_repo_dir_when_project_dir_differs() -> None:
@@ -321,11 +314,11 @@ def test_deploy_version_works_for_stopped_asset_using_compose_image_metadata(tmp
     assert response.status_code == 202
     payload = response.json()
     assert payload['plan']['preview_objects'] == ['eceasy/cli-proxy-api:v9.9.9']
-    assert payload['plan']['commands'][1][:6] == [
-        'docker',
-        'compose',
-        '-f',
-        'compose.custom.yml',
-        '-f',
+    assert len(payload['plan']['commands']) == 1
+    assert payload['plan']['commands'][0][:2] == ['python3', '-c']
+    assert payload['plan']['commands'][0][3:7] == [
         '.wsl-ops-panel.override.yml',
+        'compose.custom.yml',
+        'cli-proxy-api',
+        'eceasy/cli-proxy-api:v9.9.9',
     ]

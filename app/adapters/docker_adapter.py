@@ -16,6 +16,20 @@ _OVERRIDE_WRITER = (
     'Path(sys.argv[1]).write_text('
     'f"services:\n  {sys.argv[2]}:\n    image: {sys.argv[3]}\n", encoding="utf-8")'
 )
+_OVERRIDE_DEPLOY_SCRIPT = (
+    'from pathlib import Path; import subprocess, sys; '
+    'override = Path(sys.argv[1]); '
+    'compose_file = sys.argv[2]; '
+    'service = sys.argv[3]; '
+    'image = sys.argv[4]; '
+    'override.write_text(f"services:\\n  {service}:\\n    image: {image}\\n", encoding="utf-8"); '
+    'try: '
+    ' subprocess.run(['
+    '"docker", "compose", "-f", compose_file, "-f", str(override), "up", "-d", "--no-build", service'
+    '], check=True); '
+    'finally: '
+    ' override.unlink(missing_ok=True)'
+)
 _HEALTHCHECK_COMMAND = (
     'import sys,urllib.request; '
     'r=urllib.request.urlopen(sys.argv[1], timeout=10); '
@@ -107,20 +121,15 @@ class DockerComposeAdapter:
             image_ref = f'{self.image_repository}:{version}'
             return ActionPlan(
                 commands=[
-                    ['python3', '-c', _OVERRIDE_WRITER, _OVERRIDE_FILE, self.compose_service, image_ref],
                     [
-                        'docker',
-                        'compose',
-                        '-f',
-                        self.compose_file,
-                        '-f',
+                        'python3',
+                        '-c',
+                        _OVERRIDE_DEPLOY_SCRIPT,
                         _OVERRIDE_FILE,
-                        'up',
-                        '-d',
-                        '--no-build',
+                        self.compose_file,
                         self.compose_service,
+                        image_ref,
                     ],
-                    ['rm', '-f', _OVERRIDE_FILE],
                 ],
                 working_dir=self.project_dir,
                 preview_objects=[image_ref],
@@ -197,7 +206,7 @@ class DockerComposeAdapter:
     def _resolve_latest_git_tag(self) -> str:
         if not self.recipe_repo_dir:
             raise ValueError('compose_local_build_git_tag requires recipe_repo_dir')
-        info = self._version_service.get_git_tag_version_info(self.recipe_repo_dir)
+        info = self._version_service.get_git_tag_version_info(self.recipe_repo_dir, fetch=True)
         if not info.latest_version:
             raise ValueError('compose_local_build_git_tag could not resolve latest git tag')
         return info.latest_version
