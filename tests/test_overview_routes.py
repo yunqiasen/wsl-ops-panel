@@ -226,6 +226,7 @@ def test_openai_cpa_detail_shows_strategy_and_runtime_versions(tmp_path: Path, m
     assert 'v14.2.7' in response.text
     assert 'v14.2.6-overlay' in response.text
     assert '14.2.4' in response.text
+    assert '完整可部署版本：v14.2.7, v14.2.6' in response.text
     assert 'value="v14.2.7"' in response.text
     assert 'value="v14.2.6"' in response.text
     assert 'value="latest"' not in response.text
