@@ -236,3 +236,24 @@ def test_load_registry_accepts_extended_docker_config(tmp_path: Path) -> None:
 
     assert registry.objects[0].config['recipe_id'] == 'openai-cpa'
     assert registry.objects[0].config['managed_services'] == ['codex-web']
+
+
+def test_load_registry_includes_repo_openai_cpa_object_config() -> None:
+    config_root = Path(__file__).resolve().parents[1] / 'config'
+
+    registry = load_registry(config_root)
+
+    obj = next(item for item in registry.objects if item.id == 'openai_cpa')
+    assert obj.name == 'openai-cpa'
+    assert obj.config == {
+        'project_dir': '/home/div/1_Project_dir/regmail-2api/资源/openai-cpa',
+        'compose_file': 'docker-compose.yml',
+        'primary_container': 'wenfxl_codex_manager',
+        'compose_service': 'codex-web',
+        'lifecycle_strategy': 'compose_local_build_git_tag',
+        'version_source': 'git_tags',
+        'recipe_id': 'openai-cpa',
+        'managed_services': ['codex-web'],
+        'ignored_services': ['watchtower'],
+        'healthcheck_url': 'http://127.0.0.1:8128',
+    }
