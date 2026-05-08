@@ -1,6 +1,7 @@
 import logging
 from collections import defaultdict
 from collections.abc import Callable
+from pathlib import Path
 from subprocess import CalledProcessError
 
 from app.models.assets import AssetSnapshot, DockerContainerSnapshot
@@ -12,6 +13,7 @@ from app.scanners.node_scanner import scan_node_packages
 from app.scanners.python_scanner import scan_python_packages
 from app.scanners.system_scanner import scan_system_infrastructure
 from app.scanners.systemd_scanner import scan_systemd_units
+from app.services.asset_policies import AssetPolicyService
 
 LOGGER = logging.getLogger(__name__)
 DockerScanner = Callable[[], list[DockerContainerSnapshot]]
@@ -33,6 +35,7 @@ class AssetService:
         python_scanner: ReadonlyScanner | None = None,
         host_process_scanner: ReadonlyScanner | None = None,
         system_infra_scanner: ReadonlyScanner | None = None,
+        config_root: Path | str = Path('config'),
     ) -> None:
         self._registry_service = registry_service
         self._docker_scanner = docker_scanner or scan_docker_containers
@@ -41,6 +44,7 @@ class AssetService:
         self._python_scanner = python_scanner or scan_python_packages
         self._host_process_scanner = host_process_scanner or scan_host_processes
         self._system_infra_scanner = system_infra_scanner or scan_system_infrastructure
+        self._policy_service = AssetPolicyService(Path(config_root))
 
     def list_assets(self, category_id: str) -> list[AssetSnapshot]:
         snapshot = self._registry_service.snapshot
@@ -70,9 +74,9 @@ class AssetService:
             scanned_units, scan_failed = self._scan_systemd_units()
             return build_systemd_asset_snapshots(snapshot, scanned_units, scan_failed=scan_failed)
         if category_id == 'node':
-            return self._scan_readonly_assets(self._node_scanner, 'node')
+            return [self._policy_service.apply(asset) for asset in self._scan_readonly_assets(self._node_scanner, 'node')]
         if category_id == 'python':
-            return self._scan_readonly_assets(self._python_scanner, 'python')
+            return [self._policy_service.apply(asset) for asset in self._scan_readonly_assets(self._python_scanner, 'python')]
         if category_id == 'host':
             return self._scan_readonly_assets(self._host_process_scanner, 'host')
         if category_id == 'system':

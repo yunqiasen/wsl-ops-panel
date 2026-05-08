@@ -1,0 +1,13 @@
+packages:
+  - name: openai
+    managed_by: python
+    allowed_actions: [update_latest, deploy_version, delete, full_delete]
+  - name: fastapi
+    managed_by: python
+    allowed_actions: [update_latest, deploy_version, delete, full_delete]
+  - name: uvicorn
+    managed_by: python
+    allowed_actions: [update_latest, deploy_version, delete, full_delete]
+  - name: playwright
+    managed_by: python
+    allowed_actions: [update_latest, deploy_version, delete, full_delete]

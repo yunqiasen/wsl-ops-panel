@@ -28,6 +28,11 @@
     {% elif asset.category in ['node', 'python'] %}
     <div class="asset-meta">版本：{{ asset.current_version or 'unknown' }}</div>
     <div class="asset-meta">来源：{{ asset.metadata.package_manager }}</div>
+    <div class="policy-row">
+      <span class="policy-pill {{ 'policy-pill-ok' if asset.actionable else 'policy-pill-blocked' }}">{{ '可操作' if asset.actionable else '只读' }}</span>
+      {% if asset.managed_by %}<span class="policy-pill">{{ asset.managed_by }}</span>{% endif %}
+      {% if asset.blocked_reason %}<span class="policy-pill policy-pill-blocked">{{ asset.blocked_reason }}</span>{% endif %}
+    </div>
     {% elif asset.category == 'host' %}
     <div class="asset-meta">监听地址：{{ asset.metadata.local_address }}:{{ asset.metadata.port }}</div>
     <div class="asset-meta">进程：{{ asset.metadata.process_name or 'unknown' }}</div>

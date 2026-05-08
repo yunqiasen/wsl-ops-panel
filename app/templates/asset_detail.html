@@ -37,6 +37,11 @@
   </form>
   {% endif %}
 </section>
+{% elif asset.category in ['node', 'python'] and not asset.actionable %}
+<section class="panel action-panel">
+  <h3>操作</h3>
+  <p>当前对象只读：{{ asset.blocked_reason or '策略禁止' }}</p>
+</section>
 {% endif %}
 
 <section class="panel">
@@ -67,7 +72,15 @@
   <p>描述：{{ asset.metadata.description or 'none' }}</p>
   {% elif asset.category in ['node', 'python'] %}
   <p>当前版本：{{ asset.current_version or 'unknown' }}</p>
+  <p>版本源状态：{{ version_info.source_status if version_info else 'unknown' }}</p>
+  <p>最新版本：{{ version_info.latest_version if version_info and version_info.latest_version else 'unknown' }}</p>
+  {% if version_info and version_info.error %}
+  <p>版本源错误：{{ version_info.error }}</p>
+  {% endif %}
   <p>来源：{{ asset.metadata.package_manager }}</p>
+  <p>是否可操作：{{ '是' if asset.actionable else '否' }}</p>
+  <p>管理归属：{{ asset.managed_by or 'none' }}</p>
+  <p>阻止原因：{{ asset.blocked_reason or 'none' }}</p>
   {% elif asset.category == 'host' %}
   <p>监听地址：{{ asset.metadata.local_address }}:{{ asset.metadata.port }}</p>
   <p>进程：{{ asset.metadata.process_name or 'unknown' }}</p>

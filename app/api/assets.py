@@ -6,9 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.adapters.base import ActionPlan
 from app.adapters.docker_adapter import DockerComposeAdapter, detect_image_repository_from_compose, parse_image_repository
+from app.adapters.node_adapter import NodePackageAdapter
+from app.adapters.python_adapter import PythonPackageAdapter
 from app.adapters.systemd_adapter import SystemdUnitAdapter
 from app.core.security import require_authenticated_request
-from app.models.assets import AssetSnapshot
+from app.models.assets import AssetSnapshot, PackageVersionInfo
 from app.models.registry import ObjectDefinition
 from app.models.tasks import TaskRecord
 
@@ -19,6 +21,8 @@ class ActionAdapter(Protocol):
     def plan_action(self, action: str, version: str | None = None) -> ActionPlan: ...
 
     def list_available_versions(self) -> list[str]: ...
+
+    def get_version_info(self) -> PackageVersionInfo: ...
 
 
 class DeployVersionRequest(BaseModel):
@@ -39,17 +43,28 @@ class AssetVersionsResponse(BaseModel):
 
     object_id: str
     current_version: str | None = None
+    latest_version: str | None = None
     versions: list[str] = Field(default_factory=list)
+    source_status: str = 'ok'
+    error: str | None = None
 
 
 @router.get('/{object_id}/versions', response_model=AssetVersionsResponse)
 def get_asset_versions(object_id: str, request: Request) -> AssetVersionsResponse:
     asset = _get_asset(request, object_id)
     adapter = _build_adapter(request, object_id, asset)
+    version_info = (
+        adapter.get_version_info()
+        if hasattr(adapter, 'get_version_info')
+        else PackageVersionInfo(current_version=asset.current_version, versions=adapter.list_available_versions())
+    )
     return AssetVersionsResponse(
         object_id=object_id,
         current_version=asset.current_version,
-        versions=adapter.list_available_versions(),
+        latest_version=version_info.latest_version,
+        versions=version_info.versions,
+        source_status=version_info.source_status,
+        error=version_info.error,
     )
 
 
@@ -96,6 +111,16 @@ def get_page_asset_versions(request: Request, object_id: str, asset: AssetSnapsh
     except HTTPException:
         return []
     return adapter.list_available_versions()
+
+
+def get_page_asset_version_info(request: Request, object_id: str, asset: AssetSnapshot) -> PackageVersionInfo | None:
+    try:
+        adapter = _build_adapter(request, object_id, asset)
+    except HTTPException:
+        return None
+    if hasattr(adapter, 'get_version_info'):
+        return adapter.get_version_info()
+    return None
 
 
 async def _extract_requested_version(request: Request) -> str | None:
@@ -145,12 +170,32 @@ def _get_asset(request: Request, object_id: str) -> AssetSnapshot:
 
 
 def _build_adapter(request: Request, object_id: str, asset: AssetSnapshot) -> ActionAdapter:
+    if asset.category == 'node':
+        _ensure_asset_actionable(asset)
+        return NodePackageAdapter(
+            package_name=asset.name,
+            current_version=asset.current_version,
+            full_delete_paths=list(asset.metadata.get('full_delete_paths', [])),
+        )
+    if asset.category == 'python':
+        _ensure_asset_actionable(asset)
+        return PythonPackageAdapter(
+            package_name=asset.name,
+            current_version=asset.current_version,
+            full_delete_paths=list(asset.metadata.get('full_delete_paths', [])),
+        )
     obj = _get_registry_object(request, object_id)
     if obj.type == 'docker_compose':
         return _build_docker_adapter(obj, asset)
     if obj.type == 'systemd_unit':
         return SystemdUnitAdapter(unit_name=obj.config['unit_name'], working_dir=obj.config['working_dir'])
     raise HTTPException(status_code=400, detail=f'unsupported object type: {obj.type}')
+
+
+def _ensure_asset_actionable(asset: AssetSnapshot) -> None:
+    if asset.actionable:
+        return
+    raise HTTPException(status_code=409, detail=asset.blocked_reason or 'asset is read only')
 
 
 def _build_docker_adapter(obj: ObjectDefinition, asset: AssetSnapshot) -> DockerComposeAdapter:

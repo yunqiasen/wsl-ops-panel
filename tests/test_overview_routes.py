@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from app.core.security import COOKIE_NAME, issue_session_token
 from app.main import create_app
 from app.scanners.docker_scanner import parse_docker_ps_lines
+from app.scanners.node_scanner import parse_npm_package
 from app.tasks.store import InMemoryTaskStore
 
 
@@ -50,7 +51,7 @@ def test_login_required_for_overview() -> None:
 
 
 def test_app_boots_with_background_task_worker() -> None:
-    app = create_app()
+    app = create_app(task_store=InMemoryTaskStore())
     assert hasattr(app.state, 'task_worker')
 
     with TestClient(app):
@@ -134,3 +135,25 @@ def test_hx_reload_registry_unauthenticated_returns_redirect_headers(tmp_path: P
     assert response.status_code == 401
     assert response.headers['hx-redirect'] == '/login'
     assert response.headers['x-login-redirect'] == '/login'
+
+
+def test_node_detail_hides_action_buttons_for_protected_package(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'node.yaml', 'id: node\nlabel: Node\norder: 30\nenabled: true\n')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    rules = tmp_path / 'rules'
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / 'node-packages.yaml').write_text(
+        'packages:\n  - name: "@openai/codex"\n    managed_by: agent_cli\n    protected: true\n    blocked_reason: 保留给 agent cli\n',
+        encoding='utf-8',
+    )
+    (rules / 'python-packages.yaml').write_text('packages: []\n', encoding='utf-8')
+
+    protected_asset = parse_npm_package('@openai/codex@0.128.0')
+    client = TestClient(create_app(config_root=tmp_path, node_scanner=lambda: [protected_asset]))
+    _login(client)
+
+    response = client.get(f'/assets/{protected_asset.object_id}')
+
+    assert response.status_code == 200
+    assert '保留给 agent cli' in response.text
+    assert 'hx-post="/api/assets/' not in response.text

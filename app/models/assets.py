@@ -32,3 +32,17 @@ class AssetSnapshot(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     containers: list[DockerContainerSnapshot] = Field(default_factory=list)
     primary_container_name: str | None = None
+    actionable: bool = False
+    blocked_reason: str | None = None
+    managed_by: str | None = None
+    policy_source: str | None = None
+
+
+class PackageVersionInfo(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    current_version: str | None = None
+    latest_version: str | None = None
+    versions: list[str] = Field(default_factory=list)
+    source_status: str = 'ok'
+    error: str | None = None

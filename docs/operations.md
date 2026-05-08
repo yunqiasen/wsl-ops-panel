@@ -80,12 +80,22 @@ Phase 1 支持：
 
 以下分类当前仅展示，不提供执行：
 
-- Node
-- Python
 - 宿主机进程
 - 系统基础设施
 - agent cli
 - agent
+
+### 3.4 Node
+
+- 默认管理 `npm list -g` 扫到的普通全局包
+- 支持：`update_latest / deploy_version / delete / full_delete`
+- `@openai/codex`、`@anthropic-ai/claude-code`、`@google/gemini-cli`、`@jackwener/opencli`、`@qingchencloud/openclaw-zh` 当前受保护
+
+### 3.5 Python
+
+- 当前只管理 `python3 -m pip list --format=json` 对应的 Miniconda base
+- 仅 `openai / fastapi / uvicorn / playwright` 开放执行动作
+- 支持：`update_latest / deploy_version / delete / full_delete`
 
 ## 4. 常用命令
 
