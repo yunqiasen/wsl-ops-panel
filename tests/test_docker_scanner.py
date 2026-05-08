@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.core.security import COOKIE_NAME, issue_session_token
 from app.main import create_app
+from app.models.assets import PackageVersionInfo, RuntimeVersionInfo
 from app.models.registry import CategoryDefinition, ObjectDefinition, RegistrySnapshot
 
 
@@ -203,6 +204,91 @@ def test_build_docker_asset_snapshots_groups_registry_objects_instead_of_raw_con
     idle_asset = assets[2]
     assert idle_asset.containers == []
     assert idle_asset.status == 'not running'
+
+
+def test_build_docker_asset_snapshots_attach_strategy_and_recipe_metadata() -> None:
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+    from app.models.recipes import DockerRecipe
+    from app.services.assets import build_docker_asset_snapshots
+    from app.services.docker_versions import DockerVersionService
+
+    containers = parse_docker_ps_lines(
+        [
+            _docker_ps_line(
+                container_id='5',
+                name='wenfxl_codex_manager',
+                image='local/wenfxl-codex-manager:v14.2.6-overlay',
+                working_dir='/srv/openai-cpa',
+                status='Up 2 days',
+                service='codex-web',
+            )
+        ]
+    )
+    openai_object = ObjectDefinition(
+        id='openai_cpa',
+        category='docker',
+        type='docker_compose',
+        name='openai-cpa',
+        config={
+            'project_dir': '/srv/openai-cpa',
+            'compose_file': 'docker-compose.yml',
+            'primary_container': 'wenfxl_codex_manager',
+            'compose_service': 'codex-web',
+            'lifecycle_strategy': 'compose_local_build_git_tag',
+            'version_source': 'git_tags',
+            'recipe_id': 'openai-cpa',
+        },
+    )
+    registry_snapshot = RegistrySnapshot(
+        categories=[CategoryDefinition(id='docker', label='Docker', order=10)],
+        objects=[openai_object],
+    )
+
+    class StubRecipeService:
+        def get(self, recipe_id: str | None) -> DockerRecipe | None:
+            if recipe_id != 'openai-cpa':
+                return None
+            return DockerRecipe(
+                id='openai-cpa',
+                lifecycle_strategy='compose_local_build_git_tag',
+                version_source='git_tags',
+                repo_dir='/srv/openai-cpa',
+                compose_file='docker-compose.yml',
+                compose_service='codex-web',
+                primary_container='wenfxl_codex_manager',
+                override_file='/tmp/openai-cpa.compose.override.yaml',
+                local_image_repository='local/wenfxl-codex-manager',
+                local_image_tag_template='{version}-overlay',
+            )
+
+    class StubVersionService:
+        @staticmethod
+        def build_runtime_version_info(container) -> RuntimeVersionInfo:
+            return DockerVersionService.build_runtime_version_info(container)
+
+        @staticmethod
+        def get_git_tag_version_info(repo_dir: str, *, fetch: bool = False):
+            assert repo_dir == '/srv/openai-cpa'
+            assert fetch is False
+            return PackageVersionInfo(current_version='v14.2.6', latest_version='v14.2.7', source_status='ok')
+
+    assets = build_docker_asset_snapshots(
+        registry_snapshot,
+        containers,
+        recipe_service=StubRecipeService(),
+        version_service=StubVersionService(),
+    )
+
+    assert [asset.object_id for asset in assets] == ['openai_cpa']
+    openai_asset = assets[0]
+    assert openai_asset.current_version == 'v14.2.6'
+    assert openai_asset.latest_version == 'v14.2.7'
+    assert openai_asset.metadata['recipe_id'] == 'openai-cpa'
+    assert openai_asset.metadata['lifecycle_strategy'] == 'compose_local_build_git_tag'
+    assert openai_asset.metadata['version_source'] == 'git_tags'
+    assert openai_asset.metadata['version_source_status'] == 'ok'
+    assert openai_asset.metadata['runtime_image_tag'] == 'v14.2.6-overlay'
+    assert openai_asset.metadata['runtime_oci_version'] is None
 
 
 def test_category_and_detail_routes_render_docker_assets(tmp_path: Path) -> None:

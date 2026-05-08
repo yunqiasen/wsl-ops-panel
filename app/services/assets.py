@@ -4,8 +4,10 @@ from collections.abc import Callable
 from pathlib import Path
 from subprocess import CalledProcessError
 
-from app.models.assets import AssetSnapshot, DockerContainerSnapshot
+from app.models.assets import AssetSnapshot, DockerContainerSnapshot, PackageVersionInfo
 from app.models.registry import ObjectDefinition, RegistrySnapshot
+from app.models.recipes import DockerRecipe
+from app.recipes.service import DockerRecipeService
 from app.registry.service import RegistryService
 from app.scanners.docker_scanner import scan_docker_containers
 from app.scanners.host_process_scanner import scan_host_processes
@@ -14,6 +16,7 @@ from app.scanners.python_scanner import scan_python_packages
 from app.scanners.system_scanner import scan_system_infrastructure
 from app.scanners.systemd_scanner import scan_systemd_units
 from app.services.asset_policies import AssetPolicyService
+from app.services.docker_versions import DockerVersionService
 
 LOGGER = logging.getLogger(__name__)
 DockerScanner = Callable[[], list[DockerContainerSnapshot]]
@@ -35,6 +38,8 @@ class AssetService:
         python_scanner: ReadonlyScanner | None = None,
         host_process_scanner: ReadonlyScanner | None = None,
         system_infra_scanner: ReadonlyScanner | None = None,
+        docker_recipe_service: DockerRecipeService | None = None,
+        docker_version_service: DockerVersionService | None = None,
         config_root: Path | str = Path('config'),
     ) -> None:
         self._registry_service = registry_service
@@ -44,6 +49,8 @@ class AssetService:
         self._python_scanner = python_scanner or scan_python_packages
         self._host_process_scanner = host_process_scanner or scan_host_processes
         self._system_infra_scanner = system_infra_scanner or scan_system_infrastructure
+        self._docker_recipe_service = docker_recipe_service
+        self._docker_version_service = docker_version_service or DockerVersionService()
         self._policy_service = AssetPolicyService(Path(config_root))
 
     def list_assets(self, category_id: str) -> list[AssetSnapshot]:
@@ -69,7 +76,12 @@ class AssetService:
 
     def _build_assets_for_category(self, snapshot: RegistrySnapshot, category_id: str) -> list[AssetSnapshot]:
         if category_id == 'docker':
-            return build_docker_asset_snapshots(snapshot, self._scan_docker_containers())
+            return build_docker_asset_snapshots(
+                snapshot,
+                self._scan_docker_containers(),
+                recipe_service=self._docker_recipe_service,
+                version_service=self._docker_version_service,
+            )
         if category_id == 'systemd':
             scanned_units, scan_failed = self._scan_systemd_units()
             return build_systemd_asset_snapshots(snapshot, scanned_units, scan_failed=scan_failed)
@@ -109,7 +121,11 @@ class AssetService:
 def build_docker_asset_snapshots(
     registry_snapshot: RegistrySnapshot,
     containers: list[DockerContainerSnapshot],
+    *,
+    recipe_service: DockerRecipeService | None = None,
+    version_service: DockerVersionService | None = None,
 ) -> list[AssetSnapshot]:
+    docker_version_service = version_service or DockerVersionService()
     containers_by_dir: dict[str, list[DockerContainerSnapshot]] = defaultdict(list)
     containers_by_name = {container.name: container for container in containers}
 
@@ -125,7 +141,16 @@ def build_docker_asset_snapshots(
         object_containers = sorted(containers_by_dir.get(obj.config['project_dir'], []), key=lambda item: item.name)
         primary = _select_primary_container(obj, object_containers, containers_by_name)
         status = primary.status if primary is not None else 'not running'
-        current_version = primary.image_tag if primary is not None else None
+        recipe = recipe_service.get(obj.config.get('recipe_id')) if recipe_service is not None else None
+        lifecycle_strategy = obj.config.get('lifecycle_strategy', 'compose_pull')
+        runtime = docker_version_service.build_runtime_version_info(primary)
+        version_info = _build_docker_version_info(
+            obj,
+            primary,
+            version_service=docker_version_service,
+            recipe=recipe,
+            lifecycle_strategy=lifecycle_strategy,
+        )
 
         assets.append(
             AssetSnapshot(
@@ -133,7 +158,8 @@ def build_docker_asset_snapshots(
                 category=obj.category,
                 name=obj.name,
                 status=status,
-                current_version=current_version,
+                current_version=version_info.current_version,
+                latest_version=version_info.latest_version,
                 supports_actions=DOCKER_SUPPORTED_ACTIONS.copy(),
                 metadata={
                     'type': obj.type,
@@ -141,6 +167,12 @@ def build_docker_asset_snapshots(
                     'compose_file': obj.config['compose_file'],
                     'primary_container': obj.config.get('primary_container'),
                     'compose_service': obj.config.get('compose_service'),
+                    'recipe_id': recipe.id if recipe is not None else obj.config.get('recipe_id'),
+                    'lifecycle_strategy': lifecycle_strategy,
+                    'version_source': obj.config.get('version_source', 'registry_tags'),
+                    'version_source_status': version_info.source_status,
+                    'runtime_image_tag': runtime.image_tag,
+                    'runtime_oci_version': runtime.oci_version,
                 },
                 containers=object_containers,
                 primary_container_name=primary.name if primary is not None else None,
@@ -208,3 +240,43 @@ def _select_primary_container(
             return container
 
     return object_containers[0] if object_containers else None
+
+
+def _build_docker_version_info(
+    obj: ObjectDefinition,
+    primary: DockerContainerSnapshot | None,
+    *,
+    version_service: DockerVersionService,
+    recipe: DockerRecipe | None,
+    lifecycle_strategy: str,
+) -> PackageVersionInfo:
+    runtime = version_service.build_runtime_version_info(primary)
+    if lifecycle_strategy == 'compose_local_build_git_tag' and recipe is not None:
+        return version_service.get_git_tag_version_info(recipe.repo_dir, fetch=False).model_copy(
+            update={
+                'runtime': runtime,
+                'lifecycle_strategy': lifecycle_strategy,
+                'version_source': obj.config.get('version_source', 'git_tags'),
+            }
+        )
+
+    image_repository = None
+    if primary is not None and primary.image:
+        image_repository = primary.image.rsplit(':', 1)[0] if ':' in primary.image else primary.image
+    if not image_repository:
+        return PackageVersionInfo(
+            current_version=primary.image_tag if primary is not None else None,
+            runtime=runtime,
+            lifecycle_strategy=lifecycle_strategy,
+            version_source=obj.config.get('version_source', 'registry_tags'),
+        )
+    return version_service.get_registry_tag_version_info(
+        image_repository,
+        current_version=primary.image_tag if primary is not None else None,
+    ).model_copy(
+        update={
+            'runtime': runtime,
+            'lifecycle_strategy': lifecycle_strategy,
+            'version_source': obj.config.get('version_source', 'registry_tags'),
+        }
+    )

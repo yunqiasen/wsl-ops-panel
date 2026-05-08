@@ -10,7 +10,7 @@ from app.adapters.node_adapter import NodePackageAdapter
 from app.adapters.python_adapter import PythonPackageAdapter
 from app.adapters.systemd_adapter import SystemdUnitAdapter
 from app.core.security import require_authenticated_request
-from app.models.assets import AssetSnapshot, PackageVersionInfo
+from app.models.assets import AssetSnapshot, PackageVersionInfo, RuntimeVersionInfo
 from app.models.registry import ObjectDefinition
 from app.models.tasks import TaskRecord
 
@@ -47,6 +47,11 @@ class AssetVersionsResponse(BaseModel):
     versions: list[str] = Field(default_factory=list)
     source_status: str = 'ok'
     error: str | None = None
+    lifecycle_strategy: str | None = None
+    version_source: str | None = None
+    runtime: RuntimeVersionInfo | None = None
+    managed_services: list[str] = Field(default_factory=list)
+    ignored_services: list[str] = Field(default_factory=list)
 
 
 @router.get('/{object_id}/versions', response_model=AssetVersionsResponse)
@@ -60,11 +65,16 @@ def get_asset_versions(object_id: str, request: Request) -> AssetVersionsRespons
     )
     return AssetVersionsResponse(
         object_id=object_id,
-        current_version=asset.current_version,
+        current_version=version_info.current_version,
         latest_version=version_info.latest_version,
         versions=version_info.versions,
         source_status=version_info.source_status,
         error=version_info.error,
+        lifecycle_strategy=version_info.lifecycle_strategy,
+        version_source=version_info.version_source,
+        runtime=version_info.runtime,
+        managed_services=version_info.managed_services,
+        ignored_services=version_info.ignored_services,
     )
 
 
@@ -186,7 +196,7 @@ def _build_adapter(request: Request, object_id: str, asset: AssetSnapshot) -> Ac
         )
     obj = _get_registry_object(request, object_id)
     if obj.type == 'docker_compose':
-        return _build_docker_adapter(obj, asset)
+        return _build_docker_adapter(request, obj, asset)
     if obj.type == 'systemd_unit':
         return SystemdUnitAdapter(unit_name=obj.config['unit_name'], working_dir=obj.config['working_dir'])
     raise HTTPException(status_code=400, detail=f'unsupported object type: {obj.type}')
@@ -198,13 +208,15 @@ def _ensure_asset_actionable(asset: AssetSnapshot) -> None:
     raise HTTPException(status_code=409, detail=asset.blocked_reason or 'asset is read only')
 
 
-def _build_docker_adapter(obj: ObjectDefinition, asset: AssetSnapshot) -> DockerComposeAdapter:
+def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetSnapshot) -> DockerComposeAdapter:
     primary_container_name = obj.config.get('primary_container') or asset.primary_container_name
     primary_container = next((item for item in asset.containers if item.name == asset.primary_container_name), None)
     configured_service = obj.config.get('compose_service')
     compose_service = configured_service or (primary_container.compose_service if primary_container else None)
     if not compose_service:
         raise HTTPException(status_code=400, detail='compose_service is required for docker actions')
+    recipe_service = getattr(request.app.state, 'docker_recipe_service', None)
+    recipe = recipe_service.get(obj.config.get('recipe_id')) if recipe_service is not None else None
 
     image_repository = parse_image_repository(primary_container.image if primary_container else None)
     if image_repository is None:
@@ -222,6 +234,13 @@ def _build_docker_adapter(obj: ObjectDefinition, asset: AssetSnapshot) -> Docker
         compose_service=compose_service,
         image_repository=image_repository,
         current_version=asset.current_version,
+        lifecycle_strategy=obj.config.get('lifecycle_strategy', 'compose_pull'),
+        override_file=recipe.override_file if recipe is not None else None,
+        recipe_repo_dir=recipe.repo_dir if recipe is not None else None,
+        local_image_repository=recipe.local_image_repository if recipe is not None else None,
+        local_image_tag_template=recipe.local_image_tag_template if recipe is not None else None,
+        healthcheck_url=recipe.healthcheck.url if recipe is not None and recipe.healthcheck is not None else None,
+        version_service=getattr(request.app.state, 'docker_version_service', None),
     )
 
 

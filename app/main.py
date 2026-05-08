@@ -14,8 +14,10 @@ from app.api.tasks import router as tasks_router
 from app.api.terminals import router as terminals_router
 from app.core.ui import TEMPLATES, build_page_context, page_login_redirect
 from app.models.assets import AssetSnapshot, DockerContainerSnapshot
+from app.recipes.service import DockerRecipeService
 from app.registry.service import RegistryService
 from app.services.assets import AssetService
+from app.services.docker_versions import DockerVersionService
 from app.tasks.queue import GlobalTaskQueue
 from app.tasks.store import SQLiteTaskStore, TaskStore
 from app.tasks.worker import SerialTaskWorker
@@ -52,7 +54,10 @@ def create_app(
     app.include_router(assets_router)
     app.mount('/static', StaticFiles(directory=str(Path(__file__).parent / 'static')), name='static')
 
+    config_root = Path(config_root)
     registry_service = RegistryService(Path(config_root))
+    docker_recipe_service = _build_docker_recipe_service(config_root)
+    docker_version_service = DockerVersionService()
     asset_service = AssetService(
         registry_service,
         docker_scanner=docker_scanner,
@@ -61,7 +66,9 @@ def create_app(
         python_scanner=python_scanner,
         host_process_scanner=host_process_scanner,
         system_infra_scanner=system_infra_scanner,
-        config_root=Path(config_root),
+        docker_recipe_service=docker_recipe_service,
+        docker_version_service=docker_version_service,
+        config_root=config_root,
     )
     queue_store = task_store or SQLiteTaskStore()
     task_queue = GlobalTaskQueue(queue_store)
@@ -71,6 +78,8 @@ def create_app(
 
     app.state.registry_service = registry_service
     app.state.asset_service = asset_service
+    app.state.docker_recipe_service = docker_recipe_service
+    app.state.docker_version_service = docker_version_service
     app.state.task_store = queue_store
     app.state.task_queue = task_queue
     app.state.task_worker = task_worker
@@ -93,6 +102,13 @@ def create_app(
         return TEMPLATES.TemplateResponse(request, 'terminals.html', context)
 
     return app
+
+
+def _build_docker_recipe_service(config_root: Path) -> DockerRecipeService | None:
+    recipes_dir = config_root / 'recipes' / 'docker'
+    if not recipes_dir.is_dir():
+        return None
+    return DockerRecipeService(config_root)
 
 
 app = create_app()

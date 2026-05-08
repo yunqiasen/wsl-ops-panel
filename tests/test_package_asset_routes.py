@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.core.security import COOKIE_NAME, issue_session_token
 from app.main import create_app
-from app.models.assets import PackageVersionInfo
+from app.models.assets import PackageVersionInfo, RuntimeVersionInfo
 from app.scanners.node_scanner import parse_npm_package
 from app.scanners.python_scanner import parse_pip_package
 from app.tasks.store import InMemoryTaskStore
@@ -105,3 +105,75 @@ def test_non_whitelisted_python_package_detail_is_read_only(tmp_path: Path) -> N
     assert response.status_code == 200
     assert '白名单外' in response.text
     assert 'hx-post="/api/assets/' not in response.text
+
+
+def test_docker_versions_route_returns_strategy_and_runtime_info(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'categories' / 'docker.yaml').write_text('id: docker\nlabel: Docker\norder: 10\n', encoding='utf-8')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'objects' / 'openai-cpa.yaml').write_text(
+        'id: openai_cpa\ncategory: docker\ntype: docker_compose\nname: openai-cpa\nconfig:\n'
+        '  project_dir: /srv/openai-cpa\n  compose_file: docker-compose.yml\n'
+        '  primary_container: wenfxl_codex_manager\n  compose_service: codex-web\n'
+        '  lifecycle_strategy: compose_local_build_git_tag\n  version_source: git_tags\n  recipe_id: openai-cpa\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'recipes' / 'docker').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'openai-cpa.yaml').write_text(
+        'id: openai-cpa\nlifecycle_strategy: compose_local_build_git_tag\nversion_source: git_tags\n'
+        'repo_dir: /srv/openai-cpa\ncompose_file: docker-compose.yml\ncompose_service: codex-web\n'
+        'primary_container: wenfxl_codex_manager\noverride_file: overrides/openai-cpa.compose.override.yaml\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'recipes' / 'docker' / 'overrides').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'overrides' / 'openai-cpa.compose.override.yaml').write_text(
+        'services:\n  codex-web:\n    image: ${WSL_OPS_IMAGE}\n',
+        encoding='utf-8',
+    )
+
+    from app.api import assets as assets_api
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+
+    monkeypatch.setattr(
+        assets_api.DockerComposeAdapter,
+        'get_version_info',
+        lambda self: PackageVersionInfo(
+            current_version='v14.2.6',
+            latest_version='v14.2.7',
+            versions=['v14.2.7', 'v14.2.6'],
+            source_status='ok',
+            lifecycle_strategy='compose_local_build_git_tag',
+            version_source='git_tags',
+            runtime=RuntimeVersionInfo(
+                image='local/wenfxl-codex-manager:v14.2.6-overlay',
+                image_tag='v14.2.6-overlay',
+                oci_version='14.2.4',
+                oci_revision='ece08961',
+            ),
+        ),
+    )
+
+    containers = parse_docker_ps_lines(
+        [
+            '{"ID":"1","Image":"local/wenfxl-codex-manager:v14.2.6-overlay","Labels":"com.docker.compose.project=openai-cpa,com.docker.compose.project.working_dir=/srv/openai-cpa,com.docker.compose.service=codex-web,org.opencontainers.image.version=14.2.4,org.opencontainers.image.revision=ece08961","Names":"wenfxl_codex_manager","State":"running","Status":"Up 2 days","Ports":"8128/tcp"}'
+        ]
+    )
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=InMemoryTaskStore()))
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    response = client.get('/api/assets/openai_cpa/versions')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['current_version'] == 'v14.2.6'
+    assert payload['latest_version'] == 'v14.2.7'
+    assert payload['versions'] == ['v14.2.7', 'v14.2.6']
+    assert payload['lifecycle_strategy'] == 'compose_local_build_git_tag'
+    assert payload['version_source'] == 'git_tags'
+    assert payload['runtime'] == {
+        'image': 'local/wenfxl-codex-manager:v14.2.6-overlay',
+        'image_tag': 'v14.2.6-overlay',
+        'oci_version': '14.2.4',
+        'oci_revision': 'ece08961',
+        'ports': None,
+    }
