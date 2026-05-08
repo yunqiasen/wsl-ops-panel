@@ -152,6 +152,8 @@ class DockerComposeAdapter:
     def _plan_compose_local_build_git_tag(self, action: DockerAction, version: str | None) -> ActionPlan:
         if action in {'delete', 'full_delete'}:
             return self._plan_compose_pull(action, version)
+        if action == 'update_latest':
+            version = self._resolve_latest_git_tag()
         if version is None:
             raise ValueError('compose_local_build_git_tag requires a resolved git tag')
         if not self.recipe_repo_dir:
@@ -188,9 +190,17 @@ class DockerComposeAdapter:
 
         return ActionPlan(
             commands=commands,
-            working_dir=self.project_dir,
+            working_dir=self.recipe_repo_dir,
             preview_objects=[image_ref, version],
         )
+
+    def _resolve_latest_git_tag(self) -> str:
+        if not self.recipe_repo_dir:
+            raise ValueError('compose_local_build_git_tag requires recipe_repo_dir')
+        info = self._version_service.get_git_tag_version_info(self.recipe_repo_dir)
+        if not info.latest_version:
+            raise ValueError('compose_local_build_git_tag could not resolve latest git tag')
+        return info.latest_version
 
     def list_available_versions(self) -> list[str]:
         versions: list[str] = []

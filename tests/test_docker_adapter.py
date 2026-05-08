@@ -129,7 +129,7 @@ def test_deploy_version_for_compose_pull_uses_safe_generated_override_file() -> 
     assert plan.commands[2] == ['rm', '-f', '.wsl-ops-panel.override.yml']
 
 
-def test_openai_cpa_update_latest_builds_local_image_from_git_tag() -> None:
+def test_openai_cpa_update_latest_builds_local_image_from_latest_git_tag(monkeypatch) -> None:
     adapter = DockerComposeAdapter(
         project_dir='/srv/openai-cpa',
         compose_file='docker-compose.yml',
@@ -143,7 +143,13 @@ def test_openai_cpa_update_latest_builds_local_image_from_git_tag() -> None:
         healthcheck_url='http://127.0.0.1:8128',
     )
 
-    plan = adapter.plan_action('deploy_version', version='v14.2.6')
+    monkeypatch.setattr(
+        adapter._version_service,
+        'get_git_tag_version_info',
+        lambda repo_dir: PackageVersionInfo(latest_version='v14.2.6', versions=['v14.2.6', 'v14.2.5']),
+    )
+
+    plan = adapter.plan_action('update_latest')
 
     assert plan.commands[:4] == [
         ['git', '-C', '/srv/openai-cpa', 'fetch', '--tags', '--force', 'origin'],
@@ -163,6 +169,36 @@ def test_openai_cpa_update_latest_builds_local_image_from_git_tag() -> None:
             '--no-build',
             'codex-web',
         ],
+    ]
+    assert plan.working_dir == '/srv/openai-cpa'
+
+
+def test_openai_cpa_deploy_version_builds_from_recipe_repo_dir_when_project_dir_differs() -> None:
+    adapter = DockerComposeAdapter(
+        project_dir='/srv/runtime-openai-cpa',
+        compose_file='docker-compose.yml',
+        primary_container='wenfxl_codex_manager',
+        compose_service='codex-web',
+        lifecycle_strategy='compose_local_build_git_tag',
+        recipe_repo_dir='/srv/source-openai-cpa',
+        override_file='/panel/config/recipes/docker/overrides/openai-cpa.compose.override.yaml',
+        local_image_repository='local/wenfxl-codex-manager',
+        local_image_tag_template='{version}-overlay',
+    )
+
+    plan = adapter.plan_action('deploy_version', version='v14.2.6')
+
+    assert plan.working_dir == '/srv/source-openai-cpa'
+    assert plan.commands[0] == ['git', '-C', '/srv/source-openai-cpa', 'fetch', '--tags', '--force', 'origin']
+    assert plan.commands[1] == ['git', '-C', '/srv/source-openai-cpa', 'checkout', 'v14.2.6']
+    assert plan.commands[2] == [
+        'docker',
+        'build',
+        '-t',
+        'local/wenfxl-codex-manager:v14.2.6-overlay',
+        '-f',
+        'Dockerfile',
+        '.',
     ]
 
 
