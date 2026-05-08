@@ -16,7 +16,16 @@
     </div>
 
     {% if asset.category == 'docker' %}
-    <div class="asset-meta">版本：{{ asset.current_version or 'unknown' }}</div>
+    <div class="asset-meta">策略：{{ asset.metadata.lifecycle_strategy or 'compose_pull' }}</div>
+    {% if asset.metadata.version_source == 'git_tags' %}
+    <div class="asset-meta">Git 当前：{{ asset.current_version or 'unknown' }}</div>
+    <div class="asset-meta">Git 最新：{{ asset.latest_version or 'unknown' }}</div>
+    {% else %}
+    <div class="asset-meta">当前版本：{{ asset.current_version or 'unknown' }}</div>
+    <div class="asset-meta">最新版本：{{ asset.latest_version or 'unknown' }}</div>
+    {% endif %}
+    <div class="asset-meta">运行镜像：{{ asset.metadata.runtime_image_tag or 'unknown' }}</div>
+    <div class="asset-meta">版本源：{{ asset.metadata.version_source_status or 'unknown' }}</div>
     <div class="asset-meta">项目目录：{{ asset.metadata.project_dir }}</div>
     <div class="asset-meta">Compose：{{ asset.metadata.compose_file }}</div>
     <div class="asset-meta">主容器：{{ asset.primary_container_name or 'none' }}</div>

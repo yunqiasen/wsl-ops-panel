@@ -160,7 +160,7 @@ def test_node_detail_hides_action_buttons_for_protected_package(tmp_path: Path) 
     assert 'hx-post="/api/assets/' not in response.text
 
 
-def test_docker_detail_uses_git_tag_versions_instead_of_runtime_or_latest(tmp_path: Path, monkeypatch) -> None:
+def test_openai_cpa_detail_shows_strategy_and_runtime_versions(tmp_path: Path, monkeypatch) -> None:
     _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
     _write_registry_file(
         tmp_path,
@@ -197,20 +197,22 @@ def test_docker_detail_uses_git_tag_versions_instead_of_runtime_or_latest(tmp_pa
 
     from app.services.docker_versions import DockerVersionService
 
-    monkeypatch.setattr(
-        DockerVersionService,
-        'get_git_tag_version_info',
-        lambda self, repo_dir, *, runner=None, fetch=False: PackageVersionInfo(
+    git_tag_calls: list[str] = []
+
+    def _stub_get_git_tags(self, repo_dir, *, runner=None, fetch=False):
+        git_tag_calls.append(repo_dir)
+        return PackageVersionInfo(
             current_version='v14.2.6',
             latest_version='v14.2.7',
             versions=['v14.2.7', 'v14.2.6'],
             source_status='ok',
-        ),
-    )
+        )
+
+    monkeypatch.setattr(DockerVersionService, 'get_git_tag_version_info', _stub_get_git_tags)
 
     containers = parse_docker_ps_lines(
         [
-            '{"ID":"1","Image":"local/wenfxl-codex-manager:v14.2.6-overlay","Labels":"com.docker.compose.project=openai-cpa,com.docker.compose.project.working_dir=/srv/openai-cpa,com.docker.compose.service=codex-web","Names":"wenfxl_codex_manager","State":"running","Status":"Up 2 days","Ports":"8128/tcp"}'
+            '{"ID":"1","Image":"local/wenfxl-codex-manager:v14.2.6-overlay","Labels":"com.docker.compose.project=openai-cpa,com.docker.compose.project.working_dir=/srv/openai-cpa,com.docker.compose.service=codex-web,org.opencontainers.image.version=14.2.4,org.opencontainers.image.revision=ece08961","Names":"wenfxl_codex_manager","State":"running","Status":"Up 2 days","Ports":"8128/tcp"}'
         ]
     )
     client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=InMemoryTaskStore()))
@@ -219,10 +221,16 @@ def test_docker_detail_uses_git_tag_versions_instead_of_runtime_or_latest(tmp_pa
     response = client.get('/assets/openai_cpa')
 
     assert response.status_code == 200
+    assert 'compose_local_build_git_tag' in response.text
+    assert 'v14.2.6' in response.text
+    assert 'v14.2.7' in response.text
+    assert 'v14.2.6-overlay' in response.text
+    assert '14.2.4' in response.text
     assert 'value="v14.2.7"' in response.text
     assert 'value="v14.2.6"' in response.text
     assert 'value="latest"' not in response.text
     assert 'value="v14.2.6-overlay"' not in response.text
+    assert git_tag_calls == ['/srv/openai-cpa']
 
 
 def test_app_boots_when_unreferenced_docker_recipe_is_invalid(tmp_path: Path) -> None:

@@ -232,9 +232,12 @@ def test_asset_action_endpoints_enqueue_tasks_and_persist_plan(tmp_path: Path, m
     from app.scanners.docker_scanner import parse_docker_ps_lines
 
     monkeypatch.setattr(
-        DockerComposeAdapter,
-        'get_version_info',
-        lambda self: PackageVersionInfo(current_version='latest', latest_version='latest', versions=['latest']),
+        'app.services.docker_versions.DockerVersionService.get_registry_tag_version_info',
+        lambda self, image_repository, *, current_version=None: PackageVersionInfo(
+            current_version='latest',
+            latest_version='latest',
+            versions=['latest'],
+        ),
     )
 
     containers = parse_docker_ps_lines([_docker_ps_line()])

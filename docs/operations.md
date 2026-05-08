@@ -97,6 +97,12 @@ Phase 1 支持：
 - 仅 `openai / fastapi / uvicorn / playwright` 开放执行动作
 - 支持：`update_latest / deploy_version / delete / full_delete`
 
+### 3.6 Docker strategy notes
+
+- `compose_pull`：普通镜像型项目，版本列表来自镜像仓库 tags
+- `compose_local_build_git_tag`：本地构建型项目，版本列表来自 Git tags
+- `openai-cpa`：使用 panel 托管 override，不直接信任上游 compose 的运行差异
+
 ## 4. 常用命令
 
 ### 4.1 全量测试

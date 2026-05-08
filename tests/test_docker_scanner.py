@@ -348,3 +348,71 @@ def test_category_and_detail_routes_render_docker_assets(tmp_path: Path) -> None
     assert 'CPA / CLIProxyAPI' in detail_response.text
     assert '/srv/cpa' in detail_response.text
     assert 'eceasy/cli-proxy-api:latest' in detail_response.text
+
+
+def test_category_route_shows_docker_strategy_and_latest_version(tmp_path: Path, monkeypatch) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'openai-cpa.yaml',
+        'id: openai_cpa\n'
+        'category: docker\n'
+        'type: docker_compose\n'
+        'name: openai-cpa\n'
+        'config:\n'
+        '  project_dir: /srv/openai-cpa\n'
+        '  compose_file: docker-compose.yml\n'
+        '  primary_container: wenfxl_codex_manager\n'
+        '  compose_service: codex-web\n'
+        '  lifecycle_strategy: compose_local_build_git_tag\n'
+        '  version_source: git_tags\n'
+        '  recipe_id: openai-cpa\n'
+        '  managed_services: [codex-web]\n'
+        '  ignored_services: [watchtower]\n',
+    )
+    (tmp_path / 'recipes' / 'docker').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'openai-cpa.yaml').write_text(
+        'id: openai-cpa\nlifecycle_strategy: compose_local_build_git_tag\nversion_source: git_tags\n'
+        'repo_dir: /srv/openai-cpa\ncompose_file: docker-compose.yml\ncompose_service: codex-web\n'
+        'primary_container: wenfxl_codex_manager\noverride_file: overrides/openai-cpa.compose.override.yaml\n'
+        'managed_services: [codex-web]\nignored_services: [watchtower]\n',
+        encoding='utf-8',
+    )
+    (tmp_path / 'recipes' / 'docker' / 'overrides').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'recipes' / 'docker' / 'overrides' / 'openai-cpa.compose.override.yaml').write_text(
+        'services:\n  codex-web:\n    image: ${WSL_OPS_IMAGE}\n',
+        encoding='utf-8',
+    )
+
+    from app.services.docker_versions import DockerVersionService
+
+    monkeypatch.setattr(
+        DockerVersionService,
+        'get_git_tag_version_info',
+        lambda self, repo_dir, *, runner=None, fetch=False: PackageVersionInfo(
+            current_version='v14.2.6',
+            latest_version='v14.2.7',
+            versions=['v14.2.7', 'v14.2.6'],
+            source_status='ok',
+        ),
+    )
+
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+
+    containers = parse_docker_ps_lines(
+        [
+            '{"ID":"1","Image":"local/wenfxl-codex-manager:v14.2.6-overlay","Labels":"com.docker.compose.project=openai-cpa,com.docker.compose.project.working_dir=/srv/openai-cpa,com.docker.compose.service=codex-web","Names":"wenfxl_codex_manager","State":"running","Status":"Up 2 days","Ports":"8128/tcp"}'
+        ]
+    )
+
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers))
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    response = client.get('/categories/docker')
+
+    assert response.status_code == 200
+    assert 'compose_local_build_git_tag' in response.text
+    assert 'Git 当前：v14.2.6' in response.text
+    assert 'Git 最新：v14.2.7' in response.text
+    assert '运行镜像：v14.2.6-overlay' in response.text
