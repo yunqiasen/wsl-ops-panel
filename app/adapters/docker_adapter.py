@@ -6,6 +6,8 @@ from typing import Literal
 import yaml
 
 from app.adapters.base import ActionPlan
+from app.models.assets import PackageVersionInfo
+from app.services.docker_versions import DockerVersionService
 
 DockerAction = Literal['update_latest', 'deploy_version', 'delete', 'full_delete']
 _OVERRIDE_FILE = '.wsl-ops-panel.override.yml'
@@ -13,6 +15,11 @@ _OVERRIDE_WRITER = (
     'from pathlib import Path; import sys; '
     'Path(sys.argv[1]).write_text('
     'f"services:\n  {sys.argv[2]}:\n    image: {sys.argv[3]}\n", encoding="utf-8")'
+)
+_HEALTHCHECK_COMMAND = (
+    'import sys,urllib.request; '
+    'r=urllib.request.urlopen(sys.argv[1], timeout=10); '
+    'sys.exit(0 if r.status == 200 else 1)'
 )
 
 
@@ -26,6 +33,13 @@ class DockerComposeAdapter:
         compose_service: str,
         image_repository: str | None = None,
         current_version: str | None = None,
+        lifecycle_strategy: str = 'compose_pull',
+        override_file: str | None = None,
+        recipe_repo_dir: str | None = None,
+        local_image_repository: str | None = None,
+        local_image_tag_template: str | None = None,
+        healthcheck_url: str | None = None,
+        version_service: DockerVersionService | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.compose_file = compose_file
@@ -33,8 +47,48 @@ class DockerComposeAdapter:
         self.compose_service = compose_service
         self.image_repository = image_repository
         self.current_version = current_version
+        self.lifecycle_strategy = lifecycle_strategy
+        self.override_file = override_file
+        self.recipe_repo_dir = recipe_repo_dir
+        self.local_image_repository = local_image_repository
+        self.local_image_tag_template = local_image_tag_template
+        self.healthcheck_url = healthcheck_url
+        self._version_service = version_service or DockerVersionService()
 
     def plan_action(self, action: DockerAction, version: str | None = None) -> ActionPlan:
+        if self.lifecycle_strategy == 'compose_pull':
+            return self._plan_compose_pull(action, version)
+        if self.lifecycle_strategy == 'compose_local_build_git_tag':
+            return self._plan_compose_local_build_git_tag(action, version)
+        raise ValueError(f'unsupported lifecycle strategy: {self.lifecycle_strategy}')
+
+    def get_version_info(self) -> PackageVersionInfo:
+        if self.lifecycle_strategy == 'compose_local_build_git_tag':
+            if not self.recipe_repo_dir:
+                raise ValueError('compose_local_build_git_tag requires recipe_repo_dir')
+            info = self._version_service.get_git_tag_version_info(self.recipe_repo_dir)
+        else:
+            if not self.image_repository:
+                return PackageVersionInfo(
+                    current_version=self.current_version,
+                    lifecycle_strategy=self.lifecycle_strategy,
+                    version_source='registry_tags',
+                )
+            info = self._version_service.get_registry_tag_version_info(
+                self.image_repository,
+                current_version=self.current_version,
+            )
+
+        return info.model_copy(
+            update={
+                'lifecycle_strategy': self.lifecycle_strategy,
+                'version_source': (
+                    'git_tags' if self.lifecycle_strategy == 'compose_local_build_git_tag' else 'registry_tags'
+                ),
+            }
+        )
+
+    def _plan_compose_pull(self, action: DockerAction, version: str | None) -> ActionPlan:
         if action == 'update_latest':
             return ActionPlan(
                 commands=[
@@ -94,6 +148,49 @@ class DockerComposeAdapter:
             )
 
         raise ValueError(f'unsupported docker action: {action}')
+
+    def _plan_compose_local_build_git_tag(self, action: DockerAction, version: str | None) -> ActionPlan:
+        if action in {'delete', 'full_delete'}:
+            return self._plan_compose_pull(action, version)
+        if version is None:
+            raise ValueError('compose_local_build_git_tag requires a resolved git tag')
+        if not self.recipe_repo_dir:
+            raise ValueError('compose_local_build_git_tag requires recipe_repo_dir')
+        if not self.override_file:
+            raise ValueError('compose_local_build_git_tag requires override_file')
+        if not self.local_image_repository:
+            raise ValueError('compose_local_build_git_tag requires local_image_repository')
+        if not self.local_image_tag_template:
+            raise ValueError('compose_local_build_git_tag requires local_image_tag_template')
+
+        image_ref = f'{self.local_image_repository}:{self.local_image_tag_template.format(version=version)}'
+        commands = [
+            ['git', '-C', self.recipe_repo_dir, 'fetch', '--tags', '--force', 'origin'],
+            ['git', '-C', self.recipe_repo_dir, 'checkout', version],
+            ['docker', 'build', '-t', image_ref, '-f', 'Dockerfile', '.'],
+            [
+                'env',
+                f'WSL_OPS_IMAGE={image_ref}',
+                'docker',
+                'compose',
+                '-f',
+                self.compose_file,
+                '-f',
+                self.override_file,
+                'up',
+                '-d',
+                '--no-build',
+                self.compose_service,
+            ],
+        ]
+        if self.healthcheck_url:
+            commands.append(['python3', '-c', _HEALTHCHECK_COMMAND, self.healthcheck_url])
+
+        return ActionPlan(
+            commands=commands,
+            working_dir=self.project_dir,
+            preview_objects=[image_ref, version],
+        )
 
     def list_available_versions(self) -> list[str]:
         versions: list[str] = []
