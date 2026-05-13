@@ -1,104 +1,133 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-header">
+<section class="page-hero">
   <div>
-    <h2>{{ asset.name }}</h2>
+    <p class="eyebrow">Asset Detail</p>
+    <h1>{{ asset.name }}</h1>
     <p>ID：{{ asset.object_id }} · 分类：{{ asset.category }} · 状态：{{ asset.status }}</p>
   </div>
-  <div><a href="{{ request.url_for('category_page', category_id=asset.category) }}">返回分类</a></div>
+  <a class="ghost-button" href="{{ request.url_for('category_page', category_id=asset.category) }}">返回分类</a>
 </section>
 
-<div id="task-flash"></div>
+<div class="detail-main detail-main--wide">
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>详情</h2>
+        <p>当前运行状态和本地元数据。</p>
+      </div>
+      <span class="status-pill status-{{ 'ok' if asset.status in ['running', 'active'] or asset.status.startswith('Up') else 'muted' }}">{{ asset.status }}</span>
+    </div>
 
-{% if asset.supports_actions %}
-<section class="panel action-panel">
-  <h3>操作</h3>
-  <div class="button-row">
-    {% if 'update_latest' in asset.supports_actions %}
-    <button hx-post="/api/assets/{{ asset.object_id }}/actions/update-latest" hx-target="#task-flash" hx-swap="innerHTML">更新最新版</button>
+    {% if asset.category == 'docker' %}
+    <div class="info-grid">
+      <div><small>生命周期策略</small><strong>{{ asset.metadata.lifecycle_strategy or 'unknown' }}</strong></div>
+      <div><small>版本来源</small><strong>{{ asset.metadata.version_source or 'unknown' }}</strong></div>
+      <div><small>发现来源</small><strong>{{ asset.metadata.discovery_source or 'registered' }}</strong></div>
+      <div><small>当前版本</small><strong>{{ asset.current_version or 'unknown' }}</strong></div>
+      <div><small>最新版本</small><strong>{{ asset.latest_version or '按需查询' }}</strong></div>
+      <div><small>主容器</small><strong>{{ asset.primary_container_name or 'none' }}</strong></div>
+      <div><small>运行镜像 Tag</small><strong>{{ asset.metadata.runtime_image_tag or 'unknown' }}</strong></div>
+      <div><small>OCI Version</small><strong>{{ asset.metadata.runtime_oci_version or 'unknown' }}</strong></div>
+      <div><small>OCI Revision</small><strong>{{ asset.metadata.runtime_oci_revision or 'unknown' }}</strong></div>
+    </div>
+    <div class="path-chip large">{{ asset.metadata.project_dir }} · {{ asset.metadata.compose_file }}</div>
+    <div class="section-heading compact-heading"><h3>容器</h3></div>
+    <div class="table-list">
+      {% for container in asset.containers %}
+      <div class="list-row stacked">
+        <span>
+          <strong>{{ container.name }}</strong>
+          <small>{{ container.image }} · {{ container.compose_service or 'unknown' }}</small>
+        </span>
+        <span class="status-pill status-{{ 'ok' if container.state == 'running' or container.status.startswith('Up') else 'muted' }}">{{ container.status }}</span>
+      </div>
+      {% else %}
+      <div class="empty-state">当前没有运行中的容器</div>
+      {% endfor %}
+    </div>
+    {% elif asset.category == 'systemd' %}
+    <div class="info-grid">
+      <div><small>Unit</small><strong>{{ asset.metadata.unit_name }}</strong></div>
+      <div><small>子状态</small><strong>{{ asset.metadata.sub }}</strong></div>
+      <div><small>描述</small><strong>{{ asset.metadata.description or 'none' }}</strong></div>
+    </div>
+    <div class="path-chip large">{{ asset.metadata.working_dir }}</div>
+    {% elif asset.category in ['node', 'python'] %}
+    <div class="info-grid">
+      <div><small>当前版本</small><strong>{{ asset.current_version or 'unknown' }}</strong></div>
+      <div><small>来源</small><strong>{{ asset.metadata.package_manager }}</strong></div>
+      <div><small>是否可操作</small><strong>{{ '是' if asset.actionable else '否' }}</strong></div>
+      <div><small>管理归属</small><strong>{{ asset.managed_by or 'none' }}</strong></div>
+      <div><small>阻止原因</small><strong>{{ asset.blocked_reason or 'none' }}</strong></div>
+    </div>
+    {% elif asset.category == 'project' %}
+    <div class="info-grid">
+      <div><small>路径</small><strong>{{ asset.metadata.path }}</strong></div>
+      <div><small>技术栈</small><strong>{{ asset.metadata.stacks|join(', ') }}</strong></div>
+      <div><small>Git 分支</small><strong>{{ asset.metadata.git_branch or 'unknown' }}</strong></div>
+      <div><small>HEAD</small><strong>{{ asset.metadata.head_sha or 'unknown' }}</strong></div>
+    </div>
+    {% elif asset.category == 'host' %}
+    <div class="info-grid">
+      <div><small>监听地址</small><strong>{{ asset.metadata.local_address }}:{{ asset.metadata.port }}</strong></div>
+      <div><small>进程</small><strong>{{ asset.metadata.process_name or 'unknown' }}</strong></div>
+      <div><small>PID</small><strong>{{ asset.metadata.pid or 'unknown' }}</strong></div>
+    </div>
+    {% elif asset.category == 'system' %}
+    <div class="info-grid">
+      <div><small>当前版本</small><strong>{{ asset.current_version or 'unknown' }}</strong></div>
+    </div>
+    <div class="path-chip large">{{ asset.metadata.raw_output or asset.metadata.error or 'none' }}</div>
     {% endif %}
-    {% if 'delete' in asset.supports_actions %}
-    <button hx-post="/api/assets/{{ asset.object_id }}/actions/delete" hx-target="#task-flash" hx-swap="innerHTML">删除</button>
-    {% endif %}
-    {% if 'full_delete' in asset.supports_actions %}
-    <button hx-post="/api/assets/{{ asset.object_id }}/actions/full-delete" hx-target="#task-flash" hx-swap="innerHTML">完全删除</button>
-    {% endif %}
-  </div>
-  {% if 'deploy_version' in asset.supports_actions and available_versions %}
-  <form class="inline-form" hx-post="/api/assets/{{ asset.object_id }}/actions/deploy-version" hx-target="#task-flash" hx-swap="innerHTML" method="post">
-    <label>指定版本
-      <select name="version">
-        {% for version in available_versions %}
-        <option value="{{ version }}">{{ version }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <button type="submit">部署版本</button>
-  </form>
-  {% endif %}
-</section>
-{% elif asset.category in ['node', 'python'] and not asset.actionable %}
-<section class="panel action-panel">
-  <h3>操作</h3>
-  <p>当前对象只读：{{ asset.blocked_reason or '策略禁止' }}</p>
-</section>
-{% endif %}
+  </section>
 
-<section class="panel">
-  <h3>详情</h3>
-  {% if asset.category == 'docker' %}
-  <p>生命周期策略：{{ version_info.lifecycle_strategy if version_info and version_info.lifecycle_strategy else asset.metadata.lifecycle_strategy or 'unknown' }}</p>
-  <p>版本来源：{{ version_info.version_source if version_info and version_info.version_source else asset.metadata.version_source or 'unknown' }}</p>
-  <p>当前可部署版本：{{ version_info.current_version if version_info and version_info.current_version else asset.current_version or 'unknown' }}</p>
-  <p>最新可部署版本：{{ version_info.latest_version if version_info and version_info.latest_version else asset.latest_version or 'unknown' }}</p>
-  <p>完整可部署版本：{{ available_versions|join(', ') if available_versions else 'unknown' }}</p>
-  <p>当前版本：{{ asset.current_version or 'unknown' }}</p>
-  <p>项目目录：{{ asset.metadata.project_dir }}</p>
-  <p>Compose 文件：{{ asset.metadata.compose_file }}</p>
-  <p>主容器：{{ asset.primary_container_name or 'none' }}</p>
-  {% if version_info and version_info.runtime %}
-  <p>运行镜像：{{ version_info.runtime.image or 'unknown' }}</p>
-  <p>运行镜像 Tag：{{ version_info.runtime.image_tag or 'unknown' }}</p>
-  <p>OCI Version：{{ version_info.runtime.oci_version or 'unknown' }}</p>
-  <p>OCI Revision：{{ version_info.runtime.oci_revision or 'unknown' }}</p>
-  {% endif %}
-  <h4>容器</h4>
-  <ul class="asset-list compact">
-    {% for container in asset.containers %}
-    <li>
-      <strong>{{ container.name }}</strong>
-      <div>镜像：{{ container.image }}</div>
-      <div>标签：{{ container.image_tag or 'none' }}</div>
-      <div>状态：{{ container.status }}</div>
-      <div>服务：{{ container.compose_service or 'unknown' }}</div>
-    </li>
-    {% else %}
-    <li>当前没有运行中的容器</li>
-    {% endfor %}
-  </ul>
-  {% elif asset.category == 'systemd' %}
-  <p>Unit：{{ asset.metadata.unit_name }}</p>
-  <p>工作目录：{{ asset.metadata.working_dir }}</p>
-  <p>子状态：{{ asset.metadata.sub }}</p>
-  <p>描述：{{ asset.metadata.description or 'none' }}</p>
-  {% elif asset.category in ['node', 'python'] %}
-  <p>当前版本：{{ asset.current_version or 'unknown' }}</p>
-  <p>版本源状态：{{ version_info.source_status if version_info else 'unknown' }}</p>
-  <p>最新版本：{{ version_info.latest_version if version_info and version_info.latest_version else 'unknown' }}</p>
-  {% if version_info and version_info.error %}
-  <p>版本源错误：{{ version_info.error }}</p>
-  {% endif %}
-  <p>来源：{{ asset.metadata.package_manager }}</p>
-  <p>是否可操作：{{ '是' if asset.actionable else '否' }}</p>
-  <p>管理归属：{{ asset.managed_by or 'none' }}</p>
-  <p>阻止原因：{{ asset.blocked_reason or 'none' }}</p>
-  {% elif asset.category == 'host' %}
-  <p>监听地址：{{ asset.metadata.local_address }}:{{ asset.metadata.port }}</p>
-  <p>进程：{{ asset.metadata.process_name or 'unknown' }}</p>
-  <p>PID：{{ asset.metadata.pid or 'unknown' }}</p>
-  {% elif asset.category == 'system' %}
-  <p>当前版本：{{ asset.current_version or 'unknown' }}</p>
-  <p>原始输出：{{ asset.metadata.raw_output or asset.metadata.error or 'none' }}</p>
-  {% endif %}
-</section>
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>仓库与链接</h2>
+        <p>能识别到的 Git、镜像仓库、CF 和 Tailscale 信息。</p>
+      </div>
+    </div>
+    <div class="info-grid">
+      <div><small>Git Remote</small><strong>{{ asset.metadata.git_remote_url or 'unknown' }}</strong></div>
+      <div><small>Git Branch</small><strong>{{ asset.metadata.git_branch or 'unknown' }}</strong></div>
+      <div><small>Docker Image</small><strong>{{ asset.metadata.image_repository or asset.metadata.runtime.image if asset.metadata.runtime else 'unknown' }}</strong></div>
+      <div><small>端口</small><strong>{{ asset.metadata.ports or (asset.metadata.runtime.ports if asset.metadata.runtime else 'unknown') }}</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>项目能力</h2>
+        <p>这里展示当前识别到的能力。操作在分类页批量执行。</p>
+      </div>
+    </div>
+    <div class="capability-grid">
+      {% if asset.metadata.capabilities %}
+      {% for key, capability in asset.metadata.capabilities.items() %}
+      <div class="capability-card {{ 'is-enabled' if capability.enabled else '' }}">
+        <strong>{{ key }}</strong>
+        <small>{{ '已识别' if capability.enabled else '未识别' }}</small>
+        {% if capability.current_url %}<span>{{ capability.current_url }}</span>{% endif %}
+      </div>
+      {% endfor %}
+      {% else %}
+      <div class="capability-card is-enabled"><strong>versioning</strong><small>已识别</small></div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="panel version-panel" data-version-panel data-version-endpoint="/api/assets/{{ asset.object_id }}/versions">
+    <div class="section-heading">
+      <div>
+        <h2>版本</h2>
+        <p>按需加载，避免拖慢首屏。</p>
+      </div>
+      <button class="ghost-button" type="button" data-version-refresh>刷新版本</button>
+    </div>
+    <div class="version-placeholder" data-version-content>正在加载版本信息…</div>
+  </section>
+</div>
 {% endblock %}

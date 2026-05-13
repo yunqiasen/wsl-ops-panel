@@ -78,6 +78,8 @@ def test_protected_pages_render_nav_and_actions(tmp_path: Path) -> None:
 
     overview = client.get('/')
     assert overview.status_code == 200
+    assert 'https://unpkg.com' not in overview.text
+    assert 'data-page="overview"' in overview.text
     assert '总览' in overview.text
     assert 'Node' in overview.text
     assert '任务中心' in overview.text
@@ -85,11 +87,18 @@ def test_protected_pages_render_nav_and_actions(tmp_path: Path) -> None:
     category = client.get('/categories/docker')
     assert category.status_code == 200
     assert 'CPA / CLIProxyAPI' in category.text
+    assert 'asset-board' in category.text
+    assert 'asset-card__title' in category.text
+    assert 'metric-strip' in category.text
+    assert 'path-chip' in category.text
 
     detail = client.get('/assets/cpa')
     assert detail.status_code == 200
-    assert 'hx-post="/api/assets/cpa/actions/update-latest"' in detail.text
-    assert 'hx-post="/api/assets/cpa/actions/full-delete"' in detail.text
+    assert 'https://unpkg.com' not in detail.text
+    assert 'data-version-panel' in detail.text
+    assert 'data-version-endpoint="/api/assets/cpa/versions"' in detail.text
+    assert 'hx-post="/api/assets/cpa/actions/update-latest"' not in detail.text
+    assert '项目能力' in detail.text
 
     tasks_page = client.get('/tasks')
     assert tasks_page.status_code == 200
@@ -113,7 +122,7 @@ def test_settings_reload_registry_picks_up_new_category(tmp_path: Path) -> None:
 
     before = client.get('/settings')
     assert before.status_code == 200
-    assert '分类数：1' in before.text
+    assert '<span>分类数</span><strong>1</strong>' in before.text
 
     _write_registry_file(tmp_path, 'categories', 'node.yaml', 'id: node\nlabel: Node\norder: 30\nenabled: true\n')
     reload_response = client.post('/settings/reload-registry')
@@ -222,17 +231,20 @@ def test_openai_cpa_detail_shows_strategy_and_runtime_versions(tmp_path: Path, m
 
     assert response.status_code == 200
     assert 'compose_local_build_git_tag' in response.text
-    assert '版本来源：git_tags' in response.text
+    assert '<small>版本来源</small><strong>git_tags</strong>' in response.text
     assert 'v14.2.6' in response.text
-    assert 'v14.2.7' in response.text
     assert 'v14.2.6-overlay' in response.text
     assert '14.2.4' in response.text
-    assert 'OCI Revision：ece08961' in response.text
-    assert '完整可部署版本：v14.2.7, v14.2.6' in response.text
-    assert 'value="v14.2.7"' in response.text
-    assert 'value="v14.2.6"' in response.text
+    assert 'ece08961' in response.text
+    assert 'data-version-endpoint="/api/assets/openai_cpa/versions"' in response.text
+    assert '正在加载版本信息…' in response.text
     assert 'value="latest"' not in response.text
     assert 'value="v14.2.6-overlay"' not in response.text
+    assert git_tag_calls == []
+
+    versions_response = client.get('/api/assets/openai_cpa/versions')
+    assert versions_response.status_code == 200
+    assert versions_response.json()['latest_version'] == 'v14.2.7'
     assert git_tag_calls == ['/srv/openai-cpa']
 
 
@@ -292,3 +304,30 @@ def test_app_boots_with_referenced_valid_recipe_and_unreferenced_invalid_recipe(
 
     assert app.state.docker_recipe_service is not None
     assert app.state.docker_recipe_service.require('openai-cpa').repo_dir == '/srv/openai-cpa'
+
+
+def test_category_page_renders_bulk_controls_and_detail_is_read_only(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    _write_registry_file(tmp_path, 'objects', 'cpa.yaml', _docker_object_yaml())
+    containers = parse_docker_ps_lines([_docker_ps_line()])
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=InMemoryTaskStore()))
+    _login(client)
+
+    category = client.get('/categories/docker')
+
+    assert category.status_code == 200
+    assert 'data-bulk-toolbar' in category.text
+    assert 'data-asset-select="cpa"' in category.text
+    assert 'data-card-version-select="cpa"' in category.text
+    assert 'data-bulk-action="update-latest"' in category.text
+    assert 'data-bulk-action="deploy-version"' in category.text
+    assert 'data-bulk-action="cf-refresh"' in category.text
+    assert 'data-bulk-action="notify-send"' in category.text
+
+    detail = client.get('/assets/cpa')
+
+    assert detail.status_code == 200
+    assert 'action-panel' not in detail.text
+    assert 'hx-post="/api/assets/cpa/actions/update-latest"' not in detail.text
+    assert '项目能力' in detail.text
+    assert '仓库与链接' in detail.text
