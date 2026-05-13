@@ -22,6 +22,7 @@ WSL 维护更新管理面板。
 - 应用入口：`app.main:app`
 - Python 要求：`>=3.13`
 - 默认服务地址：`http://127.0.0.1:8328`
+- Tailscale 访问：`http://<Tailscale-IP>:8328`
 
 ## 本地开发
 
@@ -29,7 +30,7 @@ WSL 维护更新管理面板。
 uv venv
 uv sync --extra dev
 . .venv/bin/activate
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8328 --reload
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8328 --reload
 ```
 
 ## 测试

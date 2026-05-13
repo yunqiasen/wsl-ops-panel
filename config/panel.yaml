@@ -1,6 +1,6 @@
 title_cn: "WSL 维护更新管理面板"
 title_en: "WSL Ops Panel"
-host: "127.0.0.1"
+host: "0.0.0.0"
 port: 8328
 auth:
   username: "875133228"

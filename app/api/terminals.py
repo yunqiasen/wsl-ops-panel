@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import suppress
 from pathlib import Path
 
@@ -8,11 +9,12 @@ from fastapi.responses import StreamingResponse
 from app.core.security import is_authenticated_websocket, require_authenticated_request
 from app.models.terminals import DebugTerminalCreateRequest, DebugTerminalSession
 from app.terminals.debug_terminal import DebugTerminalManager
-from app.terminals.system_terminal import iter_sse_events
+from app.terminals.system_terminal import SystemTerminalSink, iter_sse_events
 
 router = APIRouter(prefix='/api/terminals', tags=['terminals'])
 SYSTEM_TERMINAL_LOG_PATH = Path('data/terminals/system.log')
 debug_terminal_manager = DebugTerminalManager()
+system_terminal_sink = SystemTerminalSink(SYSTEM_TERMINAL_LOG_PATH)
 
 
 @router.get('/system/stream')
@@ -46,9 +48,17 @@ def list_debug_terminals(request: Request) -> list[DebugTerminalSession]:
 @router.delete('/debug/{session_id}', status_code=204)
 def delete_debug_terminal(session_id: str, request: Request) -> Response:
     require_authenticated_request(request)
-    if not debug_terminal_manager.close_session(session_id):
+    try:
+        closed = debug_terminal_manager.close_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not closed:
         raise HTTPException(status_code=404, detail='debug terminal session not found')
     return Response(status_code=204)
+
+
+def close_all_terminal_sessions() -> None:
+    debug_terminal_manager.close_all()
 
 
 @router.websocket('/debug/{session_id}/ws')
@@ -71,7 +81,24 @@ async def debug_terminal_ws(websocket: WebSocket, session_id: str) -> None:
         await websocket.close()
         return
 
+    system_log_queue: asyncio.Queue[str | None] | None = None
+    system_log_listener = None
+    if session_id == 'system':
+        system_log_queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def enqueue_system_log(chunk: str) -> None:
+            loop.call_soon_threadsafe(system_log_queue.put_nowait, chunk)
+
+        system_log_listener = enqueue_system_log
+        system_terminal_sink.add_listener(system_log_listener)
+
     sender = asyncio.create_task(_pump_terminal_output(websocket, queue))
+    system_log_sender = (
+        asyncio.create_task(_pump_terminal_output(websocket, system_log_queue))
+        if system_log_queue is not None
+        else None
+    )
 
     try:
         while True:
@@ -82,16 +109,23 @@ async def debug_terminal_ws(websocket: WebSocket, session_id: str) -> None:
                     break
                 continue
             try:
-                runtime.write_input(chunk)
+                if not _handle_terminal_control_message(runtime, chunk):
+                    runtime.write_input(chunk)
             except RuntimeError:
                 break
     except WebSocketDisconnect:
         pass
     finally:
+        if system_log_listener is not None:
+            system_terminal_sink.remove_listener(system_log_listener)
         runtime.unsubscribe(queue)
         sender.cancel()
         with suppress(asyncio.CancelledError):
             await sender
+        if system_log_sender is not None:
+            system_log_sender.cancel()
+            with suppress(asyncio.CancelledError):
+                await system_log_sender
         with suppress(RuntimeError):
             await websocket.close()
 
@@ -102,3 +136,22 @@ async def _pump_terminal_output(websocket: WebSocket, queue: asyncio.Queue[str |
         if chunk is None:
             return
         await websocket.send_text(chunk)
+
+
+def _handle_terminal_control_message(runtime, chunk: str) -> bool:
+    if not chunk.startswith('{'):
+        return False
+
+    try:
+        payload = json.loads(chunk)
+    except json.JSONDecodeError:
+        return False
+
+    if not isinstance(payload, dict) or payload.get('type') != 'resize':
+        return False
+
+    cols = payload.get('cols')
+    rows = payload.get('rows')
+    if isinstance(cols, int) and isinstance(rows, int):
+        runtime.resize(cols=cols, rows=rows)
+    return True

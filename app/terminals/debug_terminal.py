@@ -1,9 +1,12 @@
 import asyncio
+import fcntl
 import json
 import os
 import shutil
 import signal
 import subprocess
+import struct
+import termios
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +18,7 @@ from app.models.terminals import DebugTerminalSession
 
 DEFAULT_DEBUG_TERMINAL_CWD = Path('/home/div/1_Project_dir/AI')
 DEFAULT_DEBUG_TERMINAL_SHELL = '/bin/bash'
+SYSTEM_TERMINAL_ID = 'system'
 
 
 @dataclass(slots=True)
@@ -97,6 +101,18 @@ class _DebugTerminalRuntime:
         with Path(self.session.input_log_path).open('a', encoding='utf-8') as fh:
             fh.write(chunk)
 
+    def resize(self, *, cols: int, rows: int) -> None:
+        master_fd = self._master_fd
+        if master_fd is None:
+            raise RuntimeError('session already closed')
+        if cols < 2 or rows < 1:
+            return
+        size = struct.pack('HHHH', rows, cols, 0, 0)
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, size)
+        if self.process.poll() is None:
+            with suppress(ProcessLookupError):
+                os.killpg(self.process.pid, signal.SIGWINCH)
+
     def close(self) -> None:
         if self.process.poll() is None:
             with suppress(ProcessLookupError):
@@ -135,6 +151,7 @@ class _DebugTerminalRuntime:
 
     def _wait_loop(self) -> None:
         exit_code = self.process.wait()
+        self._reader_thread.join(timeout=1)
         self._finalize(exit_code)
 
     def _finalize(self, exit_code: int | None) -> None:
@@ -194,39 +211,69 @@ class DebugTerminalManager:
         self._lock = Lock()
         self._sessions: dict[str, _DebugTerminalRuntime] = {}
 
+    def ensure_system_session(self) -> DebugTerminalSession:
+        return self._ensure_session(
+            session_id=SYSTEM_TERMINAL_ID,
+            shell=self.default_shell,
+            cwd=str(self.default_cwd),
+        )
+
     def create_session(self, *, shell: str | None = None, cwd: str | None = None) -> DebugTerminalSession:
+        return self._ensure_session(shell=shell, cwd=cwd)
+
+    def _ensure_session(
+        self,
+        *,
+        session_id: str | None = None,
+        shell: str | None = None,
+        cwd: str | None = None,
+    ) -> DebugTerminalSession:
+        if session_id is not None:
+            with self._lock:
+                existing = self._sessions.get(session_id)
+            if existing is not None and not existing.is_closed():
+                return existing.snapshot()
+
         resolved_cwd = self._resolve_cwd(cwd)
         resolved_shell, argv = self._resolve_shell(shell)
-        session_id = uuid4().hex
+        resolved_session_id = session_id or uuid4().hex
         created_at = datetime.now(UTC)
         session = DebugTerminalSession(
-            id=session_id,
+            id=resolved_session_id,
             shell=resolved_shell,
             cwd=str(resolved_cwd),
             status='running',
             created_at=created_at,
-            output_log_path=str(self.base_dir / f'{session_id}.log'),
-            input_log_path=str(self.base_dir / f'{session_id}.input.log'),
-            metadata_path=str(self.base_dir / f'{session_id}.json'),
+            output_log_path=str(self.base_dir / f'{resolved_session_id}.log'),
+            input_log_path=str(self.base_dir / f'{resolved_session_id}.input.log'),
+            metadata_path=str(self.base_dir / f'{resolved_session_id}.json'),
         )
         Path(session.output_log_path).touch()
         Path(session.input_log_path).touch()
 
         runtime = _DebugTerminalRuntime(session, argv=argv)
         with self._lock:
-            self._sessions[session_id] = runtime
+            self._sessions[resolved_session_id] = runtime
         return runtime.snapshot()
 
     def list_sessions(self) -> list[DebugTerminalSession]:
+        self.ensure_system_session()
         with self._lock:
             runtimes = list(self._sessions.values())
-        return [runtime.snapshot() for runtime in runtimes]
+        return sorted(
+            (runtime.snapshot() for runtime in runtimes),
+            key=lambda session: (session.id != SYSTEM_TERMINAL_ID, session.created_at),
+        )
 
     def get_runtime(self, session_id: str) -> _DebugTerminalRuntime | None:
+        if session_id == SYSTEM_TERMINAL_ID:
+            self.ensure_system_session()
         with self._lock:
             return self._sessions.get(session_id)
 
-    def close_session(self, session_id: str) -> bool:
+    def close_session(self, session_id: str, *, force: bool = False) -> bool:
+        if session_id == SYSTEM_TERMINAL_ID and not force:
+            raise ValueError('system terminal cannot be closed')
         with self._lock:
             runtime = self._sessions.pop(session_id, None)
         if runtime is None:
@@ -238,7 +285,7 @@ class DebugTerminalManager:
         with self._lock:
             session_ids = list(self._sessions.keys())
         for session_id in session_ids:
-            self.close_session(session_id)
+            self.close_session(session_id, force=True)
 
     def _resolve_cwd(self, cwd: str | None) -> Path:
         candidate = Path(cwd) if cwd is not None else self.default_cwd

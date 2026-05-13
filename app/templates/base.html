@@ -5,42 +5,43 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{ title }}</title>
     <link rel="stylesheet" href="/static/app.css" />
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    {% block head_extra %}{% endblock %}
+    {% block script_extra %}{% endblock %}
     <script defer src="/static/app.js"></script>
   </head>
-  <body>
-    <div class="layout">
-      <aside class="sidebar">
-        <h1 class="sidebar-title">WSL Ops Panel</h1>
-        <nav>
-          <section>
-            <div class="nav-section-title">资产分类</div>
-            <ul class="nav-list">
-              <li><a class="nav-link{% if active_page == 'overview' %} is-active{% endif %}" href="/">总览</a></li>
-              {% for category in nav_categories %}
-              <li>
-                <a class="nav-link{% if active_page == category.id %} is-active{% endif %}" href="{{ request.url_for('category_page', category_id=category.id) }}">
-                  {{ category.label }}
-                </a>
-              </li>
-              {% endfor %}
-            </ul>
+  <body data-page="{{ active_page or 'page' }}">
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <a class="brand" href="/">
+          <span class="brand-mark">W</span>
+          <span class="brand-copy">
+            <strong>WSL Ops</strong>
+            <small>维护更新管理面板</small>
+          </span>
+        </a>
+        <nav class="nav-stack">
+          <section class="nav-group">
+            <div class="nav-label">资产分类</div>
+            <a class="nav-item{% if active_page == 'overview' %} is-active{% endif %}" href="/">
+              <span>总览</span>
+            </a>
+            {% for category in nav_categories %}
+            <a class="nav-item{% if active_page == category.id %} is-active{% endif %}" href="{{ request.url_for('category_page', category_id=category.id) }}">
+              <span>{{ category.label }}</span>
+            </a>
+            {% endfor %}
           </section>
-          <section>
-            <div class="nav-section-title">中心页面</div>
-            <ul class="nav-list">
-              {% for page in fixed_pages %}
-              <li>
-                <a class="nav-link{% if active_page == page.id %} is-active{% endif %}" href="{{ request.url_for(page.route_name) }}">
-                  {{ page.label }}
-                </a>
-              </li>
-              {% endfor %}
-            </ul>
+          <section class="nav-group">
+            <div class="nav-label">控制中心</div>
+            {% for page in fixed_pages %}
+            <a class="nav-item{% if active_page == page.id %} is-active{% endif %}" href="{{ request.url_for(page.route_name) }}">
+              <span>{{ page.label }}</span>
+            </a>
+            {% endfor %}
           </section>
         </nav>
       </aside>
-      <main class="content">
+      <main class="main-shell">
         {% block content %}{% endblock %}
       </main>
     </div>

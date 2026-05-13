@@ -11,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.core.security import COOKIE_NAME, issue_session_token
 from app.main import create_app
 from app.terminals.debug_terminal import DebugTerminalManager
+from app.terminals.system_terminal import SystemTerminalSink
 
 
 DEFAULT_CWD = '/home/div/1_Project_dir/AI'
@@ -86,17 +87,99 @@ def test_create_list_and_delete_debug_terminal_session(tmp_path: Path, monkeypat
     list_response = client.get('/api/terminals/debug')
 
     assert list_response.status_code == 200
-    assert [item['id'] for item in list_response.json()] == [session_id]
+    assert [item['id'] for item in list_response.json()] == ['system', session_id]
 
     delete_response = client.delete(f'/api/terminals/debug/{session_id}')
 
     assert delete_response.status_code == 204
-    assert client.get('/api/terminals/debug').json() == []
+    assert [item['id'] for item in client.get('/api/terminals/debug').json()] == ['system']
 
     metadata_path = Path(payload['metadata_path'])
     metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
     assert metadata['status'] == 'closed'
     assert metadata['closed_at'] is not None
+
+
+def test_system_terminal_session_is_default_bash_and_cannot_be_deleted(tmp_path: Path, monkeypatch) -> None:
+    from app.api import terminals as terminals_api
+
+    manager = make_manager(tmp_path)
+    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+
+    client = TestClient(create_app())
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    response = client.get('/api/terminals/debug')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]['id'] == 'system'
+    assert payload[0]['shell'] == '/bin/bash'
+    assert payload[0]['status'] == 'running'
+
+    delete_response = client.delete('/api/terminals/debug/system')
+
+    assert delete_response.status_code == 400
+    assert delete_response.json()['detail'] == 'system terminal cannot be closed'
+
+
+def test_system_terminal_websocket_executes_command(tmp_path: Path, monkeypatch) -> None:
+    from app.api import terminals as terminals_api
+
+    manager = make_manager(tmp_path)
+    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+
+    client = TestClient(create_app())
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    with client.websocket_connect('/api/terminals/debug/system/ws') as websocket:
+        websocket.send_text(f'printf "{MARKER}\\n"\n')
+        output = receive_until_marker(websocket, MARKER)
+
+    assert MARKER in output
+
+
+def test_terminal_websocket_resize_message_is_not_written_to_shell_input(tmp_path: Path, monkeypatch) -> None:
+    from app.api import terminals as terminals_api
+
+    manager = make_manager(tmp_path)
+    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+
+    client = TestClient(create_app())
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+    create_response = client.post('/api/terminals/debug', json={})
+    session = create_response.json()
+    session_id = session['id']
+
+    with client.websocket_connect(f'/api/terminals/debug/{session_id}/ws') as websocket:
+        websocket.send_text('{"type":"resize","cols":120,"rows":36}')
+        websocket.send_text(f'printf "{MARKER}\\n"\n')
+        output = receive_until_marker(websocket, MARKER)
+
+    assert MARKER in output
+    assert 'resize' not in Path(session['input_log_path']).read_text(encoding='utf-8')
+
+    delete_response = client.delete(f'/api/terminals/debug/{session_id}')
+    assert delete_response.status_code == 204
+
+
+def test_system_terminal_websocket_receives_task_log_chunks(tmp_path: Path, monkeypatch) -> None:
+    from app.api import terminals as terminals_api
+
+    manager = make_manager(tmp_path)
+    sink = SystemTerminalSink(tmp_path / 'system.log')
+    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+    monkeypatch.setattr(terminals_api, 'system_terminal_sink', sink)
+
+    client = TestClient(create_app())
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    with client.websocket_connect('/api/terminals/debug/system/ws') as websocket:
+        sink.write(f'{MARKER}\n')
+        output = receive_until_marker(websocket, MARKER)
+
+    assert MARKER in output
 
 
 def test_debug_terminal_websocket_executes_command_and_persists_logs(tmp_path: Path, monkeypatch) -> None:

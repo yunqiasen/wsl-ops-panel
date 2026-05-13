@@ -1,18 +1,43 @@
 {% extends "base.html" %}
+{% block head_extra %}
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css" />
+{% endblock %}
+{% block script_extra %}
+<script defer src="/static/vendor/xterm/xterm.js"></script>
+<script defer src="/static/vendor/xterm/addon-fit.js"></script>
+{% endblock %}
 {% block content %}
-<section class="page-header">
-  <h2>终端中心</h2>
-</section>
-<section class="panel">
-  <h3>System Terminal</h3>
-  <pre id="system-terminal" aria-label="system terminal" class="log-box"></pre>
+<section class="page-hero terminal-hero">
+  <div>
+    <p class="eyebrow">Terminal</p>
+    <h1>终端工作台</h1>
+    <p>真实 PTY 终端。系统 bash 常驻，任务日志会进入这里。</p>
+  </div>
 </section>
 
-<section class="panel">
-  <div class="section-row">
-    <h3>Debug Terminals</h3>
-    <button id="create-debug-terminal" type="button">+</button>
+<section class="terminal-workbench" data-terminal-workbench>
+  <div class="terminal-main">
+    <div class="terminal-toolbar">
+      <div>
+        <h2>系统终端</h2>
+        <p>支持 ANSI、光标、复制粘贴和多实例。</p>
+      </div>
+      <button class="primary-button terminal-create" id="create-debug-terminal" type="button" aria-label="新建终端">+ 新终端</button>
+    </div>
+    <div id="terminal-viewports" class="terminal-viewports">
+      <section class="terminal-pane is-active" data-terminal-pane data-terminal-id="system">
+        <div class="terminal-screen" data-terminal-screen aria-label="system terminal"></div>
+      </section>
+    </div>
   </div>
-  <div id="debug-terminals"></div>
+  <aside class="terminal-sidebar">
+    <div class="terminal-sidebar-title">会话</div>
+    <div id="debug-terminals" class="terminal-tabs">
+      <button class="terminal-tab is-active" type="button" data-terminal-tab data-terminal-id="system">
+        <span class="terminal-tab-icon">▸</span>
+        <span class="terminal-tab-title">系统 bash</span>
+      </button>
+    </div>
+  </aside>
 </section>
 {% endblock %}

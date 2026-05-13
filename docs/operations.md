@@ -15,6 +15,7 @@ bash scripts/install_systemd_service.sh
 默认监听：
 
 - `127.0.0.1:8328`
+- `http://<Tailscale-IP>:8328`
 
 ### 1.2 检查服务状态
 
@@ -120,7 +121,7 @@ ruff check
 ### 4.3 本地开发启动
 
 ```bash
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8328 --reload
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8328 --reload
 ```
 
 ## 5. 重要路径

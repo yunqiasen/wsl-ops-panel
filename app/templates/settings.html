@@ -1,16 +1,30 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-header">
-  <h2>设置</h2>
+<section class="page-hero">
+  <div>
+    <p class="eyebrow">Settings</p>
+    <h1>设置</h1>
+    <p>重载注册表和查看当前配置摘要。</p>
+  </div>
 </section>
+
 <div id="settings-flash">
   {% if reload_message %}
   <div class="flash flash-success">{{ reload_message }}</div>
   {% endif %}
 </div>
+
 <section class="panel">
-  <p>分类数：{{ registry_snapshot.categories|length }}</p>
-  <p>对象数：{{ registry_snapshot.objects|length }}</p>
-  <button hx-post="/settings/reload-registry" hx-target="#settings-flash" hx-swap="innerHTML">重载注册表</button>
+  <div class="section-heading">
+    <div>
+      <h2>注册表</h2>
+      <p>分类和对象来自 config 目录。</p>
+    </div>
+    <button class="primary-button" hx-post="/settings/reload-registry" hx-target="#settings-flash" hx-swap="innerHTML">重载注册表</button>
+  </div>
+  <div class="dashboard-grid compact-dashboard">
+    <article class="stat-card"><span>分类数</span><strong>{{ registry_snapshot.categories|length }}</strong></article>
+    <article class="stat-card"><span>对象数</span><strong>{{ registry_snapshot.objects|length }}</strong></article>
+  </div>
 </section>
 {% endblock %}

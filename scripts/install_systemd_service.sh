@@ -30,7 +30,7 @@ Type=simple
 User=div
 Environment=PATH=$SERVICE_PATH
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$UVICORN_BIN app.main:app --host 127.0.0.1 --port 8328
+ExecStart=$UVICORN_BIN app.main:app --host 0.0.0.0 --port 8328
 Restart=on-failure
 RestartSec=3
 

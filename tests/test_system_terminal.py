@@ -33,6 +33,17 @@ def test_system_terminal_sink_is_append_only(tmp_path: Path) -> None:
     assert (tmp_path / 'system.log').read_text(encoding='utf-8') == 'hello\nworld\n'
 
 
+def test_system_terminal_sink_notifies_listeners_after_persisting(tmp_path: Path) -> None:
+    received: list[str] = []
+    sink = SystemTerminalSink(tmp_path / 'system.log')
+    sink.add_listener(received.append)
+
+    sink.write('hello from task\n')
+
+    assert (tmp_path / 'system.log').read_text(encoding='utf-8') == 'hello from task\n'
+    assert received == ['hello from task\n']
+
+
 def test_terminals_page_renders_template() -> None:
     client = TestClient(create_app())
     client.cookies.set(COOKIE_NAME, issue_session_token())
@@ -40,7 +51,15 @@ def test_terminals_page_renders_template() -> None:
     response = client.get('/terminals')
 
     assert response.status_code == 200
-    assert 'System Terminal' in response.text
+    assert '终端工作台' in response.text
+    assert '/static/vendor/xterm/xterm.css' in response.text
+    assert '/static/vendor/xterm/xterm.js' in response.text
+    assert '/static/vendor/xterm/addon-fit.js' in response.text
+    assert 'data-terminal-workbench' in response.text
+    assert 'data-terminal-id="system"' in response.text
+    assert 'data-terminal-screen' in response.text
+    assert '<pre class="terminal-screen"' not in response.text
+    assert 'data-terminal-close' not in response.text
 
 
 def test_system_terminal_stream_route_returns_sse_content(tmp_path: Path, monkeypatch) -> None:

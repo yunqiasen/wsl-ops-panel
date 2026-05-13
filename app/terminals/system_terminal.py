@@ -1,18 +1,48 @@
 import json
 from collections.abc import Iterator
+from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 from time import sleep
 
 
 class SystemTerminalSink:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._lock = Lock()
+        self._listener_lock = Lock()
+        self._listeners: list[Callable[[str], None]] = []
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
 
     def write(self, chunk: str) -> None:
-        with self.path.open('a', encoding='utf-8') as fh:
-            fh.write(chunk)
+        with self._lock:
+            with self.path.open('a', encoding='utf-8') as fh:
+                fh.write(chunk)
+        self._notify(chunk)
+
+    def add_listener(self, listener: Callable[[str], None]) -> None:
+        with self._listener_lock:
+            self._listeners.append(listener)
+
+    def remove_listener(self, listener: Callable[[str], None]) -> None:
+        with self._listener_lock:
+            self._listeners = [item for item in self._listeners if item is not listener]
+
+    def _notify(self, chunk: str) -> None:
+        with self._listener_lock:
+            listeners = list(self._listeners)
+
+        stale: list[Callable[[str], None]] = []
+        for listener in listeners:
+            try:
+                listener(chunk)
+            except RuntimeError:
+                stale.append(listener)
+
+        if stale:
+            with self._listener_lock:
+                self._listeners = [item for item in self._listeners if item not in stale]
 
 
 def _parse_last_event_id(last_event_id: str | None) -> int:

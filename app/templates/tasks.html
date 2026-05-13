@@ -1,21 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-header">
-  <h2>任务中心</h2>
+<section class="page-hero">
+  <div>
+    <p class="eyebrow">Queue</p>
+    <h1>任务中心</h1>
+    <p>更新、回退、删除等动作都会在这里留痕。</p>
+  </div>
 </section>
+
 <section class="panel">
-  <ul class="asset-list compact">
+  <div class="section-heading">
+    <div>
+      <h2>任务记录</h2>
+      <p>最新任务排在最上面。</p>
+    </div>
+  </div>
+  <div class="table-list">
     {% for task in tasks %}
-    <li>
-      <strong>{{ task.object_id }}</strong>
-      <div>动作：{{ task.action }}</div>
-      <div>状态：{{ task.status }}</div>
-      <div>版本：{{ task.requested_version or 'none' }}</div>
-      <div>任务 ID：{{ task.id }}</div>
-    </li>
+    <article class="list-row stacked">
+      <span>
+        <strong>{{ task.object_id }}</strong>
+        <small>{{ task.action }} · {{ task.id }}</small>
+      </span>
+      <span class="status-pill status-{{ 'ok' if task.status == 'success' else 'muted' }}">{{ task.status }}</span>
+      <span class="muted">版本：{{ task.requested_version or 'none' }}</span>
+    </article>
     {% else %}
-    <li>暂无任务</li>
+    <div class="empty-state">暂无任务</div>
     {% endfor %}
-  </ul>
+  </div>
 </section>
 {% endblock %}

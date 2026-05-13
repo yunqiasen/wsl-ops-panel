@@ -1,37 +1,75 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-header">
+<section class="page-hero">
   <div>
-    <h2>总览</h2>
-    <p>分类数：{{ all_categories|length }} · 任务数：{{ task_count }}</p>
+    <p class="eyebrow">Workspace</p>
+    <h1>总览</h1>
+    <p>集中查看 WSL 资产、任务队列和维护入口。</p>
+  </div>
+  <div class="hero-actions">
+    <a class="ghost-button" href="{{ request.url_for('tasks_page') }}">任务中心</a>
+    <a class="primary-button" href="{{ request.url_for('terminals_page') }}">打开终端</a>
   </div>
 </section>
 
-<section class="card-grid">
-  {% for category in all_categories %}
-  <article class="card">
-    <h3><a href="{{ request.url_for('category_page', category_id=category.id) }}">{{ category.label }}</a></h3>
-    <p>{{ category.description or '暂无说明' }}</p>
-    {% if selected_category and category.id == selected_category.id %}
-    <p>当前展示 {{ assets|length }} 个资产</p>
-    {% endif %}
+<section class="dashboard-grid">
+  <article class="stat-card">
+    <span>分类</span>
+    <strong>{{ all_categories|length }}</strong>
+    <small>已启用分类</small>
   </article>
-  {% endfor %}
+  <article class="stat-card">
+    <span>任务</span>
+    <strong>{{ task_count }}</strong>
+    <small>历史任务记录</small>
+  </article>
+  <article class="stat-card">
+    <span>预览</span>
+    <strong>{{ assets|length if assets else 0 }}</strong>
+    <small>{{ selected_category.label if selected_category else '暂无分类' }}</small>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="section-heading">
+    <div>
+      <h2>分类入口</h2>
+      <p>按 Docker、systemd、Node、Python 等分类维护。</p>
+    </div>
+  </div>
+  <div class="category-grid">
+    {% for category in all_categories %}
+    <a class="category-card" href="{{ request.url_for('category_page', category_id=category.id) }}">
+      <span class="category-card__badge">{{ loop.index }}</span>
+      <strong>{{ category.label }}</strong>
+      <small>{{ category.description or '暂无说明' }}</small>
+    </a>
+    {% endfor %}
+  </div>
 </section>
 
 {% if selected_category %}
 <section class="panel">
-  <h3>{{ selected_category.label }} 预览</h3>
-  <ul class="asset-list compact">
+  <div class="section-heading">
+    <div>
+      <h2>{{ selected_category.label }} 预览</h2>
+      <p>当前展示 {{ assets|length }} 个资产。</p>
+    </div>
+    <a class="ghost-button" href="{{ request.url_for('category_page', category_id=selected_category.id) }}">查看全部</a>
+  </div>
+  <div class="table-list compact-list">
     {% for asset in assets %}
-    <li>
-      <a href="{{ request.url_for('asset_detail', object_id=asset.object_id) }}">{{ asset.name }}</a>
-      <span class="muted">{{ asset.status }}</span>
-    </li>
+    <a class="list-row" href="{{ request.url_for('asset_detail', object_id=asset.object_id) }}">
+      <span>
+        <strong>{{ asset.name }}</strong>
+        <small>{{ asset.object_id }}</small>
+      </span>
+      <span class="status-pill status-{{ 'ok' if asset.status in ['running', 'active'] else 'muted' }}">{{ asset.status }}</span>
+    </a>
     {% else %}
-    <li>当前分类暂无资产</li>
+    <div class="empty-state">当前分类暂无资产</div>
     {% endfor %}
-  </ul>
+  </div>
 </section>
 {% endif %}
 {% endblock %}

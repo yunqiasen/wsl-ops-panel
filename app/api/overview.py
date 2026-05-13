@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from app.api.assets import get_page_asset, get_page_asset_version_info, get_page_asset_versions
+from app.api.assets import get_page_asset
 from app.core.ui import TEMPLATES, build_page_context, page_login_redirect
 
 router = APIRouter(tags=['overview'])
@@ -56,15 +56,11 @@ def asset_detail_page(object_id: str, request: Request) -> HTMLResponse:
         return redirect
 
     asset = get_page_asset(request, object_id)
-    available_versions = get_page_asset_versions(request, object_id, asset)
-    version_info = get_page_asset_version_info(request, object_id, asset)
     context = build_page_context(
         request,
         title=asset.name,
         active_page=asset.category,
         asset=asset,
-        available_versions=available_versions,
-        version_info=version_info,
     )
     return TEMPLATES.TemplateResponse(request, 'asset_detail.html', context)
 
