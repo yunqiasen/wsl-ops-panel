@@ -82,7 +82,7 @@ def get_asset_versions(object_id: str, request: Request) -> AssetVersionsRespons
 
 @router.post('/{object_id}/actions/update-latest', status_code=202, response_model=AssetActionResponse)
 def queue_update_latest(object_id: str, request: Request):
-    return _queue_action(request, object_id, action='update_latest')
+    return enqueue_asset_action(request, object_id, action='update_latest')
 
 
 @router.post('/{object_id}/actions/deploy-version', status_code=202, response_model=AssetActionResponse)
@@ -90,12 +90,12 @@ async def queue_deploy_version(object_id: str, request: Request):
     resolved_version = await _extract_requested_version(request)
     if not resolved_version:
         raise HTTPException(status_code=400, detail='version is required')
-    return _queue_action(request, object_id, action='deploy_version', version=resolved_version)
+    return enqueue_asset_action(request, object_id, action='deploy_version', version=resolved_version)
 
 
 @router.post('/{object_id}/actions/delete', status_code=202, response_model=AssetActionResponse)
 def queue_delete(object_id: str, request: Request):
-    return _queue_action(request, object_id, action='delete')
+    return enqueue_asset_action(request, object_id, action='delete')
 
 
 @router.get('/{object_id}/actions/full-delete-preview', response_model=ActionPlan)
@@ -110,7 +110,7 @@ def full_delete_preview(object_id: str, request: Request) -> ActionPlan:
 
 @router.post('/{object_id}/actions/full-delete', status_code=202, response_model=AssetActionResponse)
 def queue_full_delete(object_id: str, request: Request):
-    return _queue_action(request, object_id, action='full_delete')
+    return enqueue_asset_action(request, object_id, action='full_delete')
 
 
 def get_page_asset(request: Request, object_id: str) -> AssetSnapshot:
@@ -145,6 +145,9 @@ def _get_asset_version_info_from_snapshot(asset: AssetSnapshot) -> PackageVersio
     available_versions = asset.metadata.get('available_versions')
     if not isinstance(available_versions, list):
         return None
+    source_status = str(asset.metadata.get('source_status') or asset.metadata.get('version_source_status') or 'ok')
+    if source_status == 'deferred':
+        return None
 
     runtime = _runtime_from_asset_metadata(asset)
     managed_services = asset.metadata.get('managed_services', [])
@@ -153,7 +156,7 @@ def _get_asset_version_info_from_snapshot(asset: AssetSnapshot) -> PackageVersio
         current_version=asset.current_version,
         latest_version=asset.latest_version,
         versions=[version for version in available_versions if isinstance(version, str)],
-        source_status=str(asset.metadata.get('source_status') or asset.metadata.get('version_source_status') or 'ok'),
+        source_status=source_status,
         error=asset.metadata.get('error') if isinstance(asset.metadata.get('error'), str) else None,
         lifecycle_strategy=asset.metadata.get('lifecycle_strategy')
         if isinstance(asset.metadata.get('lifecycle_strategy'), str)
@@ -203,7 +206,7 @@ async def _extract_requested_version(request: Request) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _queue_action(request: Request, object_id: str, *, action: str, version: str | None = None):
+def enqueue_asset_action(request: Request, object_id: str, *, action: str, version: str | None = None):
     asset = _get_asset(request, object_id)
     adapter = _build_adapter(request, object_id, asset)
     try:
@@ -250,7 +253,11 @@ def _build_adapter(request: Request, object_id: str, asset: AssetSnapshot) -> Ac
             current_version=asset.current_version,
             full_delete_paths=list(asset.metadata.get('full_delete_paths', [])),
         )
-    obj = _get_registry_object(request, object_id)
+    obj = _get_registry_object(request, object_id, required=False)
+    if asset.category == 'docker' and obj is None:
+        return _build_discovered_docker_adapter(request, asset)
+    if obj is None:
+        raise HTTPException(status_code=400, detail=f'unsupported discovered asset: {asset.category}')
     if obj.type == 'docker_compose':
         return _build_docker_adapter(request, obj, asset)
     if obj.type == 'systemd_unit':
@@ -307,9 +314,38 @@ def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetS
     )
 
 
-def _get_registry_object(request: Request, object_id: str) -> ObjectDefinition:
+def _build_discovered_docker_adapter(request: Request, asset: AssetSnapshot) -> DockerComposeAdapter:
+    primary_container = next((item for item in asset.containers if item.name == asset.primary_container_name), None)
+    compose_service = str(asset.metadata.get('compose_service') or (primary_container.compose_service if primary_container else '')).strip()
+    if not compose_service:
+        raise HTTPException(status_code=400, detail='compose_service is required for docker actions')
+    project_dir = str(asset.metadata.get('project_dir') or '')
+    compose_file = str(asset.metadata.get('compose_file') or 'docker-compose.yml')
+    if not project_dir:
+        raise HTTPException(status_code=400, detail='project_dir is required for docker actions')
+    image_repository = asset.metadata.get('image_repository')
+    if not isinstance(image_repository, str):
+        image_repository = parse_image_repository(primary_container.image if primary_container else None)
+    docker_version_service = getattr(request.app.state, 'docker_version_service', None)
+    runtime = docker_version_service.build_runtime_version_info(primary_container) if docker_version_service else None
+    return DockerComposeAdapter(
+        project_dir=project_dir,
+        compose_file=compose_file,
+        primary_container=asset.primary_container_name or compose_service,
+        compose_service=compose_service,
+        image_repository=image_repository,
+        current_version=asset.current_version,
+        lifecycle_strategy=str(asset.metadata.get('lifecycle_strategy') or 'compose_pull'),
+        runtime=runtime,
+        version_service=docker_version_service,
+    )
+
+
+def _get_registry_object(request: Request, object_id: str, *, required: bool = True) -> ObjectDefinition | None:
     snapshot = request.app.state.registry_service.snapshot
     for obj in snapshot.objects:
         if obj.id == object_id:
             return obj
-    raise HTTPException(status_code=404, detail='asset not found')
+    if required:
+        raise HTTPException(status_code=404, detail='asset not found')
+    return None

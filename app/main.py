@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.assets import router as assets_router
 from app.api.auth import router as auth_router
+from app.api.bulk_actions import router as bulk_actions_router
 from app.api.overview import router as overview_router
 from app.api.settings import router as settings_router
 from app.api.tasks import router as tasks_router
@@ -50,6 +51,7 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title='WSL Ops Panel', lifespan=lifespan)
     app.include_router(auth_router)
+    app.include_router(bulk_actions_router)
     app.include_router(overview_router)
     app.include_router(tasks_router)
     app.include_router(settings_router)

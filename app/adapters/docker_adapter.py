@@ -9,7 +9,20 @@ from app.adapters.base import ActionPlan
 from app.models.assets import PackageVersionInfo, RuntimeVersionInfo
 from app.services.docker_versions import DockerVersionService
 
-DockerAction = Literal['update_latest', 'deploy_version', 'delete', 'full_delete']
+DockerAction = Literal[
+    'update_latest',
+    'deploy_version',
+    'delete',
+    'full_delete',
+    'start',
+    'stop',
+    'autostart_enable',
+    'autostart_disable',
+    'cf_create',
+    'cf_refresh',
+    'cf_disable',
+    'notify_send',
+]
 _OVERRIDE_FILE = '.wsl-ops-panel.override.yml'
 _OVERRIDE_WRITER = (
     'from pathlib import Path; import sys; '
@@ -82,6 +95,61 @@ class DockerComposeAdapter:
             return self._plan_compose_local_build_git_tag(action, version)
         raise ValueError(f'unsupported lifecycle strategy: {self.lifecycle_strategy}')
 
+
+    def _plan_common_action(self, action: DockerAction) -> ActionPlan | None:
+        if action == 'start':
+            return ActionPlan(
+                commands=[['docker', 'compose', '-f', self.compose_file, 'up', '-d', self.compose_service]],
+                working_dir=self.project_dir,
+                preview_objects=[self.compose_service],
+            )
+        if action == 'stop':
+            return ActionPlan(
+                commands=[['docker', 'compose', '-f', self.compose_file, 'stop', self.compose_service]],
+                working_dir=self.project_dir,
+                preview_objects=[self.compose_service],
+            )
+        if action == 'autostart_enable':
+            return ActionPlan(
+                commands=[['docker', 'update', '--restart', 'unless-stopped', self.primary_container]],
+                preview_objects=[self.primary_container, 'unless-stopped'],
+            )
+        if action == 'autostart_disable':
+            return ActionPlan(
+                commands=[['docker', 'update', '--restart', 'no', self.primary_container]],
+                preview_objects=[self.primary_container, 'no'],
+            )
+        if action in {'cf_create', 'cf_refresh'}:
+            unit_name = _guess_cftunnel_unit(self.project_dir)
+            if unit_name:
+                return ActionPlan(
+                    commands=[['sudo', 'systemctl', 'restart', unit_name]],
+                    requires_sudo=True,
+                    preview_objects=[unit_name],
+                )
+            script_path = str(Path(self.project_dir) / 'scripts' / 'cftunnel-start.sh')
+            return ActionPlan(
+                commands=[['bash', script_path]],
+                working_dir=self.project_dir,
+                preview_paths=[script_path],
+            )
+        if action == 'cf_disable':
+            unit_name = _guess_cftunnel_unit(self.project_dir)
+            if not unit_name:
+                raise ValueError('cf_disable requires a detected cftunnel systemd unit')
+            return ActionPlan(
+                commands=[['sudo', 'systemctl', 'disable', '--now', unit_name]],
+                requires_sudo=True,
+                preview_objects=[unit_name],
+            )
+        if action == 'notify_send':
+            return ActionPlan(
+                commands=[['sudo', 'systemctl', 'restart', 'startup-notify.service']],
+                requires_sudo=True,
+                preview_objects=['startup-notify.service'],
+            )
+        return None
+
     def get_version_info(self) -> PackageVersionInfo:
         if self.lifecycle_strategy == 'compose_local_build_git_tag':
             if not self.recipe_repo_dir:
@@ -115,6 +183,10 @@ class DockerComposeAdapter:
         )
 
     def _plan_compose_pull(self, action: DockerAction, version: str | None) -> ActionPlan:
+        common_plan = self._plan_common_action(action)
+        if common_plan is not None:
+            return common_plan
+
         if action == 'update_latest':
             return ActionPlan(
                 commands=[
@@ -171,6 +243,9 @@ class DockerComposeAdapter:
         raise ValueError(f'unsupported docker action: {action}')
 
     def _plan_compose_local_build_git_tag(self, action: DockerAction, version: str | None) -> ActionPlan:
+        common_plan = self._plan_common_action(action)
+        if common_plan is not None:
+            return common_plan
         if action in {'delete', 'full_delete'}:
             return self._plan_compose_pull(action, version)
         if action == 'update_latest':
@@ -316,3 +391,22 @@ def _unique_preserving_order(items: list[str]) -> list[str]:
         seen.add(item)
         ordered.append(item)
     return ordered
+
+
+def _guess_cftunnel_unit(project_dir: str) -> str | None:
+    name = Path(project_dir).name
+    candidates = [
+        f'{name}-cftunnel.service',
+        f'{name.replace("_", "-")}-cftunnel.service',
+    ]
+    aliases = {
+        'CLIProxyAPI': 'cftunnel.service',
+        'new-api': 'newapi-cftunnel.service',
+        'searxng-mcp': 'searxng-cftunnel.service',
+    }
+    if name in aliases:
+        candidates.insert(0, aliases[name])
+    for candidate in candidates:
+        if Path('/etc/systemd/system', candidate).exists():
+            return candidate
+    return None
