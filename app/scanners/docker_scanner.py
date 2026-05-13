@@ -48,7 +48,7 @@ def scan_docker_containers(*, runner: DockerCommandRunner | None = None) -> list
 
 def _run_docker_ps() -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ['docker', 'ps', '--format', '{{json .}}'],
+        ['docker', 'ps', '-a', '--format', '{{json .}}'],
         check=True,
         capture_output=True,
         text=True,

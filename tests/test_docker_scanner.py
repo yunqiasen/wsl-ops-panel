@@ -189,7 +189,7 @@ def test_build_docker_asset_snapshots_groups_registry_objects_instead_of_raw_con
 
     assets = build_docker_asset_snapshots(_make_registry_snapshot(), containers)
 
-    assert [asset.object_id for asset in assets] == ['cpa', 'new_api', 'idle']
+    assert [asset.object_id for asset in assets] == ['cpa', 'new_api', 'idle', 'docker__other']
 
     cpa_asset = assets[0]
     assert [container.name for container in cpa_asset.containers] == ['cpa-api', 'cpa-worker']
@@ -204,6 +204,10 @@ def test_build_docker_asset_snapshots_groups_registry_objects_instead_of_raw_con
     idle_asset = assets[2]
     assert idle_asset.containers == []
     assert idle_asset.status == 'not running'
+
+    discovered_asset = assets[3]
+    assert discovered_asset.metadata['discovery_source'] == 'runtime_discovered'
+    assert discovered_asset.primary_container_name == 'untracked'
 
 
 def test_build_docker_asset_snapshots_attach_strategy_and_recipe_metadata() -> None:
@@ -415,7 +419,139 @@ def test_category_route_shows_docker_strategy_and_latest_version(tmp_path: Path,
     assert 'openai-cpa' in response.text
     assert '/assets/openai_cpa' in response.text
     assert 'compose_local_build_git_tag' in response.text
-    assert '版本源：git_tags' in response.text
-    assert 'Git 当前：v14.2.6' in response.text
-    assert 'Git 最新：v14.2.7' in response.text
-    assert '运行镜像：v14.2.6-overlay' in response.text
+    assert 'openai-cpa' in response.text
+    assert 'compose_local_build_git_tag' in response.text
+    assert 'git_tags' in response.text
+    assert 'v14.2.6-overlay' in response.text
+
+
+def test_category_route_skips_registry_lookup_for_docker_list_page(tmp_path: Path, monkeypatch) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'cpa.yaml',
+        _docker_object_yaml(
+            object_id='cpa',
+            name='CPA / CLIProxyAPI',
+            project_dir='/srv/cpa',
+            primary_container='cli-proxy-api',
+        ),
+    )
+
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+    from app.services.docker_versions import DockerVersionService
+
+    def _fail_registry_lookup(self, image_repository: str, current_version: str | None = None, *, fetcher=None):
+        raise AssertionError('docker category page should not hit registry tag lookup')
+
+    monkeypatch.setattr(DockerVersionService, 'get_registry_tag_version_info', _fail_registry_lookup)
+
+    containers = parse_docker_ps_lines(
+        [
+            _docker_ps_line(
+                container_id='abc123',
+                name='cli-proxy-api',
+                image='eceasy/cli-proxy-api:latest',
+                working_dir='/srv/cpa',
+                status='Up 3 days',
+                service='cli-proxy-api',
+            )
+        ]
+    )
+
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers))
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    response = client.get('/categories/docker')
+
+    assert response.status_code == 200
+    assert 'CPA / CLIProxyAPI' in response.text
+    assert 'deferred' in response.text
+
+
+def test_build_docker_asset_snapshots_adds_runtime_discovered_projects(tmp_path: Path) -> None:
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+    from app.services.assets import build_docker_asset_snapshots
+
+    repo_dir = tmp_path / 'discovered-app'
+    repo_dir.mkdir()
+    (repo_dir / 'docker-compose.yml').write_text('services:\n  web:\n    image: ghcr.io/example/discovered:v1\n', encoding='utf-8')
+    (repo_dir / '.git').mkdir()
+    (repo_dir / '.git' / 'HEAD').write_text('ref: refs/heads/main\n', encoding='utf-8')
+    (repo_dir / '.git' / 'config').write_text(
+        '[remote "origin"]\n\turl = https://github.com/example/discovered.git\n',
+        encoding='utf-8',
+    )
+    head_ref = repo_dir / '.git' / 'refs' / 'heads'
+    head_ref.mkdir(parents=True)
+    (head_ref / 'main').write_text('abcdef1234567890\n', encoding='utf-8')
+
+    registered_dir = tmp_path / 'registered'
+    registered_dir.mkdir()
+    containers = parse_docker_ps_lines(
+        [
+            _docker_ps_line(
+                container_id='1',
+                name='registered-api',
+                image='example/registered:latest',
+                working_dir=str(registered_dir),
+                status='Up 1 hour',
+                service='api',
+            ),
+            _docker_ps_line(
+                container_id='2',
+                name='discovered-web',
+                image='ghcr.io/example/discovered:v1',
+                working_dir=str(repo_dir),
+                status='Up 2 hours',
+                service='web',
+            ),
+        ]
+    )
+    registry_snapshot = RegistrySnapshot(
+        categories=[CategoryDefinition(id='docker', label='Docker', order=10)],
+        objects=[
+            ObjectDefinition(
+                id='registered',
+                category='docker',
+                type='docker_compose',
+                name='Registered',
+                config={
+                    'project_dir': str(registered_dir),
+                    'compose_file': 'docker-compose.yml',
+                    'compose_service': 'api',
+                },
+            )
+        ],
+    )
+
+    assets = build_docker_asset_snapshots(registry_snapshot, containers, resolve_remote_versions=False)
+
+    assert [asset.object_id for asset in assets] == ['registered', 'docker__discovered-app']
+    discovered = assets[1]
+    assert discovered.name == 'discovered-app'
+    assert discovered.supports_actions == [
+        'update_latest',
+        'deploy_version',
+        'delete',
+        'full_delete',
+        'start',
+        'stop',
+        'autostart_enable',
+        'autostart_disable',
+        'cf_create',
+        'cf_refresh',
+        'cf_disable',
+        'notify_send',
+    ]
+    assert discovered.metadata['discovery_source'] == 'runtime_discovered'
+    assert discovered.metadata['project_dir'] == str(repo_dir)
+    assert discovered.metadata['compose_file'] == 'docker-compose.yml'
+    assert discovered.metadata['compose_service'] == 'web'
+    assert discovered.metadata['image_repository'] == 'ghcr.io/example/discovered'
+    assert discovered.metadata['git_remote_url'] == 'https://github.com/example/discovered.git'
+    assert discovered.metadata['git_branch'] == 'main'
+    assert discovered.metadata['head_sha'] == 'abcdef1234567890'
+    assert discovered.metadata['capabilities']['repo_metadata']['enabled'] is True
+    assert discovered.metadata['capabilities']['cf_tunnel']['enabled'] is False

@@ -23,6 +23,20 @@ DockerScanner = Callable[[], list[DockerContainerSnapshot]]
 SystemdScanner = Callable[[], list[AssetSnapshot]]
 ReadonlyScanner = Callable[[], list[AssetSnapshot]]
 DOCKER_SUPPORTED_ACTIONS = ['update_latest', 'deploy_version', 'delete', 'full_delete']
+DOCKER_DISCOVERED_SUPPORTED_ACTIONS = [
+    'update_latest',
+    'deploy_version',
+    'delete',
+    'full_delete',
+    'start',
+    'stop',
+    'autostart_enable',
+    'autostart_disable',
+    'cf_create',
+    'cf_refresh',
+    'cf_disable',
+    'notify_send',
+]
 SYSTEMD_SUPPORTED_ACTIONS = ['delete']
 READONLY_CATEGORY_IDS = ('node', 'python', 'host', 'system', 'agent_cli', 'agent')
 
@@ -81,6 +95,7 @@ class AssetService:
                 self._scan_docker_containers(),
                 recipe_service=self._docker_recipe_service,
                 version_service=self._docker_version_service,
+                resolve_remote_versions=False,
             )
         if category_id == 'systemd':
             scanned_units, scan_failed = self._scan_systemd_units()
@@ -124,6 +139,7 @@ def build_docker_asset_snapshots(
     *,
     recipe_service: DockerRecipeService | None = None,
     version_service: DockerVersionService | None = None,
+    resolve_remote_versions: bool = True,
 ) -> list[AssetSnapshot]:
     docker_version_service = version_service or DockerVersionService()
     containers_by_dir: dict[str, list[DockerContainerSnapshot]] = defaultdict(list)
@@ -134,6 +150,7 @@ def build_docker_asset_snapshots(
             containers_by_dir[container.compose_working_dir].append(container)
 
     assets: list[AssetSnapshot] = []
+    managed_project_dirs: set[str] = set()
     for obj in registry_snapshot.objects:
         if obj.category != 'docker' or not obj.enabled:
             continue
@@ -150,8 +167,10 @@ def build_docker_asset_snapshots(
             version_service=docker_version_service,
             recipe=recipe,
             lifecycle_strategy=lifecycle_strategy,
+            resolve_remote_versions=resolve_remote_versions,
         )
 
+        managed_project_dirs.add(obj.config['project_dir'])
         assets.append(
             AssetSnapshot(
                 object_id=obj.id,
@@ -185,7 +204,152 @@ def build_docker_asset_snapshots(
                 primary_container_name=primary.name if primary is not None else None,
             )
         )
+    assets.extend(_build_runtime_discovered_docker_assets(containers_by_dir, managed_project_dirs, docker_version_service))
     return assets
+
+
+def _build_runtime_discovered_docker_assets(
+    containers_by_dir: dict[str, list[DockerContainerSnapshot]],
+    managed_project_dirs: set[str],
+    version_service: DockerVersionService,
+) -> list[AssetSnapshot]:
+    assets: list[AssetSnapshot] = []
+    for project_dir, project_containers in sorted(containers_by_dir.items()):
+        if project_dir in managed_project_dirs:
+            continue
+        containers = sorted(project_containers, key=lambda item: item.name)
+        primary = containers[0] if containers else None
+        if primary is None:
+            continue
+        project_path = Path(project_dir)
+        compose_file = _detect_compose_file(project_path)
+        compose_service = primary.compose_service or primary.name
+        image_repository = _parse_image_repository(primary.image)
+        runtime = version_service.build_runtime_version_info(primary)
+        git_info = _read_git_info(project_path)
+        capabilities = _build_discovered_capabilities(project_path, image_repository=image_repository, git_remote_url=git_info.get('git_remote_url'))
+        name = project_path.name or primary.compose_project or primary.name
+        assets.append(
+            AssetSnapshot(
+                object_id=f"docker__{_slugify(project_path.name or primary.compose_project or primary.name)}",
+                category='docker',
+                name=name,
+                status=primary.status,
+                current_version=primary.image_tag,
+                supports_actions=DOCKER_DISCOVERED_SUPPORTED_ACTIONS.copy(),
+                metadata={
+                    'type': 'docker_compose_discovered',
+                    'discovery_source': 'runtime_discovered',
+                    'project_dir': project_dir,
+                    'compose_file': compose_file,
+                    'primary_container': primary.name,
+                    'compose_service': compose_service,
+                    'compose_project': primary.compose_project,
+                    'image_repository': image_repository,
+                    'lifecycle_strategy': 'compose_pull',
+                    'version_source': 'registry_tags' if image_repository else 'unknown',
+                    'available_versions': [],
+                    'runtime': runtime.model_dump(),
+                    'source_status': 'deferred',
+                    'version_source_status': 'deferred',
+                    'runtime_image_tag': runtime.image_tag,
+                    'runtime_oci_version': runtime.oci_version,
+                    'runtime_oci_revision': runtime.oci_revision,
+                    'ports': primary.ports,
+                    'capabilities': capabilities,
+                    **git_info,
+                },
+                containers=containers,
+                primary_container_name=primary.name,
+            )
+        )
+    return assets
+
+
+def _slugify(value: str) -> str:
+    normalized = ''.join(ch.lower() if ch.isalnum() else '-' for ch in value.strip())
+    normalized = '-'.join(part for part in normalized.split('-') if part)
+    return normalized or 'discovered'
+
+
+def _detect_compose_file(project_path: Path) -> str:
+    for name in ('docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'):
+        if (project_path / name).exists():
+            return name
+    return 'docker-compose.yml'
+
+
+def _parse_image_repository(image: str | None) -> str | None:
+    if not image:
+        return None
+    image = image.split('@', 1)[0]
+    last_slash = image.rfind('/')
+    last_colon = image.rfind(':')
+    if last_colon > last_slash:
+        return image[:last_colon]
+    return image
+
+
+def _read_git_info(project_path: Path) -> dict[str, str | None]:
+    git_dir = project_path / '.git'
+    if not git_dir.exists():
+        return {'git_remote_url': None, 'git_branch': None, 'head_sha': None}
+
+    remote_url = None
+    config_path = git_dir / 'config'
+    if config_path.exists():
+        in_origin = False
+        for raw_line in config_path.read_text(encoding='utf-8', errors='replace').splitlines():
+            line = raw_line.strip()
+            if line.startswith('[remote "origin"'):
+                in_origin = True
+                continue
+            if line.startswith('['):
+                in_origin = False
+            if in_origin and line.startswith('url ='):
+                remote_url = line.split('=', 1)[1].strip()
+                break
+
+    branch = None
+    head_sha = None
+    head_path = git_dir / 'HEAD'
+    if head_path.exists():
+        head_value = head_path.read_text(encoding='utf-8', errors='replace').strip()
+        if head_value.startswith('ref:'):
+            ref = head_value.split(None, 1)[1].strip()
+            branch = ref.removeprefix('refs/heads/')
+            ref_path = git_dir / ref
+            if ref_path.exists():
+                head_sha = ref_path.read_text(encoding='utf-8', errors='replace').strip()
+        else:
+            head_sha = head_value or None
+
+    return {'git_remote_url': remote_url, 'git_branch': branch, 'head_sha': head_sha}
+
+
+def _build_discovered_capabilities(
+    project_path: Path,
+    *,
+    image_repository: str | None,
+    git_remote_url: str | None,
+) -> dict[str, dict[str, object]]:
+    cftunnel_script = project_path / 'scripts' / 'cftunnel-start.sh'
+    domain_file = project_path / 'logs' / 'cftunnel-domain.txt'
+    current_url = domain_file.read_text(encoding='utf-8', errors='replace').strip() if domain_file.exists() else None
+    return {
+        'runtime_control': {'enabled': True, 'supported_actions': ['start', 'stop']},
+        'versioning': {'enabled': bool(image_repository), 'supported_actions': ['update_latest', 'deploy_version'] if image_repository else []},
+        'repo_metadata': {'enabled': bool(git_remote_url), 'supported_actions': []},
+        'cf_tunnel': {
+            'enabled': cftunnel_script.exists(),
+            'supported_actions': ['cf_create', 'cf_refresh', 'cf_disable'] if cftunnel_script.exists() else [],
+            'script_path': str(cftunnel_script) if cftunnel_script.exists() else None,
+            'domain_file': str(domain_file),
+            'current_url': current_url,
+        },
+        'wechat_notify': {'enabled': False, 'supported_actions': ['notify_send']},
+        'autostart': {'enabled': False, 'supported_actions': ['autostart_enable', 'autostart_disable']},
+    }
 
 
 def build_systemd_asset_snapshots(
@@ -211,6 +375,7 @@ def build_systemd_asset_snapshots(
             'sub': scanned.metadata.get('sub') if scanned else ('scan_failed' if scan_failed else 'unknown'),
             'description': scanned.metadata.get('description') if scanned else '',
         }
+        managed_project_dirs.add(obj.config['project_dir'])
         assets.append(
             AssetSnapshot(
                 object_id=obj.id,
@@ -256,11 +421,22 @@ def _build_docker_version_info(
     version_service: DockerVersionService,
     recipe: DockerRecipe | None,
     lifecycle_strategy: str,
+    resolve_remote_versions: bool,
 ) -> PackageVersionInfo:
     runtime = version_service.build_runtime_version_info(primary)
     managed_services = list(recipe.managed_services) if recipe is not None else list(obj.config.get('managed_services', []))
     ignored_services = list(recipe.ignored_services) if recipe is not None else list(obj.config.get('ignored_services', []))
     if lifecycle_strategy == 'compose_local_build_git_tag' and recipe is not None:
+        if not resolve_remote_versions:
+            return PackageVersionInfo(
+                current_version=primary.image_tag if primary is not None else None,
+                runtime=runtime,
+                lifecycle_strategy=lifecycle_strategy,
+                version_source=obj.config.get('version_source', 'git_tags'),
+                source_status='deferred',
+                managed_services=managed_services,
+                ignored_services=ignored_services,
+            )
         return version_service.get_git_tag_version_info(recipe.repo_dir, fetch=False).model_copy(
             update={
                 'runtime': runtime,
@@ -280,6 +456,16 @@ def _build_docker_version_info(
             runtime=runtime,
             lifecycle_strategy=lifecycle_strategy,
             version_source=obj.config.get('version_source', 'registry_tags'),
+            managed_services=managed_services,
+            ignored_services=ignored_services,
+        )
+    if not resolve_remote_versions:
+        return PackageVersionInfo(
+            current_version=primary.image_tag if primary is not None else None,
+            runtime=runtime,
+            lifecycle_strategy=lifecycle_strategy,
+            version_source=obj.config.get('version_source', 'registry_tags'),
+            source_status='deferred',
             managed_services=managed_services,
             ignored_services=ignored_services,
         )
