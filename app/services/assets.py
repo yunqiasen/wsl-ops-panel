@@ -160,6 +160,7 @@ def build_docker_asset_snapshots(
         if obj.category != 'docker' or not obj.enabled:
             continue
 
+        managed_project_dirs.add(obj.config['project_dir'])
         object_containers = sorted(containers_by_dir.get(obj.config['project_dir'], []), key=lambda item: item.name)
         primary = _select_primary_container(obj, object_containers, containers_by_name)
         status = primary.status if primary is not None else 'not running'
@@ -175,7 +176,6 @@ def build_docker_asset_snapshots(
             resolve_remote_versions=resolve_remote_versions,
         )
 
-        managed_project_dirs.add(obj.config['project_dir'])
         assets.append(
             AssetSnapshot(
                 object_id=obj.id,
@@ -380,7 +380,6 @@ def build_systemd_asset_snapshots(
             'sub': scanned.metadata.get('sub') if scanned else ('scan_failed' if scan_failed else 'unknown'),
             'description': scanned.metadata.get('description') if scanned else '',
         }
-        managed_project_dirs.add(obj.config['project_dir'])
         assets.append(
             AssetSnapshot(
                 object_id=obj.id,

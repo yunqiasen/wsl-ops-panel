@@ -233,6 +233,52 @@ def test_docker_versions_route_reuses_snapshot_git_tag_result(tmp_path: Path, mo
     assert call_counter['count'] == 1
 
 
+def test_registry_docker_versions_route_fetches_on_demand_when_list_snapshot_is_deferred(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'categories' / 'docker.yaml').write_text('id: docker\nlabel: Docker\norder: 10\n', encoding='utf-8')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'objects' / 'cpa.yaml').write_text(
+        'id: cpa\ncategory: docker\ntype: docker_compose\nname: CPA / CLIProxyAPI\nconfig:\n'
+        '  project_dir: /srv/cpa\n  compose_file: docker-compose.yml\n'
+        '  primary_container: cli-proxy-api\n  compose_service: cli-proxy-api\n',
+        encoding='utf-8',
+    )
+
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+    from app.services.docker_versions import DockerVersionService
+
+    call_counter = {'count': 0}
+
+    def _stub_registry_lookup(self, image_repository: str, current_version: str | None = None, *, fetcher=None):
+        call_counter['count'] += 1
+        return PackageVersionInfo(
+            current_version=current_version,
+            latest_version='latest',
+            versions=['latest', 'nightly'],
+            source_status='ok',
+        )
+
+    monkeypatch.setattr(DockerVersionService, 'get_registry_tag_version_info', _stub_registry_lookup)
+
+    containers = parse_docker_ps_lines(
+        [
+            '{"ID":"1","Image":"eceasy/cli-proxy-api:latest","Labels":"com.docker.compose.project=cpa,com.docker.compose.project.working_dir=/srv/cpa,com.docker.compose.service=cli-proxy-api","Names":"cli-proxy-api","State":"running","Status":"Up 3 days","Ports":"8317/tcp"}'
+        ]
+    )
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=InMemoryTaskStore()))
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    category_response = client.get('/categories/docker')
+    assert category_response.status_code == 200
+    assert 'deferred' in category_response.text
+    assert call_counter['count'] == 0
+
+    versions_response = client.get('/api/assets/cpa/versions')
+    assert versions_response.status_code == 200
+    assert versions_response.json()['versions'] == ['latest', 'nightly']
+    assert call_counter['count'] == 1
+
+
 def test_reload_registry_rebuilds_recipe_and_asset_services_for_new_openai_cpa(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
     (tmp_path / 'categories' / 'docker.yaml').write_text('id: docker\nlabel: Docker\norder: 10\n', encoding='utf-8')

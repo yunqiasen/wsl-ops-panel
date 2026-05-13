@@ -52,6 +52,7 @@
     <div class="tag-row">
       <span class="tag">{{ asset.metadata.lifecycle_strategy or 'compose_pull' }}</span>
       <span class="tag">{{ asset.metadata.version_source or 'unknown' }}</span>
+      <span class="tag">{{ asset.metadata.version_source_status or asset.metadata.source_status or 'unknown' }}</span>
       <span class="tag">{{ asset.metadata.discovery_source or 'registered' }}</span>
     </div>
     <div class="inline-version-picker" data-card-version-panel="{{ asset.object_id }}" hidden>
