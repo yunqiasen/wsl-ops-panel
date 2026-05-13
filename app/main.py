@@ -11,7 +11,8 @@ from app.api.auth import router as auth_router
 from app.api.overview import router as overview_router
 from app.api.settings import router as settings_router
 from app.api.tasks import router as tasks_router
-from app.api.terminals import router as terminals_router
+from app.api.terminals import close_all_terminal_sessions, router as terminals_router
+from app.api.terminals import system_terminal_sink
 from app.core.ui import TEMPLATES, build_page_context, page_login_redirect
 from app.models.assets import AssetSnapshot, DockerContainerSnapshot
 from app.models.registry import RegistrySnapshot
@@ -22,7 +23,6 @@ from app.services.docker_versions import DockerVersionService
 from app.tasks.queue import GlobalTaskQueue
 from app.tasks.store import SQLiteTaskStore, TaskStore
 from app.tasks.worker import SerialTaskWorker
-from app.terminals.system_terminal import SystemTerminalSink
 
 
 @asynccontextmanager
@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        close_all_terminal_sessions()
         worker.stop()
 
 
@@ -44,6 +45,7 @@ def create_app(
     python_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     host_process_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     system_infra_scanner: Callable[[], list[AssetSnapshot]] | None = None,
+    project_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     task_store: TaskStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title='WSL Ops Panel', lifespan=lifespan)
@@ -65,6 +67,7 @@ def create_app(
         python_scanner=python_scanner,
         host_process_scanner=host_process_scanner,
         system_infra_scanner=system_infra_scanner,
+        project_scanner=project_scanner,
         docker_version_service=docker_version_service,
     )
     registry_service = runtime_services.registry_service
@@ -73,7 +76,6 @@ def create_app(
     queue_store = task_store or SQLiteTaskStore()
     task_queue = GlobalTaskQueue(queue_store)
     task_queue.recover_on_startup()
-    system_terminal_sink = SystemTerminalSink(Path('data/terminals/system.log'))
     task_worker = SerialTaskWorker(queue=task_queue, sink=system_terminal_sink)
 
     app.state.config_root = config_root
@@ -83,6 +85,7 @@ def create_app(
     app.state.python_scanner = python_scanner
     app.state.host_process_scanner = host_process_scanner
     app.state.system_infra_scanner = system_infra_scanner
+    app.state.project_scanner = project_scanner
     app.state.registry_service = registry_service
     app.state.asset_service = asset_service
     app.state.docker_recipe_service = docker_recipe_service
@@ -148,6 +151,7 @@ def _build_runtime_services(
     python_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     host_process_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     system_infra_scanner: Callable[[], list[AssetSnapshot]] | None = None,
+    project_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     docker_version_service: DockerVersionService | None = None,
 ) -> RuntimeServices:
     registry_service = RegistryService(config_root)
@@ -160,6 +164,7 @@ def _build_runtime_services(
         python_scanner=python_scanner,
         host_process_scanner=host_process_scanner,
         system_infra_scanner=system_infra_scanner,
+        project_scanner=project_scanner,
         docker_recipe_service=docker_recipe_service,
         docker_version_service=docker_version_service,
         config_root=config_root,
@@ -176,6 +181,7 @@ def _rebuild_registry_runtime(app: FastAPI) -> RegistrySnapshot:
         python_scanner=app.state.python_scanner,
         host_process_scanner=app.state.host_process_scanner,
         system_infra_scanner=app.state.system_infra_scanner,
+        project_scanner=app.state.project_scanner,
         docker_version_service=app.state.docker_version_service,
     )
     app.state.registry_service = runtime_services.registry_service

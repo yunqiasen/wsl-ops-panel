@@ -13,6 +13,7 @@ from app.scanners.docker_scanner import scan_docker_containers
 from app.scanners.host_process_scanner import scan_host_processes
 from app.scanners.node_scanner import scan_node_packages
 from app.scanners.python_scanner import scan_python_packages
+from app.scanners.project_scanner import scan_projects
 from app.scanners.system_scanner import scan_system_infrastructure
 from app.scanners.systemd_scanner import scan_systemd_units
 from app.services.asset_policies import AssetPolicyService
@@ -38,7 +39,7 @@ DOCKER_DISCOVERED_SUPPORTED_ACTIONS = [
     'notify_send',
 ]
 SYSTEMD_SUPPORTED_ACTIONS = ['delete']
-READONLY_CATEGORY_IDS = ('node', 'python', 'host', 'system', 'agent_cli', 'agent')
+READONLY_CATEGORY_IDS = ('node', 'python', 'project', 'host', 'system', 'agent_cli', 'agent')
 
 
 class AssetService:
@@ -52,6 +53,7 @@ class AssetService:
         python_scanner: ReadonlyScanner | None = None,
         host_process_scanner: ReadonlyScanner | None = None,
         system_infra_scanner: ReadonlyScanner | None = None,
+        project_scanner: ReadonlyScanner | None = None,
         docker_recipe_service: DockerRecipeService | None = None,
         docker_version_service: DockerVersionService | None = None,
         config_root: Path | str = Path('config'),
@@ -63,6 +65,7 @@ class AssetService:
         self._python_scanner = python_scanner or scan_python_packages
         self._host_process_scanner = host_process_scanner or scan_host_processes
         self._system_infra_scanner = system_infra_scanner or scan_system_infrastructure
+        self._project_scanner = project_scanner or scan_projects
         self._docker_recipe_service = docker_recipe_service
         self._docker_version_service = docker_version_service or DockerVersionService()
         self._policy_service = AssetPolicyService(Path(config_root))
@@ -104,6 +107,8 @@ class AssetService:
             return [self._policy_service.apply(asset) for asset in self._scan_readonly_assets(self._node_scanner, 'node')]
         if category_id == 'python':
             return [self._policy_service.apply(asset) for asset in self._scan_readonly_assets(self._python_scanner, 'python')]
+        if category_id == 'project':
+            return self._scan_readonly_assets(self._project_scanner, 'project')
         if category_id == 'host':
             return self._scan_readonly_assets(self._host_process_scanner, 'host')
         if category_id == 'system':

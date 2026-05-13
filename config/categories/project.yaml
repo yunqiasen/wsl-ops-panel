@@ -1,0 +1,5 @@
+id: project
+label: Project
+order: 70
+description: Filesystem projects under /home/div/1_Project_dir
+enabled: true
