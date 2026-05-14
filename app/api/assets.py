@@ -208,7 +208,7 @@ async def _extract_requested_version(request: Request) -> str | None:
 
 def enqueue_asset_action(request: Request, object_id: str, *, action: str, version: str | None = None):
     asset = _get_asset(request, object_id)
-    if action not in asset.supports_actions:
+    if action not in asset.supports_actions and asset.actionable:
         raise HTTPException(status_code=400, detail=f'action {action} is not supported by {object_id}')
     adapter = _build_adapter(request, object_id, asset)
     try:
