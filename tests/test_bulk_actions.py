@@ -83,3 +83,26 @@ def test_bulk_start_enqueues_docker_start_plan(tmp_path: Path) -> None:
     assert task.action == 'start'
     assert task.plan_path is not None
     assert 'docker' in Path(task.plan_path).read_text(encoding='utf-8')
+
+
+def test_bulk_cf_action_rejects_node_asset_even_if_endpoint_exists(tmp_path: Path) -> None:
+    (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'categories' / 'node.yaml').write_text('id: node\nlabel: Node\norder: 30\nenabled: true\n', encoding='utf-8')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    rules = tmp_path / 'rules'
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / 'node-packages.yaml').write_text(
+        'packages:\n  - name: update\n    managed_by: node\n    allowed_actions: [update_latest, deploy_version, delete, full_delete]\n',
+        encoding='utf-8',
+    )
+    (rules / 'python-packages.yaml').write_text('packages: []\n', encoding='utf-8')
+    from app.scanners.node_scanner import parse_npm_package
+
+    asset = parse_npm_package('update@0.7.4')
+    client = TestClient(create_app(config_root=tmp_path, node_scanner=lambda: [asset], task_store=InMemoryTaskStore()))
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    response = client.post('/api/bulk/actions/cf-refresh', json={'asset_ids': [asset.object_id]})
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == f'action cf_refresh is not supported by {asset.object_id}'
