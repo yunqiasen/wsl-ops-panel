@@ -21,3 +21,13 @@ def test_full_delete_is_disabled_for_systemd() -> None:
         assert 'phase 1' in str(exc)
     else:  # pragma: no cover
         raise AssertionError('expected full_delete to be rejected')
+
+
+def test_systemd_adapter_plans_runtime_and_autostart_actions() -> None:
+    adapter = SystemdUnitAdapter(unit_name='wsl-ops-panel.service', working_dir='/srv/panel')
+
+    assert adapter.plan_action('start').commands == [['sudo', 'systemctl', 'start', 'wsl-ops-panel.service']]
+    assert adapter.plan_action('stop').commands == [['sudo', 'systemctl', 'stop', 'wsl-ops-panel.service']]
+    assert adapter.plan_action('restart').commands == [['sudo', 'systemctl', 'restart', 'wsl-ops-panel.service']]
+    assert adapter.plan_action('autostart_enable').commands == [['sudo', 'systemctl', 'enable', 'wsl-ops-panel.service']]
+    assert adapter.plan_action('autostart_disable').commands == [['sudo', 'systemctl', 'disable', 'wsl-ops-panel.service']]
