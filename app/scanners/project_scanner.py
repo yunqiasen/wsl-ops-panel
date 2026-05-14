@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from app.models.assets import AssetSnapshot
+from app.services.source_links import source_links_from_package_json
 
 DEFAULT_PROJECT_ROOT = Path('/home/div/1_Project_dir')
 DOCKER_COMPOSE_FILES = ('docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml')
@@ -25,7 +26,8 @@ def scan_projects(*, root: Path | str = DEFAULT_PROJECT_ROOT) -> list[AssetSnaps
         if not stacks:
             continue
         git_info = _read_git_info(child)
-        package_scripts = _read_package_scripts(child)
+        package_payload = _read_package_json(child)
+        package_scripts = _read_package_scripts_from_payload(package_payload)
         start_command = package_scripts.get('start')
         web_ui = _detect_web_ui(child, start_command=start_command)
         capabilities = _build_project_capabilities(child, web_ui=web_ui)
@@ -40,6 +42,7 @@ def scan_projects(*, root: Path | str = DEFAULT_PROJECT_ROOT) -> list[AssetSnaps
                     'path': str(child),
                     'stacks': stacks,
                     'git_remote_url': git_info.get('git_remote_url'),
+                    'source_links': source_links_from_package_json(package_payload, git_remote_url=git_info.get('git_remote_url')),
                     'git_branch': git_info.get('git_branch'),
                     'head_sha': git_info.get('head_sha'),
                     'discovery_source': 'filesystem_scan',
@@ -53,7 +56,7 @@ def scan_projects(*, root: Path | str = DEFAULT_PROJECT_ROOT) -> list[AssetSnaps
     return assets
 
 
-def _read_package_scripts(path: Path) -> dict[str, str]:
+def _read_package_json(path: Path) -> dict[str, object]:
     package_json = path / 'package.json'
     if not package_json.exists():
         return {}
@@ -61,6 +64,10 @@ def _read_package_scripts(path: Path) -> dict[str, str]:
         payload = json.loads(package_json.read_text(encoding='utf-8'))
     except json.JSONDecodeError:
         return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_package_scripts_from_payload(payload: dict[str, object]) -> dict[str, str]:
     scripts = payload.get('scripts')
     if not isinstance(scripts, dict):
         return {}

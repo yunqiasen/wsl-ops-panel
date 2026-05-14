@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from app.models.assets import AssetSnapshot
 from app.scanners._ids import make_encoded_asset_id
+from app.services.source_links import build_source_links
 
 NodeCommandRunner = Callable[[], subprocess.CompletedProcess[str]]
 _TREE_PREFIX_RE = re.compile(r'^[\s│├└─]+')
@@ -26,7 +27,7 @@ def parse_npm_package(raw: str) -> AssetSnapshot:
         name=name,
         status='installed',
         current_version=version,
-        metadata={'package_manager': 'npm'},
+        metadata={'package_manager': 'npm', 'source_links': build_source_links(package_name=name, package_manager='npm')},
     )
 
 

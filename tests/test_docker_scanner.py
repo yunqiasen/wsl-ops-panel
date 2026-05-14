@@ -570,3 +570,77 @@ def test_build_docker_asset_snapshots_adds_runtime_discovered_projects(tmp_path:
     assert discovered.metadata['head_sha'] == 'abcdef1234567890'
     assert discovered.metadata['capabilities']['repo_metadata']['enabled'] is True
     assert discovered.metadata['capabilities']['cf_tunnel']['enabled'] is False
+
+
+def test_registered_searxng_uses_real_project_name_and_source_links(tmp_path: Path) -> None:
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+    from app.services.assets import build_docker_asset_snapshots
+
+    project_dir = tmp_path / 'searxng-mcp'
+    project_dir.mkdir()
+    (project_dir / 'docker-compose.yaml').write_text('services:\n  searxng:\n    image: searxng/searxng:latest\n', encoding='utf-8')
+    registry_snapshot = RegistrySnapshot(
+        categories=[CategoryDefinition(id='docker', label='Docker', order=10)],
+        objects=[
+            ObjectDefinition(
+                id='searxng',
+                category='docker',
+                type='docker_compose',
+                name='SearXNG',
+                config={
+                    'project_dir': str(project_dir),
+                    'compose_file': 'docker-compose.yaml',
+                    'primary_container': 'searxng',
+                    'compose_service': 'searxng',
+                },
+            )
+        ],
+    )
+    containers = parse_docker_ps_lines(
+        [
+            '{"ID":"1","Image":"searxng/searxng:latest",'
+            f'"Labels":"com.docker.compose.project=searxng,com.docker.compose.project.working_dir={project_dir},'
+            'com.docker.compose.service=searxng,org.opencontainers.image.source=https://github.com/searxng/searxng,'
+            'org.opencontainers.image.url=https://searxng.org",'
+            '"Names":"searxng","State":"running","Status":"Up 1 hour","Ports":"8080/tcp"}'
+        ]
+    )
+
+    assets = build_docker_asset_snapshots(registry_snapshot, containers, resolve_remote_versions=False)
+
+    assert [asset.object_id for asset in assets] == ['searxng']
+    assert assets[0].name == 'SearXNG'
+    assert assets[0].metadata['source_links']['github'] == 'https://github.com/searxng/searxng'
+    assert assets[0].metadata['source_links']['docker'] == 'https://hub.docker.com/r/searxng/searxng'
+
+
+def test_registered_docker_asset_uses_local_git_remote_for_source_links(tmp_path: Path) -> None:
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+    from app.services.assets import build_docker_asset_snapshots
+
+    project_dir = tmp_path / 'cpa'
+    project_dir.mkdir()
+    (project_dir / '.git').mkdir()
+    (project_dir / '.git' / 'HEAD').write_text('ref: refs/heads/main\n', encoding='utf-8')
+    (project_dir / '.git' / 'config').write_text('[remote "origin"]\n\turl = https://github.com/router-for-me/CLIProxyAPI.git\n', encoding='utf-8')
+    registry_snapshot = RegistrySnapshot(
+        categories=[CategoryDefinition(id='docker', label='Docker', order=10)],
+        objects=[
+            ObjectDefinition(
+                id='cpa',
+                category='docker',
+                type='docker_compose',
+                name='CPA',
+                config={
+                    'project_dir': str(project_dir),
+                    'compose_file': 'docker-compose.yml',
+                    'compose_service': 'cli-proxy-api',
+                },
+            )
+        ],
+    )
+    containers = parse_docker_ps_lines([_docker_ps_line(container_id='1', name='cli-proxy-api', image='eceasy/cli-proxy-api:latest', working_dir=str(project_dir), status='Up 1 hour', service='cli-proxy-api')])
+
+    assets = build_docker_asset_snapshots(registry_snapshot, containers, resolve_remote_versions=False)
+
+    assert assets[0].metadata['source_links']['github'] == 'https://github.com/router-for-me/CLIProxyAPI'

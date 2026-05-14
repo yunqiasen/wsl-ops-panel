@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.assets import router as assets_router
 from app.api.auth import router as auth_router
 from app.api.bulk_actions import router as bulk_actions_router
+from app.api.notifications import router as notifications_router
 from app.api.overview import router as overview_router
 from app.api.settings import router as settings_router
 from app.api.tasks import router as tasks_router
@@ -21,6 +22,7 @@ from app.recipes.service import DockerRecipeService
 from app.registry.service import RegistryService
 from app.services.assets import AssetService
 from app.services.docker_versions import DockerVersionService
+from app.services.notifications import NotificationService
 from app.tasks.queue import GlobalTaskQueue
 from app.tasks.store import SQLiteTaskStore, TaskStore
 from app.tasks.worker import SerialTaskWorker
@@ -53,6 +55,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(bulk_actions_router)
     app.include_router(overview_router)
+    app.include_router(notifications_router)
     app.include_router(tasks_router)
     app.include_router(settings_router)
     app.include_router(terminals_router)
@@ -92,6 +95,7 @@ def create_app(
     app.state.asset_service = asset_service
     app.state.docker_recipe_service = docker_recipe_service
     app.state.docker_version_service = docker_version_service
+    app.state.notification_service = NotificationService(config_root)
     app.state.rebuild_registry_runtime = lambda: _rebuild_registry_runtime(app)
     app.state.task_store = queue_store
     app.state.task_queue = task_queue

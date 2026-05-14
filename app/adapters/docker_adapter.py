@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+import sys
 from typing import Literal
 
 import yaml
@@ -70,6 +71,8 @@ class DockerComposeAdapter:
         managed_services: list[str] | None = None,
         ignored_services: list[str] | None = None,
         version_service: DockerVersionService | None = None,
+        config_root: str = 'config',
+        asset_snapshot_json: str | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.compose_file = compose_file
@@ -86,6 +89,9 @@ class DockerComposeAdapter:
         self.runtime = runtime
         self.managed_services = list(managed_services or [])
         self.ignored_services = list(ignored_services or [])
+        self.config_root = config_root
+        self.asset_snapshot_json = asset_snapshot_json
+        self.asset_snapshot_id = _extract_asset_snapshot_id(asset_snapshot_json)
         self._version_service = version_service or DockerVersionService()
 
     def plan_action(self, action: DockerAction, version: str | None = None) -> ActionPlan:
@@ -143,10 +149,23 @@ class DockerComposeAdapter:
                 preview_objects=[unit_name],
             )
         if action == 'notify_send':
+            if not self.asset_snapshot_json:
+                raise ValueError('notify_send requires asset snapshot json')
             return ActionPlan(
-                commands=[['sudo', 'systemctl', 'restart', 'startup-notify.service']],
-                requires_sudo=True,
-                preview_objects=['startup-notify.service'],
+                commands=[[
+                    sys.executable,
+                    '-m',
+                    'app.services.notifications',
+                    'send',
+                    '--config-root',
+                    self.config_root,
+                    '--asset-id',
+                    self.asset_snapshot_id,
+                    '--asset-json',
+                    self.asset_snapshot_json,
+                ]],
+                working_dir=str(Path(__file__).resolve().parents[2]),
+                preview_objects=[self.asset_snapshot_id],
             )
         return None
 
@@ -410,3 +429,14 @@ def _guess_cftunnel_unit(project_dir: str) -> str | None:
         if Path('/etc/systemd/system', candidate).exists():
             return candidate
     return None
+
+
+def _extract_asset_snapshot_id(asset_snapshot_json: str | None) -> str:
+    if not asset_snapshot_json:
+        return ''
+    try:
+        payload = json.loads(asset_snapshot_json)
+    except json.JSONDecodeError:
+        return ''
+    value = payload.get('object_id') if isinstance(payload, dict) else None
+    return value if isinstance(value, str) else ''

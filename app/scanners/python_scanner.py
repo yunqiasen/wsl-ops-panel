@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from app.models.assets import AssetSnapshot
 from app.scanners._ids import make_encoded_asset_id
+from app.services.source_links import build_source_links
 
 PythonCommandRunner = Callable[[], subprocess.CompletedProcess[str]]
 
@@ -22,7 +23,7 @@ def parse_pip_package(entry: dict) -> AssetSnapshot:
         name=name,
         status='installed',
         current_version=version,
-        metadata={'package_manager': 'pip'},
+        metadata={'package_manager': 'pip', 'source_links': build_source_links(package_name=name, package_manager='pip')},
     )
 
 

@@ -13,6 +13,7 @@ from app.core.security import require_authenticated_request
 from app.models.assets import AssetSnapshot, PackageVersionInfo, RuntimeVersionInfo
 from app.models.registry import ObjectDefinition
 from app.models.tasks import TaskRecord
+from app.services.notifications import asset_to_notification_json
 
 router = APIRouter(prefix='/api/assets', tags=['assets'])
 
@@ -313,6 +314,8 @@ def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetS
         managed_services=managed_services,
         ignored_services=ignored_services,
         version_service=docker_version_service,
+        config_root=str(request.app.state.config_root),
+        asset_snapshot_json=asset_to_notification_json(asset),
     )
 
 
@@ -340,6 +343,8 @@ def _build_discovered_docker_adapter(request: Request, asset: AssetSnapshot) -> 
         lifecycle_strategy=str(asset.metadata.get('lifecycle_strategy') or 'compose_pull'),
         runtime=runtime,
         version_service=docker_version_service,
+        config_root=str(request.app.state.config_root),
+        asset_snapshot_json=asset_to_notification_json(asset),
     )
 
 

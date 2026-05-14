@@ -13,6 +13,10 @@
   <div>
     <strong><span data-selected-count>0</span> 个已选</strong>
     <small>动作会拆成任务并进入串行队列。</small>
+    <div class="bulk-selection-actions">
+      <button class="ghost-button compact-button" type="button" data-select-all-assets>全选</button>
+      <button class="ghost-button compact-button" type="button" data-clear-selection>取消选择</button>
+    </div>
   </div>
   <div class="bulk-actions">
     {% for action in available_actions %}
@@ -62,6 +66,7 @@
         <span class="tag tag-ok">versioning</span>
       {% endif %}
     </div>
+    {% if asset.metadata.source_links %}<div class="source-chip-row">{% for label, url in asset.metadata.source_links.items() %}<a class="source-chip" href="{{ url }}" target="_blank" rel="noreferrer">{{ label }}</a>{% endfor %}</div>{% endif %}
     <div class="path-chip">{{ asset.metadata.project_dir }} · {{ asset.metadata.compose_file }}</div>
     {% elif asset.category == 'systemd' %}
     <div class="metric-strip two">
@@ -86,11 +91,13 @@
       {% if asset.managed_by %}<span class="tag">{{ asset.managed_by }}</span>{% endif %}
       {% if asset.blocked_reason %}<span class="tag tag-blocked">{{ asset.blocked_reason }}</span>{% endif %}
     </div>
+    {% if asset.metadata.source_links %}<div class="source-chip-row">{% for label, url in asset.metadata.source_links.items() %}<a class="source-chip" href="{{ url }}" target="_blank" rel="noreferrer">{{ label }}</a>{% endfor %}</div>{% endif %}
     {% elif asset.category == 'project' %}
     <div class="metric-strip two">
       <span><small>类型</small><strong>{{ asset.metadata.stacks|join(', ') }}</strong></span>
       <span><small>分支</small><strong>{{ asset.metadata.git_branch or 'unknown' }}</strong></span>
     </div>
+    {% if asset.metadata.source_links %}<div class="source-chip-row">{% for label, url in asset.metadata.source_links.items() %}<a class="source-chip" href="{{ url }}" target="_blank" rel="noreferrer">{{ label }}</a>{% endfor %}</div>{% endif %}
     <div class="path-chip">{{ asset.metadata.path }}</div>
     {% elif asset.category == 'host' %}
     <div class="metric-strip two">

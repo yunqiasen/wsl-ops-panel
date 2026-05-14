@@ -19,6 +19,7 @@ from app.scanners.systemd_scanner import scan_systemd_units
 from app.services.asset_policies import AssetPolicyService
 from app.services.capabilities import enrich_asset_capabilities
 from app.services.docker_versions import DockerVersionService
+from app.services.source_links import build_source_links, normalize_git_remote_url
 
 LOGGER = logging.getLogger(__name__)
 DockerScanner = Callable[[], list[DockerContainerSnapshot]]
@@ -203,6 +204,12 @@ def build_docker_asset_snapshots(
                     'source_status': version_info.source_status,
                     'error': version_info.error,
                     'version_source_status': version_info.source_status,
+                    'image_repository': _parse_image_repository(primary.image) if primary is not None else None,
+                    'source_links': build_source_links(
+                        git_remote_url=_resolve_docker_source_url(obj, Path(obj.config['project_dir'])),
+                        image_repository=_parse_image_repository(primary.image) if primary is not None else None,
+                        labels=primary.labels if primary is not None else {},
+                    ),
                     'runtime_image_tag': runtime.image_tag,
                     'runtime_oci_version': runtime.oci_version,
                     'runtime_oci_revision': runtime.oci_revision,
@@ -256,6 +263,11 @@ def _build_runtime_discovered_docker_assets(
                     'compose_service': compose_service,
                     'compose_project': primary.compose_project,
                     'image_repository': image_repository,
+                    'source_links': build_source_links(
+                        git_remote_url=git_info.get('git_remote_url'),
+                        image_repository=image_repository,
+                        labels=primary.labels,
+                    ),
                     'lifecycle_strategy': 'compose_pull',
                     'version_source': 'registry_tags' if image_repository else 'unknown',
                     'available_versions': [],
@@ -275,6 +287,15 @@ def _build_runtime_discovered_docker_assets(
             )
         )
     return assets
+
+
+def _resolve_docker_source_url(obj: ObjectDefinition, project_path: Path) -> str | None:
+    configured = obj.config.get('source_url')
+    if isinstance(configured, str) and configured.strip():
+        return normalize_git_remote_url(configured)
+    git_info = _read_git_info(project_path)
+    remote = git_info.get('git_remote_url')
+    return normalize_git_remote_url(remote) if remote else None
 
 
 def _slugify(value: str) -> str:

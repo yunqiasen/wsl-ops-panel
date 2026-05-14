@@ -323,6 +323,8 @@ def test_category_page_renders_bulk_controls_and_detail_is_read_only(tmp_path: P
     assert 'data-bulk-action="deploy-version"' in category.text
     assert 'data-bulk-action="cf-refresh"' in category.text
     assert 'data-bulk-action="notify-send"' in category.text
+    assert 'data-select-all-assets' in category.text
+    assert 'data-clear-selection' in category.text
 
     detail = client.get('/assets/cpa')
 
@@ -375,3 +377,25 @@ def test_systemd_category_renders_runtime_actions_without_cf_notify(tmp_path: Pa
     assert 'data-bulk-action="autostart-enable"' in response.text
     assert 'data-bulk-action="cf-refresh"' not in response.text
     assert 'data-bulk-action="notify-send"' not in response.text
+
+
+def test_detail_page_renders_source_links_and_notification_editor(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    _write_registry_file(tmp_path, 'objects', 'cpa.yaml', _docker_object_yaml())
+    containers = parse_docker_ps_lines([
+        '{"ID":"abc123","Image":"eceasy/cli-proxy-api:latest",'
+        '"Labels":"com.docker.compose.project=test,com.docker.compose.project.working_dir=/srv/cpa,'
+        'com.docker.compose.service=cli-proxy-api,org.opencontainers.image.source=https://github.com/itseasy21/CLIProxyAPI",'
+        '"Names":"cli-proxy-api","State":"running","Status":"Up 3 days","Ports":"0.0.0.0:8317->8317/tcp"}'
+    ])
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=InMemoryTaskStore()))
+    _login(client)
+
+    response = client.get('/assets/cpa')
+
+    assert response.status_code == 200
+    assert 'https://github.com/itseasy21/CLIProxyAPI' in response.text
+    assert 'https://hub.docker.com/r/eceasy/cli-proxy-api' in response.text
+    assert 'data-notification-panel' in response.text
+    assert 'data-notification-save' in response.text
+    assert 'data-notification-send' in response.text

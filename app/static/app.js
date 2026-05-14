@@ -251,6 +251,23 @@
       });
     }
 
+    toolbar.addEventListener('click', (event) => {
+      if (event.target.closest('[data-select-all-assets]')) {
+        event.preventDefault();
+        document.querySelectorAll('[data-asset-card]').forEach((card) => {
+          if (card.dataset.assetId) {
+            selected.add(card.dataset.assetId);
+          }
+        });
+        syncUI();
+      }
+      if (event.target.closest('[data-clear-selection]')) {
+        event.preventDefault();
+        selected.clear();
+        syncUI();
+      }
+    });
+
     board.addEventListener('click', (event) => {
       const button = event.target.closest('[data-asset-select]');
       if (!button) {
@@ -313,6 +330,100 @@
         setPending(button, false);
       }
     });
+  }
+
+
+
+  async function requestJson(endpoint, options = {}) {
+    const response = await fetch(endpoint, {
+      ...options,
+      headers: { Accept: 'application/json', ...(options.headers || {}) },
+    });
+    if (redirectIfUnauthorized(response)) {
+      return null;
+    }
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || '请求失败');
+    }
+    return payload;
+  }
+
+  function initNotificationPanel() {
+    const panel = document.querySelector('[data-notification-panel]');
+    if (!panel) {
+      return;
+    }
+    const endpoint = panel.dataset.notificationEndpoint;
+    const enabled = panel.querySelector('[data-notification-enabled]');
+    const title = panel.querySelector('[data-notification-title]');
+    const template = panel.querySelector('[data-notification-template]');
+    const preview = panel.querySelector('[data-notification-preview]');
+    const result = panel.querySelector('[data-notification-result]');
+    const save = panel.querySelector('[data-notification-save]');
+    const send = panel.querySelector('[data-notification-send]');
+    const load = panel.querySelector('[data-notification-load]');
+
+    function render(payload) {
+      if (!payload) {
+        return;
+      }
+      enabled.checked = Boolean(payload.config.enabled);
+      title.value = payload.config.title || '';
+      template.value = payload.config.template || '';
+      preview.textContent = payload.preview.content || '';
+    }
+
+    async function loadConfig() {
+      try {
+        const payload = await requestJson(endpoint);
+        render(payload);
+      } catch (error) {
+        preview.textContent = `通知配置加载失败：${error.message}`;
+      }
+    }
+
+    async function saveConfig() {
+      setPending(save, true);
+      try {
+        const payload = await requestJson(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: enabled.checked, title: title.value, template: template.value }),
+        });
+        render(payload);
+        if (result) {
+          result.innerHTML = '<div class="flash flash-success">通知内容已保存</div>';
+        }
+      } catch (error) {
+        if (result) {
+          result.innerHTML = `<div class="flash">保存失败：${error.message}</div>`;
+        }
+      } finally {
+        setPending(save, false);
+      }
+    }
+
+    async function sendNotification() {
+      setPending(send, true);
+      try {
+        const payload = await requestJson(`${endpoint}/send`, { method: 'POST' });
+        if (result) {
+          result.innerHTML = `<div class="flash flash-success">通知任务已入队：${payload.task.id}</div>`;
+        }
+      } catch (error) {
+        if (result) {
+          result.innerHTML = `<div class="flash">发送失败：${error.message}</div>`;
+        }
+      } finally {
+        setPending(send, false);
+      }
+    }
+
+    save?.addEventListener('click', saveConfig);
+    send?.addEventListener('click', sendNotification);
+    load?.addEventListener('click', loadConfig);
+    loadConfig();
   }
 
   function terminalName(session) {
@@ -575,6 +686,7 @@
     installHtmxFallback();
     initVersionPanels();
     initBulkSelection();
+    initNotificationPanel();
     initTerminalWorkbench();
   });
 })();
