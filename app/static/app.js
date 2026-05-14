@@ -204,6 +204,24 @@
     const count = toolbar.querySelector('[data-selected-count]');
     const result = toolbar.querySelector('[data-bulk-result]');
 
+    function assetIdsForSelection() {
+      return Array.from(selected);
+    }
+
+    function actionSlugToName(slug) {
+      return {
+        'update-latest': 'update_latest',
+        'deploy-version': 'deploy_version',
+        'full-delete': 'full_delete',
+        'autostart-enable': 'autostart_enable',
+        'autostart-disable': 'autostart_disable',
+        'cf-create': 'cf_create',
+        'cf-refresh': 'cf_refresh',
+        'cf-disable': 'cf_disable',
+        'notify-send': 'notify_send',
+      }[slug] || slug;
+    }
+
     function syncUI() {
       document.querySelectorAll('[data-asset-card]').forEach((card) => {
         const assetId = card.dataset.assetId;
@@ -222,6 +240,15 @@
       if (count) {
         count.textContent = String(selected.size);
       }
+      const selectedActions = assetIdsForSelection().map((assetId) => {
+        const card = document.querySelector(`[data-asset-id="${CSS.escape(assetId)}"]`);
+        return new Set((card?.dataset.supportedActions || '').split(',').filter(Boolean));
+      });
+      toolbar.querySelectorAll('[data-bulk-action]').forEach((actionButton) => {
+        const action = actionSlugToName(actionButton.dataset.bulkAction);
+        const allowed = selectedActions.length === 0 || selectedActions.every((actions) => actions.has(action));
+        actionButton.hidden = !allowed;
+      });
     }
 
     board.addEventListener('click', (event) => {

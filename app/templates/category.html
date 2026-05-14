@@ -15,25 +15,16 @@
     <small>动作会拆成任务并进入串行队列。</small>
   </div>
   <div class="bulk-actions">
-    <button class="primary-button" type="button" data-bulk-action="update-latest">更新最新版</button>
-    <button class="ghost-button" type="button" data-bulk-action="deploy-version">部署选定版本</button>
-    <button class="ghost-button" type="button" data-bulk-action="start">开启项目</button>
-    <button class="ghost-button" type="button" data-bulk-action="stop">关闭项目</button>
-    <button class="ghost-button" type="button" data-bulk-action="autostart-enable">开启自启</button>
-    <button class="ghost-button" type="button" data-bulk-action="autostart-disable">关闭自启</button>
-    <button class="ghost-button" type="button" data-bulk-action="cf-create">生成 CF</button>
-    <button class="ghost-button" type="button" data-bulk-action="cf-refresh">刷新 CF</button>
-    <button class="ghost-button" type="button" data-bulk-action="cf-disable">关闭 CF</button>
-    <button class="ghost-button" type="button" data-bulk-action="notify-send">发送微信通知</button>
-    <button class="danger-button" type="button" data-bulk-action="delete">删除</button>
-    <button class="danger-button" type="button" data-bulk-action="full-delete">完全删除</button>
+    {% for action in available_actions %}
+    <button class="{{ action.style }}-button" type="button" data-bulk-action="{{ action.slug }}">{{ action.label }}</button>
+    {% endfor %}
   </div>
   <div id="task-flash" class="bulk-flash" data-bulk-result></div>
 </section>
 
 <ul class="asset-board" data-asset-board>
   {% for asset in assets %}
-  <li class="asset-card" data-asset-card data-asset-id="{{ asset.object_id }}">
+  <li class="asset-card" data-asset-card data-asset-id="{{ asset.object_id }}" data-supported-actions="{{ asset.supports_actions|join(',') }}">
     <button class="asset-select" type="button" aria-label="选择 {{ asset.name }}" data-asset-select="{{ asset.object_id }}"></button>
     <div class="asset-card__top">
       <div>

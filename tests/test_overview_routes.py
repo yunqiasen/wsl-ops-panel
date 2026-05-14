@@ -331,3 +331,47 @@ def test_category_page_renders_bulk_controls_and_detail_is_read_only(tmp_path: P
     assert 'hx-post="/api/assets/cpa/actions/update-latest"' not in detail.text
     assert '项目能力' in detail.text
     assert '仓库与链接' in detail.text
+
+
+def test_node_category_does_not_render_cf_or_notify_bulk_actions(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'node.yaml', 'id: node\nlabel: Node\norder: 30\nenabled: true\n')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    rules = tmp_path / 'rules'
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / 'node-packages.yaml').write_text(
+        'packages:\n  - name: update\n    managed_by: node\n    allowed_actions: [update_latest, deploy_version, delete, full_delete]\n',
+        encoding='utf-8',
+    )
+    (rules / 'python-packages.yaml').write_text('packages: []\n', encoding='utf-8')
+    asset = parse_npm_package('update@0.7.4')
+    client = TestClient(create_app(config_root=tmp_path, node_scanner=lambda: [asset], task_store=InMemoryTaskStore()))
+    _login(client)
+
+    response = client.get('/categories/node')
+
+    assert response.status_code == 200
+    assert 'data-bulk-action="update-latest"' in response.text
+    assert 'data-bulk-action="deploy-version"' in response.text
+    assert 'data-bulk-action="cf-refresh"' not in response.text
+    assert 'data-bulk-action="notify-send"' not in response.text
+
+
+def test_systemd_category_renders_runtime_actions_without_cf_notify(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'systemd.yaml', 'id: systemd\nlabel: systemd\norder: 20\nenabled: true\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'panel.yaml',
+        'id: panel\ncategory: systemd\ntype: systemd_unit\nname: panel\nconfig:\n  unit_name: wsl-ops-panel.service\n  working_dir: /srv/panel\n',
+    )
+    client = TestClient(create_app(config_root=tmp_path, systemd_scanner=lambda: []))
+    _login(client)
+
+    response = client.get('/categories/systemd')
+
+    assert response.status_code == 200
+    assert 'data-bulk-action="start"' in response.text
+    assert 'data-bulk-action="stop"' in response.text
+    assert 'data-bulk-action="autostart-enable"' in response.text
+    assert 'data-bulk-action="cf-refresh"' not in response.text
+    assert 'data-bulk-action="notify-send"' not in response.text

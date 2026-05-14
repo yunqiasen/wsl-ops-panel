@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 
 from app.api.assets import get_page_asset
 from app.core.ui import TEMPLATES, build_page_context, page_login_redirect
+from app.services.capabilities import get_category_actions
 
 router = APIRouter(tags=['overview'])
 
@@ -45,6 +46,7 @@ def category_page(category_id: str, request: Request) -> HTMLResponse:
         heading=category.label,
         selected_category=category,
         assets=assets,
+        available_actions=get_category_actions(category_id),
     )
     return TEMPLATES.TemplateResponse(request, 'category.html', context)
 
