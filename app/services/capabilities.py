@@ -63,7 +63,7 @@ CATEGORY_ACTIONS: dict[str, list[str]] = {
     'agent': [],
 }
 
-CAPABILITY_KEYS = ('versioning', 'runtime_control', 'autostart', 'cf_tunnel', 'wechat_notify', 'delete_control')
+CAPABILITY_KEYS = ('versioning', 'runtime_control', 'autostart', 'cf_tunnel', 'wechat_notify', 'delete_control', 'repo_metadata')
 
 
 def get_category_actions(category_id: str) -> list[ActionDef]:
@@ -158,6 +158,13 @@ def _build_capabilities(
             'supported_actions': [action for action in ('delete', 'full_delete') if action in actions],
         }
     )
+    capabilities['repo_metadata'].update(
+        {
+            'applicable': bool(asset.metadata.get('git_remote_url') or capabilities['repo_metadata'].get('enabled')),
+            'enabled': bool(asset.metadata.get('git_remote_url') or capabilities['repo_metadata'].get('enabled')),
+            'supported_actions': [],
+        }
+    )
     return capabilities
 
 
@@ -175,6 +182,9 @@ def _has_web_surface(asset: AssetSnapshot) -> bool:
     if isinstance(web_ui, dict) and web_ui.get('enabled') is True:
         return True
     if asset.metadata.get('ports') or asset.metadata.get('port'):
+        return True
+    runtime = asset.metadata.get('runtime')
+    if isinstance(runtime, dict) and runtime.get('ports'):
         return True
     capabilities = asset.metadata.get('capabilities')
     if isinstance(capabilities, dict):

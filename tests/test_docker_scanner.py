@@ -195,7 +195,21 @@ def test_build_docker_asset_snapshots_groups_registry_objects_instead_of_raw_con
     assert [container.name for container in cpa_asset.containers] == ['cpa-api', 'cpa-worker']
     assert cpa_asset.primary_container_name == 'cpa-api'
     assert cpa_asset.status == 'Up 3 days'
-    assert cpa_asset.supports_actions == ['update_latest', 'deploy_version', 'delete', 'full_delete']
+    assert cpa_asset.supports_actions == [
+        'update_latest',
+        'deploy_version',
+        'start',
+        'stop',
+        'restart',
+        'autostart_enable',
+        'autostart_disable',
+        'cf_create',
+        'cf_refresh',
+        'cf_disable',
+        'notify_send',
+        'delete',
+        'full_delete',
+    ]
 
     new_api_asset = assets[1]
     assert [container.name for container in new_api_asset.containers] == ['new-api']
@@ -534,16 +548,17 @@ def test_build_docker_asset_snapshots_adds_runtime_discovered_projects(tmp_path:
     assert discovered.supports_actions == [
         'update_latest',
         'deploy_version',
-        'delete',
-        'full_delete',
         'start',
         'stop',
+        'restart',
         'autostart_enable',
         'autostart_disable',
         'cf_create',
         'cf_refresh',
         'cf_disable',
         'notify_send',
+        'delete',
+        'full_delete',
     ]
     assert discovered.metadata['discovery_source'] == 'runtime_discovered'
     assert discovered.metadata['project_dir'] == str(repo_dir)

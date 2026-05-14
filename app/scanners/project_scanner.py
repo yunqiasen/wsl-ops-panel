@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 
 from app.models.assets import AssetSnapshot
@@ -5,6 +7,7 @@ from app.models.assets import AssetSnapshot
 DEFAULT_PROJECT_ROOT = Path('/home/div/1_Project_dir')
 DOCKER_COMPOSE_FILES = ('docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml')
 SKIP_NAME_PARTS = ('backup', 'backups', 'archive', 'tmp', 'cache')
+_PORT_RE = re.compile(r'(?:--port\s+|PORT=)(\d{2,5})')
 
 
 def scan_projects(*, root: Path | str = DEFAULT_PROJECT_ROOT) -> list[AssetSnapshot]:
@@ -22,6 +25,10 @@ def scan_projects(*, root: Path | str = DEFAULT_PROJECT_ROOT) -> list[AssetSnaps
         if not stacks:
             continue
         git_info = _read_git_info(child)
+        package_scripts = _read_package_scripts(child)
+        start_command = package_scripts.get('start')
+        web_ui = _detect_web_ui(child, start_command=start_command)
+        capabilities = _build_project_capabilities(child, web_ui=web_ui)
         assets.append(
             AssetSnapshot(
                 object_id=f'project__{_slugify(child.name)}',
@@ -36,10 +43,55 @@ def scan_projects(*, root: Path | str = DEFAULT_PROJECT_ROOT) -> list[AssetSnaps
                     'git_branch': git_info.get('git_branch'),
                     'head_sha': git_info.get('head_sha'),
                     'discovery_source': 'filesystem_scan',
+                    'package_scripts': package_scripts,
+                    'start_command': start_command,
+                    'web_ui': web_ui,
+                    'capabilities': capabilities,
                 },
             )
         )
     return assets
+
+
+def _read_package_scripts(path: Path) -> dict[str, str]:
+    package_json = path / 'package.json'
+    if not package_json.exists():
+        return {}
+    try:
+        payload = json.loads(package_json.read_text(encoding='utf-8'))
+    except json.JSONDecodeError:
+        return {}
+    scripts = payload.get('scripts')
+    if not isinstance(scripts, dict):
+        return {}
+    return {str(key): str(value) for key, value in scripts.items() if isinstance(value, str)}
+
+
+def _detect_web_ui(path: Path, *, start_command: str | None) -> dict[str, object]:
+    port = None
+    if start_command:
+        match = _PORT_RE.search(start_command)
+        if match:
+            port = match.group(1)
+    enabled = bool(port or (path / 'scripts' / 'cftunnel-start.sh').exists())
+    return {'enabled': enabled, 'port': port, 'url_path': '/'}
+
+
+def _build_project_capabilities(path: Path, *, web_ui: dict[str, object]) -> dict[str, dict[str, object]]:
+    cftunnel_script = path / 'scripts' / 'cftunnel-start.sh'
+    domain_file = path / 'logs' / 'cftunnel-domain.txt'
+    current_url = domain_file.read_text(encoding='utf-8', errors='replace').strip() if domain_file.exists() else None
+    return {
+        'cf_tunnel': {
+            'enabled': cftunnel_script.exists(),
+            'script_path': str(cftunnel_script) if cftunnel_script.exists() else None,
+            'domain_file': str(domain_file),
+            'current_url': current_url,
+        },
+        'wechat_notify': {'enabled': False},
+        'runtime_control': {'enabled': bool(web_ui.get('enabled'))},
+        'autostart': {'enabled': False},
+    }
 
 
 def _should_skip(path: Path) -> bool:

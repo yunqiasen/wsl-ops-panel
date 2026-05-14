@@ -17,6 +17,7 @@ from app.scanners.project_scanner import scan_projects
 from app.scanners.system_scanner import scan_system_infrastructure
 from app.scanners.systemd_scanner import scan_systemd_units
 from app.services.asset_policies import AssetPolicyService
+from app.services.capabilities import enrich_asset_capabilities
 from app.services.docker_versions import DockerVersionService
 
 LOGGER = logging.getLogger(__name__)
@@ -104,15 +105,15 @@ class AssetService:
             scanned_units, scan_failed = self._scan_systemd_units()
             return build_systemd_asset_snapshots(snapshot, scanned_units, scan_failed=scan_failed)
         if category_id == 'node':
-            return [self._policy_service.apply(asset) for asset in self._scan_readonly_assets(self._node_scanner, 'node')]
+            return [enrich_asset_capabilities(self._policy_service.apply(asset)) for asset in self._scan_readonly_assets(self._node_scanner, 'node')]
         if category_id == 'python':
-            return [self._policy_service.apply(asset) for asset in self._scan_readonly_assets(self._python_scanner, 'python')]
+            return [enrich_asset_capabilities(self._policy_service.apply(asset)) for asset in self._scan_readonly_assets(self._python_scanner, 'python')]
         if category_id == 'project':
-            return self._scan_readonly_assets(self._project_scanner, 'project')
+            return [enrich_asset_capabilities(asset) for asset in self._scan_readonly_assets(self._project_scanner, 'project')]
         if category_id == 'host':
-            return self._scan_readonly_assets(self._host_process_scanner, 'host')
+            return [enrich_asset_capabilities(asset) for asset in self._scan_readonly_assets(self._host_process_scanner, 'host')]
         if category_id == 'system':
-            return self._scan_readonly_assets(self._system_infra_scanner, 'system')
+            return [enrich_asset_capabilities(asset) for asset in self._scan_readonly_assets(self._system_infra_scanner, 'system')]
         if category_id in {'agent_cli', 'agent'}:
             return []
         return []
@@ -177,8 +178,9 @@ def build_docker_asset_snapshots(
         )
 
         assets.append(
-            AssetSnapshot(
-                object_id=obj.id,
+            enrich_asset_capabilities(
+                AssetSnapshot(
+                    object_id=obj.id,
                 category=obj.category,
                 name=obj.name,
                 status=status,
@@ -204,9 +206,11 @@ def build_docker_asset_snapshots(
                     'runtime_image_tag': runtime.image_tag,
                     'runtime_oci_version': runtime.oci_version,
                     'runtime_oci_revision': runtime.oci_revision,
+                    'ports': primary.ports if primary is not None else None,
                 },
                 containers=object_containers,
-                primary_container_name=primary.name if primary is not None else None,
+                    primary_container_name=primary.name if primary is not None else None,
+                )
             )
         )
     assets.extend(_build_runtime_discovered_docker_assets(containers_by_dir, managed_project_dirs, docker_version_service))
@@ -235,8 +239,9 @@ def _build_runtime_discovered_docker_assets(
         capabilities = _build_discovered_capabilities(project_path, image_repository=image_repository, git_remote_url=git_info.get('git_remote_url'))
         name = project_path.name or primary.compose_project or primary.name
         assets.append(
-            AssetSnapshot(
-                object_id=f"docker__{_slugify(project_path.name or primary.compose_project or primary.name)}",
+            enrich_asset_capabilities(
+                AssetSnapshot(
+                    object_id=f"docker__{_slugify(project_path.name or primary.compose_project or primary.name)}",
                 category='docker',
                 name=name,
                 status=primary.status,
@@ -265,7 +270,8 @@ def _build_runtime_discovered_docker_assets(
                     **git_info,
                 },
                 containers=containers,
-                primary_container_name=primary.name,
+                    primary_container_name=primary.name,
+                )
             )
         )
     return assets
@@ -381,13 +387,15 @@ def build_systemd_asset_snapshots(
             'description': scanned.metadata.get('description') if scanned else '',
         }
         assets.append(
-            AssetSnapshot(
-                object_id=obj.id,
-                category=obj.category,
-                name=obj.name,
-                status=status,
-                supports_actions=SYSTEMD_SUPPORTED_ACTIONS.copy(),
-                metadata=metadata,
+            enrich_asset_capabilities(
+                AssetSnapshot(
+                    object_id=obj.id,
+                    category=obj.category,
+                    name=obj.name,
+                    status=status,
+                    supports_actions=SYSTEMD_SUPPORTED_ACTIONS.copy(),
+                    metadata=metadata,
+                )
             )
         )
     return assets
