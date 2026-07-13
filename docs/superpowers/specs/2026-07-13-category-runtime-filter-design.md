@@ -20,7 +20,7 @@
 
 - `running`：Docker 状态以 `Up` 开头，或状态为 `running`、`active`、`listening`。
 - `stopped`：状态为或以 `Exited`、`not running`、`inactive`、`failed`、`dead`、`stopped` 开头。
-- `unknown`：`present`、`available`、`missing`、`error`、`scan_failed` 以及无法确认运行态的其他值。
+- `unknown`：Docker `Paused`、`present`、`available`、`missing`、`error`、`scan_failed` 以及无法确认运行态的其他值。
 
 `unknown` 资产在默认视图中显示；启用“运行中”或“已关闭”筛选后排除，避免把“只发现目录”误报为已经关闭。
 

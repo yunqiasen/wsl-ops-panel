@@ -10,6 +10,15 @@
 
 ---
 
+## 完成记录（2026-07-13）
+
+- `pytest -q`：290 passed。
+- Node DOM/状态机测试：4 passed。
+- `ruff check .` 与 `git diff --check`：通过。
+- 本机与 Tailscale 登录页：HTTP 200。
+- Chromium 实测：17 个 Docker 资产中运行中 9、已关闭 8；搜索 `New API` 叠加“已关闭”后仅显示 1 个。
+- 代码审查发现的零资产按钮失效和 Docker Paused 误归类已修复并增加回归测试。
+
 ## 文件边界
 
 - 修改 `app/templates/category.html`：渲染按钮和 `data-runtime-state`。
@@ -27,7 +36,7 @@
 - Modify: `tests/test_overview_routes.py`
 - Create: `tests/frontend/category-runtime-filter.test.cjs`
 
-- [ ] **Step 1: 写模板失败测试**
+- [x] **Step 1: 写模板失败测试**
 
 在 `tests/test_overview_routes.py` 增加测试，构造一个运行中的 Docker 对象和一个无主容器的停止对象，并断言：
 
@@ -73,7 +82,7 @@ def test_system_category_does_not_render_runtime_filter_controls(tmp_path: Path)
     assert 'data-runtime-state="unknown"' in response.text
 ```
 
-- [ ] **Step 2: 写 JavaScript 失败测试**
+- [x] **Step 2: 写 JavaScript 失败测试**
 
 创建 `tests/frontend/category-runtime-filter.test.cjs`：
 
@@ -95,7 +104,7 @@ test('再次点击激活按钮恢复全部', () => {
 });
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [x] **Step 3: 运行测试确认失败**
 
 Run:
 
@@ -112,7 +121,7 @@ Expected: pytest 因缺少按钮/data 属性失败；Node 因未导出函数失�
 - Modify: `app/templates/category.html`
 - Modify: `app/static/app.js`
 
-- [ ] **Step 1: 在模板中增加按钮与状态属性**
+- [x] **Step 1: 在模板中增加按钮与状态属性**
 
 在搜索面板中为 `docker/project/systemd/host` 渲染：
 
@@ -134,7 +143,7 @@ Expected: pytest 因缺少按钮/data 属性失败；Node 因未导出函数失�
 <li class="asset-card" data-asset-card data-runtime-state="{{ runtime_state }}" ...>
 ```
 
-- [ ] **Step 2: 增加纯函数并扩展 `initAssetSearch()`**
+- [x] **Step 2: 增加纯函数并扩展 `initAssetSearch()`**
 
 在 `app/static/app.js` 增加：
 
@@ -175,7 +184,7 @@ if (typeof document !== 'undefined') {
 }
 ```
 
-- [ ] **Step 3: 运行定向测试确认通过**
+- [x] **Step 3: 运行定向测试确认通过**
 
 Run:
 
@@ -191,7 +200,7 @@ Expected: 所有定向测试通过。
 **Files:**
 - Modify: `app/static/app.css`
 
-- [ ] **Step 1: 增加桌面样式**
+- [x] **Step 1: 增加桌面样式**
 
 ```css
 .category-runtime-filters {
@@ -225,7 +234,7 @@ Expected: 所有定向测试通过。
 }
 ```
 
-- [ ] **Step 2: 增加窄屏样式**
+- [x] **Step 2: 增加窄屏样式**
 
 在现有 `@media (max-width: 720px)` 中增加：
 
@@ -240,7 +249,7 @@ Expected: 所有定向测试通过。
 }
 ```
 
-- [ ] **Step 3: 运行页面与 CSS 定向测试**
+- [x] **Step 3: 运行页面与 CSS 定向测试**
 
 Run:
 
@@ -256,7 +265,7 @@ Expected: 全部通过。
 **Files:**
 - Modify: `docs/operations.md`
 
-- [ ] **Step 1: 增加分类筛选说明**
+- [x] **Step 1: 增加分类筛选说明**
 
 在支持范围后增加：
 
@@ -270,7 +279,7 @@ Expected: 全部通过。
 - 宿主机进程页只扫描当前监听项，不保留已关闭进程历史。
 ```
 
-- [ ] **Step 2: 检查文档和差异格式**
+- [x] **Step 2: 检查文档和差异格式**
 
 Run:
 
@@ -285,7 +294,7 @@ Expected: 无输出，退出码 0。
 **Files:**
 - Verify only
 
-- [ ] **Step 1: 运行完整测试与静态检查**
+- [x] **Step 1: 运行完整测试与静态检查**
 
 Run:
 
@@ -298,7 +307,7 @@ git diff --check
 
 Expected: pytest、Node 测试、ruff 全部通过，diff check 无输出。
 
-- [ ] **Step 2: 重启服务并验证 HTTP**
+- [x] **Step 2: 重启服务并验证 HTTP**
 
 Run:
 
@@ -311,7 +320,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://100.126.43.55:8328/login
 
 Expected: 服务为 `active`，两个 URL 均返回 `200`。
 
-- [ ] **Step 3: 浏览器验收**
+- [x] **Step 3: 浏览器验收**
 
 在已登录的 Docker 分类页验证：
 
