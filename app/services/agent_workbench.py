@@ -10,6 +10,7 @@ from app.services.agent_clients import agent_clients_payload
 from app.services.agent_mcp import AgentMcpStore, agent_data_root, public_mcp_server
 from app.services.agent_mcp_adapters import CLIENT_PATHS, scan_mcp_home
 from app.services.agent_prompts import AgentPromptStore
+from app.services.agent_router_config import AgentRouterConfigStore
 from app.services.agent_providers import (
     AgentProviderStore,
     public_provider,
@@ -179,12 +180,15 @@ def build_agent_workbench_context(
 
     detected_clients = [client for client in clients if client.get("detected")]
     active_client = str(detected_clients[0]["id"]) if detected_clients else None
+    router_snapshot = AgentRouterConfigStore(data_root).public_snapshot()
 
     return {
         "agent_clients": clients,
         "agent_detected_clients": detected_clients,
         "agent_supported_clients": clients,
         "agent_active_client": active_client,
+        "agent_router_config": router_snapshot,
+        "agent_router_takeover": router_snapshot.get("takeover", {}),
         "agent_mcp_servers": sorted(
             rows.values(), key=lambda row: (str(row["name"]).lower(), str(row["id"]))
         ),

@@ -6,10 +6,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.agent import router as agent_router
+from app.api.agent_router import router as agent_router_control_router
 from app.api.assets import router as assets_router
 from app.api.auth import router as auth_router
 from app.api.bulk_actions import router as bulk_actions_router
 from app.api.notifications import router as notifications_router
+from app.api.remote_nodes import router as remote_nodes_router
 from app.api.overview import router as overview_router
 from app.api.settings import router as settings_router
 from app.api.tasks import router as tasks_router
@@ -23,6 +26,14 @@ from app.registry.service import RegistryService
 from app.services.assets import AssetService
 from app.services.docker_versions import DockerVersionService
 from app.services.notifications import NotificationService
+from app.services.agent_mcp import agent_data_root
+from app.services.agent_router_config import AgentRouterConfigStore
+from app.services.agent_router_control import AgentRouterController
+from app.services.remote_nodes import (
+    RemoteNodeStore,
+    RemoteSSHService,
+    default_remote_nodes_path,
+)
 from app.tasks.queue import GlobalTaskQueue
 from app.tasks.store import SQLiteTaskStore, TaskStore
 from app.tasks.worker import SerialTaskWorker
@@ -41,7 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(
     *,
-    config_root: Path | str = Path('config'),
+    config_root: Path | str = Path("config"),
     docker_scanner: Callable[[], list[DockerContainerSnapshot]] | None = None,
     systemd_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     node_scanner: Callable[[], list[AssetSnapshot]] | None = None,
@@ -51,16 +62,23 @@ def create_app(
     project_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     task_store: TaskStore | None = None,
 ) -> FastAPI:
-    app = FastAPI(title='WSL Ops Panel', lifespan=lifespan)
+    app = FastAPI(title="WSL Ops Panel", lifespan=lifespan)
     app.include_router(auth_router)
+    app.include_router(agent_router)
+    app.include_router(agent_router_control_router)
     app.include_router(bulk_actions_router)
     app.include_router(overview_router)
     app.include_router(notifications_router)
+    app.include_router(remote_nodes_router)
     app.include_router(tasks_router)
     app.include_router(settings_router)
     app.include_router(terminals_router)
     app.include_router(assets_router)
-    app.mount('/static', StaticFiles(directory=str(Path(__file__).parent / 'static')), name='static')
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(Path(__file__).parent / "static")),
+        name="static",
+    )
 
     config_root = Path(config_root)
     docker_version_service = DockerVersionService()
@@ -96,32 +114,44 @@ def create_app(
     app.state.docker_recipe_service = docker_recipe_service
     app.state.docker_version_service = docker_version_service
     app.state.notification_service = NotificationService(config_root)
+    app.state.agent_router_controller = AgentRouterController(
+        AgentRouterConfigStore(agent_data_root(config_root))
+    )
+    app.state.remote_node_store = RemoteNodeStore(
+        default_remote_nodes_path(config_root)
+    )
+    app.state.remote_ssh_service = RemoteSSHService(
+        credential_root=default_remote_nodes_path(config_root).parent / "sshpass"
+    )
     app.state.rebuild_registry_runtime = lambda: _rebuild_registry_runtime(app)
     app.state.task_store = queue_store
     app.state.task_queue = task_queue
     app.state.task_worker = task_worker
     app.state.system_terminal_sink = system_terminal_sink
 
-    @app.api_route('/healthz', methods=['GET', 'HEAD'])
+    @app.api_route("/healthz", methods=["GET", "HEAD"])
     def healthcheck() -> dict[str, str]:
-        return {'status': 'ok'}
+        return {"status": "ok"}
 
-    @app.get('/login', response_class=HTMLResponse)
+    @app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request) -> HTMLResponse:
-        return TEMPLATES.TemplateResponse(request, 'login.html', {'title': '登录'})
+        context = build_page_context(request, title="登录", active_page="login")
+        return TEMPLATES.TemplateResponse(request, "login.html", context)
 
-    @app.get('/terminals', response_class=HTMLResponse, name='terminals_page')
+    @app.get("/terminals", response_class=HTMLResponse, name="terminals_page")
     def terminals_page(request: Request) -> HTMLResponse:
         redirect = page_login_redirect(request)
         if redirect is not None:
             return redirect
-        context = build_page_context(request, title='终端中心', active_page='terminals')
-        return TEMPLATES.TemplateResponse(request, 'terminals.html', context)
+        context = build_page_context(request, title="终端中心", active_page="terminals")
+        return TEMPLATES.TemplateResponse(request, "terminals.html", context)
 
     return app
 
 
-def _build_docker_recipe_service(config_root: Path, registry_snapshot: RegistrySnapshot) -> DockerRecipeService | None:
+def _build_docker_recipe_service(
+    config_root: Path, registry_snapshot: RegistrySnapshot
+) -> DockerRecipeService | None:
     recipe_ids = _collect_referenced_recipe_ids(registry_snapshot)
     if not recipe_ids:
         return None
@@ -130,9 +160,9 @@ def _build_docker_recipe_service(config_root: Path, registry_snapshot: RegistryS
 
 def _collect_referenced_recipe_ids(registry_snapshot: RegistrySnapshot) -> set[str]:
     return {
-        obj.config['recipe_id']
+        obj.config["recipe_id"]
         for obj in registry_snapshot.objects
-        if obj.type == 'docker_compose' and bool(obj.config.get('recipe_id'))
+        if obj.type == "docker_compose" and bool(obj.config.get("recipe_id"))
     }
 
 
@@ -161,7 +191,9 @@ def _build_runtime_services(
     docker_version_service: DockerVersionService | None = None,
 ) -> RuntimeServices:
     registry_service = RegistryService(config_root)
-    docker_recipe_service = _build_docker_recipe_service(config_root, registry_service.snapshot)
+    docker_recipe_service = _build_docker_recipe_service(
+        config_root, registry_service.snapshot
+    )
     asset_service = AssetService(
         registry_service,
         docker_scanner=docker_scanner,

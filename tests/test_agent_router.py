@@ -189,3 +189,99 @@ def test_router_health_and_missing_provider(tmp_path: Path) -> None:
     assert client.get("/health").json()["status"] == "ok"
     missing = client.post("/codex/v1/responses", json={"model": "x", "input": "hi"})
     assert missing.status_code == 503
+
+
+def test_router_controller_uses_exact_systemd_commands(tmp_path: Path) -> None:
+    from app.services.agent_router_control import AgentRouterController
+
+    commands: list[list[str]] = []
+    controller = AgentRouterController(
+        AgentRouterConfigStore(tmp_path),
+        home=tmp_path / "home",
+        runner=lambda command: commands.append(command) or 0,
+        health_probe=lambda: {"status": "ok"},
+    )
+
+    result = controller.start()
+
+    assert result["ok"] is True
+    assert commands == [["sudo", "-n", "systemctl", "start", "wsl-agent-router.service"]]
+
+
+def test_router_control_api_updates_config_and_takeover(tmp_path: Path) -> None:
+    from app.core.security import COOKIE_NAME, issue_session_token
+    from app.main import create_app
+    from app.services.agent_router_control import AgentRouterController
+
+    home = tmp_path / "home"
+    config = home / ".codex/config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text('model_provider = "original"\n', encoding="utf-8")
+    (tmp_path / "categories").mkdir()
+    (tmp_path / "categories" / "agent.yaml").write_text(
+        "id: agent\nlabel: Agent\norder: 60\nenabled: true\n", encoding="utf-8"
+    )
+    (tmp_path / "objects").mkdir()
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules" / "node-packages.yaml").write_text(
+        "packages: []\n", encoding="utf-8"
+    )
+    (tmp_path / "rules" / "python-packages.yaml").write_text(
+        "packages: []\n", encoding="utf-8"
+    )
+    store = AgentRouterConfigStore(tmp_path / "data" / "agent")
+    controller = AgentRouterController(
+        store,
+        home=home,
+        runner=lambda command: 0,
+        health_probe=lambda: {"status": "ok"},
+    )
+    app = create_app(config_root=tmp_path, node_scanner=lambda: [])
+    app.state.agent_router_controller = controller
+    client = TestClient(app)
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    response = client.put(
+        "/api/agent/router/config",
+        json={
+            "listen_address": "127.0.0.1",
+            "listen_port": 7888,
+            "show_home_switch": True,
+            "outbound_proxy": None,
+        },
+    )
+    takeover = client.put(
+        "/api/agent/router/apps/codex/takeover", json={"enabled": True}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["config"]["listen_port"] == 7888
+    assert takeover.status_code == 200
+    assert takeover.json()["takeover"]["codex"] is True
+    assert "127.0.0.1:7888" in config.read_text(encoding="utf-8")
+
+
+def test_router_stop_requires_restore_for_active_takeover(tmp_path: Path) -> None:
+    from app.services.agent_router_control import ActiveTakeoverError, AgentRouterController
+
+    home = tmp_path / "home"
+    config = home / ".codex/config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text('model_provider = "original"\n', encoding="utf-8")
+    commands: list[list[str]] = []
+    controller = AgentRouterController(
+        AgentRouterConfigStore(tmp_path / "data" / "agent"),
+        home=home,
+        runner=lambda command: commands.append(command) or 0,
+        health_probe=lambda: {"status": "ok"},
+    )
+    controller.enable_takeover("codex")
+
+    with pytest.raises(ActiveTakeoverError, match="codex"):
+        controller.stop()
+    result = controller.stop(restore_clients=True)
+
+    assert result["ok"] is True
+    assert result["restored_clients"] == ["codex"]
+    assert config.read_text(encoding="utf-8") == 'model_provider = "original"\n'
+    assert commands[-1][-2:] == ["stop", "wsl-agent-router.service"]
