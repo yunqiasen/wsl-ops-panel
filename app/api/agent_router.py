@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.security import require_authenticated_request
 from app.services.agent_mcp import agent_data_root
+from app.services.agent_providers import AgentProviderStore
 from app.services.agent_router_config import AgentRouterConfigError, AgentRouterConfigStore
 from app.services.agent_router_control import (
     ActiveTakeoverError,
@@ -42,6 +43,12 @@ class AgentRouterProviderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: dict[str, Any]
+
+
+class AgentRouterProviderSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_id: str
 
 
 @router.get("/status", response_model=dict[str, Any])
@@ -111,6 +118,34 @@ def set_router_provider(
     except (AgentRouterConfigError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"provider": _redact_profile(saved)}
+
+
+@router.put("/apps/{client_id}/provider", response_model=dict[str, Any])
+def select_client_provider(
+    client_id: str, payload: AgentRouterProviderSelectionRequest, request: Request
+) -> dict[str, Any]:
+    require_authenticated_request(request)
+    clean_client = client_id.strip()
+    clean_provider = payload.provider_id.strip()
+    if not clean_client or not clean_provider:
+        raise HTTPException(status_code=400, detail="client_id and provider_id are required")
+    data_root = agent_data_root(request.app.state.config_root)
+    provider_store = AgentProviderStore(data_root)
+    profile = provider_store.runtime_profile(clean_client, clean_provider)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="provider profile not found")
+    try:
+        saved = _controller(request).store.set_provider(
+            clean_client, profile, provider_id=clean_provider
+        )
+    except (AgentRouterConfigError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    provider_store.set_current(clean_client, clean_provider)
+    return {
+        "client_id": clean_client,
+        "provider_id": clean_provider,
+        "provider": _redact_profile(saved),
+    }
 
 
 @router.put("/apps/{client_id}/takeover", response_model=dict[str, Any])

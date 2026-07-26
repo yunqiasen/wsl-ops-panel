@@ -68,7 +68,13 @@ class AgentRouterConfigStore:
             self._write(payload)
             return copy.deepcopy(payload)
 
-    def set_provider(self, client_id: str, profile: dict[str, Any]) -> dict[str, Any]:
+    def set_provider(
+        self,
+        client_id: str,
+        profile: dict[str, Any],
+        *,
+        provider_id: str | None = None,
+    ) -> dict[str, Any]:
         client = _clean_id(client_id)
         if not client:
             raise AgentRouterConfigError("client id is required")
@@ -80,6 +86,8 @@ class AgentRouterConfigStore:
             payload = self._read()
             providers = payload.setdefault("providers", {})
             providers[client] = normalized
+            if provider_id is not None:
+                payload.setdefault("provider_ids", {})[client] = _clean_id(provider_id)
             self._write(payload)
             return copy.deepcopy(normalized)
 
@@ -93,6 +101,8 @@ class AgentRouterConfigStore:
             providers = payload.setdefault("providers", {})
             existed = _clean_id(client_id) in providers
             providers.pop(_clean_id(client_id), None)
+            provider_ids = payload.setdefault("provider_ids", {})
+            provider_ids.pop(_clean_id(client_id), None)
             if existed:
                 self._write(payload)
             return existed
@@ -158,6 +168,8 @@ def _with_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         result["takeover"] = {}
     if not isinstance(result.get("providers"), dict):
         result["providers"] = {}
+    if not isinstance(result.get("provider_ids"), dict):
+        result["provider_ids"] = {}
     result.setdefault("updated_at", None)
     return result
 

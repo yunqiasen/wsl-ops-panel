@@ -285,3 +285,58 @@ def test_router_stop_requires_restore_for_active_takeover(tmp_path: Path) -> Non
     assert result["restored_clients"] == ["codex"]
     assert config.read_text(encoding="utf-8") == 'model_provider = "original"\n'
     assert commands[-1][-2:] == ["stop", "wsl-agent-router.service"]
+
+
+def test_router_selects_saved_arbitrary_provider_without_exposing_secret(
+    tmp_path: Path,
+) -> None:
+    from app.core.security import COOKIE_NAME, issue_session_token
+    from app.main import create_app
+    from app.services.agent_providers import AgentProviderStore
+    from app.services.agent_router_control import AgentRouterController
+
+    (tmp_path / "categories").mkdir()
+    (tmp_path / "categories/agent.yaml").write_text(
+        "id: agent\nlabel: Agent\norder: 60\nenabled: true\n", encoding="utf-8"
+    )
+    (tmp_path / "objects").mkdir()
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules/node-packages.yaml").write_text("packages: []\n", encoding="utf-8")
+    (tmp_path / "rules/python-packages.yaml").write_text("packages: []\n", encoding="utf-8")
+    data_root = tmp_path / "data/agent"
+    AgentProviderStore(data_root).upsert_provider(
+        app_id="codex",
+        provider_id="relay-main",
+        name="Relay Main",
+        settings={
+            "routing": {
+                "base_url": "https://relay.example/v1",
+                "api_format": "openai_responses",
+                "api_key": "router-secret",
+                "model": "gpt-relay",
+            }
+        },
+    )
+    router_store = AgentRouterConfigStore(data_root)
+    app = create_app(config_root=tmp_path, node_scanner=lambda: [])
+    app.state.agent_router_controller = AgentRouterController(
+        router_store,
+        home=tmp_path / "home",
+        runner=lambda command: 0,
+        health_probe=lambda: {"status": "ok"},
+    )
+    client = TestClient(app)
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    response = client.put(
+        "/api/agent/router/apps/codex/provider",
+        json={"provider_id": "relay-main"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider_id"] == "relay-main"
+    assert "router-secret" not in response.text
+    assert router_store.snapshot()["providers"]["codex"]["api_key"] == "router-secret"
+    assert router_store.public_snapshot()["provider_ids"]["codex"] == "relay-main"
+    current = AgentProviderStore(data_root).get_provider("codex", "relay-main")
+    assert current is not None and current["is_current"] is True

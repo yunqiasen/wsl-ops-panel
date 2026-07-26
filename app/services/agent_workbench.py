@@ -179,7 +179,13 @@ def build_agent_workbench_context(
         row["target_summaries"] = summaries
 
     detected_clients = [client for client in clients if client.get("detected")]
-    active_client = str(detected_clients[0]["id"]) if detected_clients else None
+    # 有真实配置的客户端优先于仅凭 PATH 二进制命中的客户端，避免页面默认
+    # 落到一个没有可读配置的应用，进而把真实 MCP 显示成“未扫描”。
+    config_detected = [
+        client for client in detected_clients if client.get("detection_source") == "config"
+    ]
+    active_pool = config_detected or detected_clients
+    active_client = str(active_pool[0]["id"]) if active_pool else None
     router_snapshot = AgentRouterConfigStore(data_root).public_snapshot()
 
     return {

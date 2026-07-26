@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block content %}
+{% set detected = agent_detected_clients or [] %}
+{% set active_id = agent_active_client or (detected[0].id if detected else '') %}
+{% set active_client = (detected | selectattr('id', 'equalto', active_id) | list | first) if active_id else none %}
+{% set router = agent_router_config or {} %}
+{% set takeover = router.takeover or {} %}
+{% set active_providers = agent_providers.get(active_id, []) if active_id else [] %}
+{% set skill_total = namespace(value=0) %}
+{% for client in detected %}
+  {% set skill = agent_skills.get(client.id) %}
+  {% if skill %}{% set skill_total.value = skill_total.value + (skill['count'] or 0) %}{% endif %}
+{% endfor %}
+
+<section class="agent-workbench agent-shell" data-agent-workbench data-agent-active-client="{{ active_id }}">
+  <header class="agent-header">
+    <div class="agent-heading">
+      <span class="agent-logo" aria-hidden="true">AI</span>
+      <div>
+        <p class="eyebrow">LOCAL / WSL</p>
+        <h1>Agent 工作台</h1>
+        <p class="agent-subtitle">只管理当前 WSL 中真实检测到的客户端。每个客户端使用自己的配置适配器。</p>
+      </div>
+    </div>
+    <div class="agent-header-meta">
+      <span class="agent-live-dot"></span>
+      <span>本机配置</span>
+      <code>__local__</code>
+    </div>
+  </header>
+
+  <section class="agent-client-strip" aria-label="已检测的 AI 客户端" data-agent-client-tabs>
+    <div class="agent-strip-label">
+      <span class="agent-kicker">CLIENT</span>
+      <strong>选择客户端</strong>
+      <small>一次只操作一个客户端</small>
+    </div>
+    <div class="agent-client-buttons">
+      {% for client in detected %}
+      <button type="button"
+              class="agent-client-button {{ 'is-active' if client.id == active_id else '' }}"
+              data-agent-app
+              data-agent-client-id="{{ client.id }}"
+              value="{{ client.id }}"
+              data-agent-app-name="{{ client.name }}"
+              data-agent-capabilities="{{ client.features|join(',') }}"
+              data-agent-router-provider="{{ (router.provider_ids or {}).get(client.id, '') }}"
+              aria-pressed="{{ 'true' if client.id == active_id else 'false' }}">
+        <span class="agent-client-glyph agent-client-glyph--{{ client.id }}">{{ client.name[:1] }}</span>
+        <span class="agent-client-button-copy"><b>{{ client.name }}</b><small>{{ client.detection_source or 'config' }}</small></span>
+        <span class="agent-select-indicator" aria-hidden="true"></span>
+      </button>
+      {% else %}
+      <div class="agent-empty-inline">当前 WSL 没有检测到可管理的 AI 客户端。</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  {% if active_client %}
+  <section class="agent-client-status" data-agent-client-status>
+    <div class="agent-client-status-main">
+      <span class="agent-client-glyph agent-client-glyph--{{ active_client.id }}">{{ active_client.name[:1] }}</span>
+      <div><strong data-agent-active-name>{{ active_client.name }}</strong><small>配置来源：{{ active_client.detection_source or '本地文件' }} · 仅限当前 WSL</small></div>
+    </div>
+    <div class="agent-status-facts">
+      <span><b data-agent-active-feature-count>{{ active_client.features|length }}</b><small>能力</small></span>
+      <span><b>{{ (agent_providers.get(active_id, [])|length) }}</b><small>Provider</small></span>
+      <span><b>{{ (agent_skills.get(active_id)['count'] if agent_skills.get(active_id) else 0) }}</b><small>Skill</small></span>
+      <code>{{ active_client.mcp_path or '无 MCP 配置' }}</code>
+    </div>
+  </section>
+  {% endif %}
+
+  <nav class="agent-tabs" aria-label="Agent 功能" role="tablist">
+    <button type="button" class="is-active" data-agent-tab-control="providers" data-agent-feature="providers" role="tab" aria-selected="true">Providers</button>
+    <button type="button" data-agent-tab-control="route" data-agent-feature="route" role="tab" aria-selected="false">Route</button>
+    <button type="button" data-agent-tab-control="mcp" data-agent-feature="mcp" role="tab" aria-selected="false">MCP</button>
+    <button type="button" data-agent-tab-control="skills" data-agent-feature="skills" role="tab" aria-selected="false">Skills</button>
+    <button type="button" data-agent-tab-control="prompts" data-agent-feature="prompts" role="tab" aria-selected="false">Prompts</button>
+  </nav>
+
+  <section class="agent-panel agent-panel--providers" data-agent-tab="providers" role="tabpanel">
+    <div class="agent-panel-heading">
+      <div><span class="agent-kicker">UPSTREAMS</span><h2>Provider 配置</h2><p>官方 API、自建中转、OpenRouter、CLIProxyAPI 都是普通 Provider。这里不绑定任何特定中转。</p></div>
+      <div class="agent-actions"><button class="button button--quiet" type="button" data-agent-provider-import>导入当前配置</button><button class="button button--primary" type="button" data-agent-provider-new>新建 Provider</button></div>
+    </div>
+    <div class="agent-two-column">
+      <div class="agent-stack" data-agent-provider-list>
+        {% for client in detected %}
+        {% for provider in agent_providers.get(client.id, []) %}
+        <article class="agent-provider-row {{ 'is-current' if provider.is_current else '' }}" data-agent-provider-card data-provider-app="{{ client.id }}" data-provider-id="{{ provider.id }}">
+          <button class="agent-row-select" type="button" data-agent-provider-select value="{{ client.id }}::{{ provider.id }}" aria-pressed="{{ 'true' if provider.is_current else 'false' }}"><span class="agent-client-glyph agent-client-glyph--{{ client.id }}">{{ client.name[:1] }}</span><span><b>{{ provider.name }}</b><small>{{ provider.id }} · {{ provider.category or provider.source or 'manual' }}</small></span></button>
+          <div class="agent-provider-row-meta"><span class="agent-state-pill {{ 'is-good' if provider.is_current else '' }}">{{ '当前' if provider.is_current else '已保存' }}</span>{% if provider.has_secrets %}<span class="agent-state-pill is-secret">凭证已脱敏</span>{% endif %}</div>
+          <div class="agent-row-actions"><button class="button button--small button--quiet" type="button" data-agent-provider-edit="{{ client.id }}::{{ provider.id }}">编辑</button><button class="button button--small button--quiet" type="button" data-agent-provider-test="{{ client.id }}::{{ provider.id }}">测试</button><button class="button button--small button--quiet" type="button" data-agent-provider-current="{{ client.id }}::{{ provider.id }}">当前</button><button class="button button--small button--danger" type="button" data-agent-provider-delete="{{ client.id }}::{{ provider.id }}">删除</button></div>
+        </article>
+        {% endfor %}
+        {% endfor %}
+        {% if not agent_providers %}<div class="agent-empty-card">还没有 Provider。导入当前配置，或新建一个任意 HTTP(S) 中转端点。</div>{% endif %}
+      </div>
+      <aside class="agent-editor" data-agent-provider-editor>
+        <div class="agent-editor-heading"><span class="agent-editor-icon">↗</span><div><strong>Provider 编辑器</strong><small>保存后可直连客户端，也可交给本地 Route 转换。</small></div></div>
+        <div class="agent-form-grid agent-form-grid--two"><label class="agent-field">Provider ID<input data-agent-provider-id placeholder="relay-main"></label><label class="agent-field">名称<input data-agent-provider-name placeholder="团队中转"></label></div>
+        <div class="agent-form-grid agent-form-grid--two"><label class="agent-field">Base URL<input data-agent-provider-base-url placeholder="https://gateway.example/v1"></label><label class="agent-field">API 格式<select data-agent-provider-format><option value="openai_chat">OpenAI Chat</option><option value="openai_responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option><option value="gemini">Gemini</option></select></label></div>
+        <div class="agent-form-grid agent-form-grid--two"><label class="agent-field">认证方式<select data-agent-provider-auth><option value="bearer">Bearer</option><option value="x-api-key">X-API-Key</option><option value="query">Query key</option><option value="none">无认证</option></select></label><label class="agent-field">默认模型<input data-agent-provider-model placeholder="gpt-5"></label></div>
+        <label class="agent-field">API Key <span class="agent-field-note">只写入私有 Secret Store</span><input data-agent-provider-key type="password" autocomplete="off" placeholder="保存后页面只显示圆点"></label>
+        <div class="agent-form-grid agent-form-grid--two"><label class="agent-field">模型映射 JSON<textarea data-agent-provider-model-map rows="3" spellcheck="false" placeholder='{"gpt-5":"relay-gpt-5"}'></textarea></label><label class="agent-field">自定义 Header JSON<textarea data-agent-provider-headers rows="3" spellcheck="false" placeholder='{"X-Tenant":"team-a"}'></textarea></label></div>
+        <details class="agent-advanced"><summary>高级：客户端原生配置 JSON</summary><textarea class="agent-code" data-agent-provider-settings rows="6" spellcheck="false" placeholder='{"type":"codex"}'></textarea></details>
+        <div class="agent-editor-actions"><label class="agent-toggle-line"><input type="checkbox" data-agent-provider-current-check> 设为当前</label><button class="button button--primary" type="button" data-agent-provider-save>保存 Provider</button><button class="button button--quiet" type="button" data-agent-provider-apply>直连应用</button><button class="button button--quiet" type="button" data-agent-provider-clear>清空</button></div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="agent-panel" data-agent-tab="route" data-agent-feature-panel="route" role="tabpanel" hidden>
+    <div class="agent-panel-heading"><div><span class="agent-kicker">DATA PLANE</span><h2>本地 Agent Router</h2><p>客户端 → 127.0.0.1 → 协议转换 / 模型映射 → 任意 Provider。出站代理是另一层，不等于中转。</p></div><div class="agent-route-badge" data-agent-router-state>配置已加载</div></div>
+    <div class="agent-route-grid">
+      <section class="agent-route-card agent-route-card--status"><div class="agent-route-card-head"><strong>服务控制</strong><span class="agent-state-pill" data-agent-router-health>等待检查</span></div><div class="agent-route-address"><span>监听地址</span><code data-agent-router-address>{{ router.listen_address or '127.0.0.1' }}:{{ router.listen_port or 7888 }}</code></div><div class="agent-route-address"><span>当前客户端上游</span><code data-agent-router-current-provider>{{ (router.provider_ids or {}).get(active_id, '未选择') or '未选择' }}</code></div><div class="agent-actions"><button class="button button--primary" type="button" data-agent-router-action="start">启动</button><button class="button button--quiet" type="button" data-agent-router-action="restart">重启</button><button class="button button--danger" type="button" data-agent-router-action="stop">停止</button><button class="button button--quiet" type="button" data-agent-router-refresh>刷新状态</button></div></section>
+      <section class="agent-route-card"><div class="agent-route-card-head"><strong>运行配置</strong><span class="agent-field-note">保存后重启 Router 生效</span></div><div class="agent-form-grid agent-form-grid--two"><label class="agent-field">监听地址<input data-agent-router-address-input value="{{ router.listen_address or '127.0.0.1' }}"></label><label class="agent-field">端口<input data-agent-router-port type="number" min="1" max="65535" value="{{ router.listen_port or 7888 }}"></label></div><label class="agent-field">出站网络代理 <span class="agent-field-note">可选 HTTP / HTTPS / SOCKS5</span><input data-agent-router-proxy value="{{ router.outbound_proxy or '' }}" placeholder="留空表示直连"></label><label class="agent-toggle-line"><input type="checkbox" data-agent-router-home-switch {{ 'checked' if router.show_home_switch else '' }}> 在首页显示 Router 开关</label><button class="button button--primary" type="button" data-agent-router-save>保存运行配置</button></section>
+      <section class="agent-route-card agent-route-card--takeover"><div class="agent-route-card-head"><strong>客户端接管</strong><span class="agent-field-note">每个客户端独立备份 / 恢复</span></div><div class="agent-takeover-list">{% for client in detected %}{% if 'route' in client.write_support %}<button type="button" class="agent-takeover-button {{ 'is-on' if takeover.get(client.id) else '' }}" data-agent-route-takeover="{{ client.id }}" aria-pressed="{{ 'true' if takeover.get(client.id) else 'false' }}"><span class="agent-client-glyph agent-client-glyph--{{ client.id }}">{{ client.name[:1] }}</span><span><b>{{ client.name }}</b><small data-agent-takeover-label>{{ '已接管' if takeover.get(client.id) else '未接管' }}</small></span><i></i></button>{% endif %}{% endfor %}</div><p class="agent-route-help">开启前会读取并保存原配置；关闭时无外部修改则完整恢复，有外部修改则只恢复 Router 管理字段。</p></section>
+    </div>
+  </section>
+
+  <section class="agent-panel" data-agent-tab="mcp" role="tabpanel" hidden>
+    <div class="agent-panel-heading"><div><span class="agent-kicker">TOOLS</span><h2>MCP 管理</h2><p>先扫描真实配置，再对当前客户端执行安装 / 更新或卸载。删除本地库不会触碰客户端。</p></div><div class="agent-actions"><button class="button button--quiet" type="button" data-agent-mcp-import>扫描当前配置</button><button class="button button--primary" type="button" data-agent-mcp-install>安装选中</button><button class="button button--danger" type="button" data-agent-mcp-uninstall>卸载选中</button></div></div>
+    <div class="agent-two-column"><div class="agent-stack" data-agent-mcp-list>
+      {% for server in agent_mcp_servers %}{% set obs = server.observations.get(active_id) if server.observations else none %}
+      <article class="agent-mcp-row" data-agent-mcp-card data-agent-mcp-id="{{ server.id }}" data-agent-mcp-managed="{{ 'true' if server.managed else 'false' }}" data-agent-mcp-observed="{{ 'true' if obs and obs['present'] and obs['status'] == 'installed' else 'false' }}">
+        <button class="agent-row-select" type="button" data-agent-mcp-server value="{{ server.id }}" aria-pressed="false"><span class="agent-mcp-mark">M</span><span><b>{{ server.name or server.id }}</b><small>{{ server.id }} · {{ '本地库' if server.managed else '扫描发现' }}</small></span></button>
+        <span class="agent-state-pill {{ 'is-good' if obs and obs['present'] and obs['status'] == 'installed' else 'is-muted' }}" data-agent-mcp-status>{{ '已安装' if obs and obs['present'] and obs['status'] == 'installed' else '未安装 / 未扫描' }}</span>
+        <div class="agent-row-actions"><button class="button button--small button--primary" type="button" data-agent-mcp-install-one="{{ server.id }}" {{ '' if server.managed else 'disabled' }}>安装</button><button class="button button--small button--quiet" type="button" data-agent-mcp-edit="{{ server.id }}">编辑</button><button class="button button--small button--quiet" type="button" data-agent-mcp-uninstall-one="{{ server.id }}" {{ '' if obs and obs['present'] else 'disabled' }}>卸载</button><button class="button button--small button--danger" type="button" data-agent-mcp-delete="{{ server.id }}" {{ '' if server.managed else 'disabled' }}>删库</button></div>
+        <script type="application/json" data-agent-mcp-json="{{ server.id }}">{{ server|tojson }}</script>
+      </article>
+      {% else %}<div class="agent-empty-card">当前客户端还没有 MCP 记录。点击“扫描当前配置”读取真实文件。</div>{% endfor %}
+    </div><aside class="agent-editor"><div class="agent-editor-heading"><span class="agent-editor-icon">M</span><div><strong>MCP 本地库</strong><small>保存一个逻辑定义，不会自动写入客户端。</small></div></div><div class="agent-form-grid agent-form-grid--two"><label class="agent-field">ID<input data-agent-mcp-id placeholder="context7"></label><label class="agent-field">名称<input data-agent-mcp-name placeholder="Context7"></label></div><label class="agent-field">Spec JSON<textarea class="agent-code" data-agent-mcp-spec rows="10" spellcheck="false" placeholder='{"command":"npx","args":["-y","@upstash/context7-mcp"]}'></textarea></label><div class="agent-editor-actions"><button class="button button--quiet" type="button" data-agent-mcp-format>格式化</button><button class="button button--primary" type="button" data-agent-mcp-save>保存到本地库</button></div></aside></div>
+  </section>
+
+  <section class="agent-panel" data-agent-tab="skills" role="tabpanel" hidden>
+    <div class="agent-panel-heading"><div><span class="agent-kicker">EXTENSIONS</span><h2>Skills 管理</h2><p>当前客户端独立安装。支持本地目录、Git、ZIP；删除只删除客户端安装副本。</p></div><div class="agent-actions"><button class="button button--primary" type="button" data-agent-skill-install>安装 / 更新</button><button class="button button--danger" type="button" data-agent-skill-delete>删除</button></div></div>
+    <div class="agent-two-column"><div class="agent-stack" data-agent-skill-list>{% for client in detected %}{% set skill = agent_skills.get(client.id) %}<article class="agent-skill-client" data-agent-skill-client="{{ client.id }}"><header><div><strong>{{ client.name }}</strong><small>{{ skill['path'] if skill else client.skill_dir or '无固定目录' }}</small></div><span class="agent-state-pill is-muted">{{ skill['count'] if skill else 0 }} 个</span></header>{% if skill and skill['items'] %}<div class="agent-skill-items">{% for item in skill['items'] %}<button class="agent-skill-item" type="button" data-agent-skill-pick="{{ item.name }}" data-agent-skill-app-pick="{{ client.id }}"><b>{{ item.name }}</b><small>{{ item.source or '本地' }}</small></button>{% endfor %}</div>{% else %}<p class="agent-muted">暂无 Skill。</p>{% endif %}</article>{% endfor %}</div><aside class="agent-editor"><div class="agent-editor-heading"><span class="agent-editor-icon">S</span><div><strong>Skill 操作</strong><small>目标固定为当前客户端和当前 WSL。</small></div></div><label class="agent-field">Skill 名称<input data-agent-skill-name placeholder="my-skill"></label><label class="agent-field">来源<input data-agent-skill-source placeholder="Git URL / ZIP / 本地目录"></label><label class="agent-field">同步方式<select data-agent-skill-mode><option value="copy">复制（独立副本）</option><option value="symlink">软链接（跟随源目录）</option></select></label><div class="agent-editor-actions"><button class="button button--primary" type="button" data-agent-skill-install>安装 / 更新</button><button class="button button--quiet" type="button" data-agent-skill-update>仅更新</button></div></aside></div>
+  </section>
+
+  <section class="agent-panel" data-agent-tab="prompts" role="tabpanel" hidden>
+    <div class="agent-panel-heading"><div><span class="agent-kicker">INSTRUCTIONS</span><h2>Prompts 管理</h2><p>读取当前客户端真实提示词文件；应用前自动备份，恢复时校验文件是否被外部修改。</p></div><div class="agent-actions"><button class="button button--quiet" type="button" data-agent-prompt-import-current>导入当前内容</button><button class="button button--danger" type="button" data-agent-prompt-restore>恢复原文件</button></div></div>
+    <div class="agent-two-column"><div class="agent-stack">{% for prompt in agent_prompts %}<article class="agent-prompt-row" data-agent-prompt-card="{{ prompt.id }}"><div><b>{{ prompt.name }}</b><small>{{ prompt.id }}</small><pre>{{ prompt.content }}</pre></div><div class="agent-row-actions"><button class="button button--small button--primary" type="button" data-agent-prompt-apply="{{ prompt.id }}">应用</button><button class="button button--small button--danger" type="button" data-agent-prompt-delete="{{ prompt.id }}">删除模板</button></div></article>{% else %}<div class="agent-empty-card">还没有 Prompt 模板。</div>{% endfor %}</div><aside class="agent-editor"><div class="agent-editor-heading"><span class="agent-editor-icon">P</span><div><strong>Prompt 模板</strong><small>Markdown / 纯文本均可。</small></div></div><label class="agent-field">ID<input data-agent-prompt-id placeholder="default"></label><label class="agent-field">名称<input data-agent-prompt-name placeholder="默认工作流"></label><label class="agent-field">内容<textarea class="agent-code" data-agent-prompt-content rows="12" placeholder="写入当前 Agent 的系统提示词"></textarea></label><button class="button button--primary" type="button" data-agent-prompt-save>保存模板</button></aside></div>
+  </section>
+
+  <div class="agent-toast" data-agent-result aria-live="polite"></div>
+</section>
+{% endblock %}

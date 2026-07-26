@@ -22,8 +22,18 @@ from app.services.agent_mcp import (
     parse_mcp_scan_output,
     public_mcp_server,
 )
-from app.services.agent_mcp_adapters import scan_mcp_home
-from app.services.agent_prompts import AgentPromptStore, build_prompt_apply_shell
+from app.services.agent_mcp_adapters import (
+    CLIENT_PATHS,
+    apply_mcp_to_home,
+    remove_mcp_from_home,
+    scan_mcp_home,
+)
+from app.services.agent_prompts import (
+    AgentPromptFileManager,
+    AgentPromptStore,
+    PromptFileConflictError,
+    build_prompt_apply_shell,
+)
 from app.services.agent_providers import (
     AgentProviderStore,
     build_provider_apply_shell,
@@ -35,7 +45,10 @@ from app.services.agent_skills import (
     build_skill_delete_shell,
     build_skill_install_shell,
     build_skill_update_shell,
+    install_skill_to_home,
     safe_skill_name,
+    uninstall_skill_from_home,
+    update_skill_to_home,
 )
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -121,6 +134,13 @@ class AgentMcpSyncRequest(BaseModel):
     node_ids: list[str]
 
 
+class AgentMcpLocalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+    mcp_ids: list[str] = Field(default_factory=list)
+
+
 class AgentMcpTargetAssignment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -152,6 +172,20 @@ class AgentPromptApplyRequest(BaseModel):
     node_ids: list[str]
 
 
+class AgentPromptClientRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+
+
+class AgentPromptLocalApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+    prompt_id: str | None = None
+    content: str | None = None
+
+
 class AgentSkillInstallRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -167,6 +201,24 @@ class AgentSkillActionRequest(BaseModel):
     skill_name: str
     apps: list[str]
     node_ids: list[str]
+
+
+class AgentSkillLocalInstallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+    skill_name: str
+    source: str
+    mode: Literal["copy", "symlink"] = "copy"
+
+
+class AgentSkillLocalActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+    skill_name: str
+    source: str | None = None
+    mode: Literal["copy", "symlink"] | None = None
 
 
 @router.get("/providers/{app_id}/{provider_id}", response_model=dict[str, object])
@@ -531,6 +583,132 @@ def scan_mcp_targets(payload: AgentScanRequest, request: Request) -> dict[str, o
     return {"targets": targets}
 
 
+@router.post("/mcp/local/install", response_model=dict[str, object])
+def install_local_mcp(
+    payload: AgentMcpLocalRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    return _run_local_mcp_operation(request, payload, action="install")
+
+
+@router.post("/mcp/local/uninstall", response_model=dict[str, object])
+def uninstall_local_mcp(
+    payload: AgentMcpLocalRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    return _run_local_mcp_operation(request, payload, action="uninstall")
+
+
+def _run_local_mcp_operation(
+    request: Request, payload: AgentMcpLocalRequest, *, action: Literal["install", "uninstall"]
+) -> dict[str, object]:
+    client_id = _safe_id(payload.client_id)
+    ids = list(dict.fromkeys(_safe_id(value) for value in payload.mcp_ids if _safe_id(value)))
+    if not client_id or client_id not in CLIENT_PATHS:
+        raise HTTPException(status_code=400, detail="client_id 暂不支持本地 MCP 写入")
+    from app.services.agent_clients import get_agent_client
+
+    client = get_agent_client(client_id)
+    if client is None or "mcp" not in client.write_support:
+        raise HTTPException(status_code=400, detail=f"{client_id} 暂不支持本地 MCP 写入")
+    if not ids:
+        raise HTTPException(status_code=400, detail="mcp_ids is required")
+
+    store = _mcp_store(request)
+    servers = store.list_servers()
+    home = Path.home()
+    try:
+        before = scan_mcp_home(home, client_id)
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"读取 {client_id} 配置失败: {exc}") from exc
+
+    if action == "install":
+        missing = sorted(set(ids) - set(servers))
+        if missing:
+            raise HTTPException(status_code=404, detail=f"MCP 不存在: {', '.join(missing)}")
+        selected = {server_id: dict(servers[server_id].get("spec") or {}) for server_id in ids}
+        try:
+            apply_mcp_to_home(home, client_id, selected)
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=f"安装 MCP 失败: {exc}") from exc
+    else:
+        missing = sorted(set(ids) - set(before))
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"当前客户端未观测为已安装: {', '.join(missing)}",
+            )
+        try:
+            remove_mcp_from_home(home, client_id, set(ids))
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=f"卸载 MCP 失败: {exc}") from exc
+
+    try:
+        after = scan_mcp_home(home, client_id)
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail=f"读取回执失败: {exc}") from exc
+
+    verified = all(
+        (server_id in after) if action == "install" else (server_id not in after)
+        for server_id in ids
+    )
+    if action == "install":
+        added = sorted(set(ids) - set(before), key=str.lower)
+        updated = sorted(
+            server_id
+            for server_id in ids
+            if server_id in before and before.get(server_id) != after.get(server_id)
+        )
+        removed: list[str] = []
+    else:
+        added = []
+        updated = []
+        removed = sorted(set(ids) - set(after), key=str.lower)
+
+    _persist_local_mcp_observations(request, client_id, after)
+    operation_id = f"local:{client_id}:{action}:{hashlib.sha256(','.join(ids).encode()).hexdigest()[:16]}"
+    state = PanelStateStore(agent_data_root(request.app.state.config_root))
+    state.record_mcp_operation(
+        operation_id, "__local__", client_id, action, "verified" if verified else "failed",
+        error=None if verified else "本地配置回读未通过",
+    )
+    return {
+        "client_id": client_id,
+        "added": added,
+        "updated": updated,
+        "removed": removed,
+        "verified": verified,
+        "path": str(home / CLIENT_PATHS[client_id]),
+    }
+
+
+def _persist_local_mcp_observations(
+    request: Request, client_id: str, scanned: dict[str, dict[str, object]]
+) -> None:
+    state = PanelStateStore(agent_data_root(request.app.state.config_root))
+    store = _mcp_store(request)
+    observations: list[dict[str, object]] = []
+    for mcp_id, spec in scanned.items():
+        # 观测到的客户端配置也要先有本地库主记录，才能建立按客户端的变体
+        # 外键；这不会把它误标成“本次安装”，只是保留真实配置定义。
+        if store.get_server(mcp_id) is None:
+            store.upsert_server(mcp_id, dict(spec), {client_id: True}, name=mcp_id)
+        public_spec = redact_sensitive(dict(spec))
+        observations.append(
+            {
+                "mcp_id": mcp_id,
+                "present": True,
+                "spec_hash": hashlib.sha256(
+                    json.dumps(spec, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest(),
+                "public_spec": public_spec,
+                "status": "installed",
+            }
+        )
+        state.upsert_mcp_variant(mcp_id, client_id, "linux", dict(spec), source="local")
+    state.replace_mcp_observations("__local__", client_id, observations)
+
+
 @router.post("/mcp/import-local", response_model=AgentImportResponse)
 def import_local_mcp(
     request: Request, payload: AgentClientSelectionRequest | None = None
@@ -863,6 +1041,67 @@ def queue_mcp_sync(
     )
 
 
+@router.post("/prompts/import-current", response_model=dict[str, object])
+def import_current_prompt(
+    payload: AgentPromptClientRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    try:
+        return _prompt_file_manager(request).import_current(_safe_id(payload.client_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/prompts/local/apply", response_model=dict[str, object])
+def apply_local_prompt(
+    payload: AgentPromptLocalApplyRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    content = payload.content
+    if payload.prompt_id:
+        prompt = _prompt_store(request).get_prompt(_safe_id(payload.prompt_id))
+        if prompt is None:
+            raise HTTPException(status_code=404, detail="prompt not found")
+        content = str(prompt.get("content") or "")
+    if content is None:
+        raise HTTPException(status_code=400, detail="prompt_id or content is required")
+    try:
+        result = _prompt_file_manager(request).apply(
+            _safe_id(payload.client_id), content
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    request.app.state.system_terminal_sink.write(
+        f"Agent Prompt 本地应用完成：{result['client_id']}\n"
+    )
+    return result
+
+
+@router.post("/prompts/local/restore", response_model=dict[str, object])
+def restore_local_prompt(
+    payload: AgentPromptClientRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    try:
+        result = _prompt_file_manager(request).restore(_safe_id(payload.client_id))
+    except PromptFileConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    request.app.state.system_terminal_sink.write(
+        f"Agent Prompt 本地恢复完成：{result['client_id']}\n"
+    )
+    return result
+
+
 @router.post("/prompts", response_model=dict[str, object])
 def upsert_prompt(
     payload: AgentPromptUpsertRequest, request: Request
@@ -948,6 +1187,77 @@ def queue_prompt_apply(
         f"Agent Prompt 写入任务已入队：{len(tasks)} 个，跳过 {len(skipped)} 个\n"
     )
     return AgentQueuedResponse(queued_count=len(tasks), tasks=tasks, skipped=skipped)
+
+
+@router.post("/skills/local/install", response_model=dict[str, object])
+def install_local_skill(
+    payload: AgentSkillLocalInstallRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    try:
+        result = install_skill_to_home(
+            Path.home(),
+            _safe_id(payload.client_id),
+            payload.skill_name,
+            payload.source,
+            mode=payload.mode,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    request.app.state.system_terminal_sink.write(
+        f"Agent Skill 本地安装完成：{result['client_id']} / {result['skill_name']}\n"
+    )
+    return result
+
+
+@router.post("/skills/local/update", response_model=dict[str, object])
+def update_local_skill(
+    payload: AgentSkillLocalActionRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    try:
+        result = update_skill_to_home(
+            Path.home(),
+            _safe_id(payload.client_id),
+            payload.skill_name,
+            source=payload.source,
+            mode=payload.mode,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    request.app.state.system_terminal_sink.write(
+        f"Agent Skill 本地更新完成：{result['client_id']} / {result['skill_name']}\n"
+    )
+    return result
+
+
+@router.post("/skills/local/uninstall", response_model=dict[str, object])
+def uninstall_local_skill(
+    payload: AgentSkillLocalActionRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    try:
+        result = uninstall_skill_from_home(
+            Path.home(), _safe_id(payload.client_id), payload.skill_name
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    request.app.state.system_terminal_sink.write(
+        f"Agent Skill 本地卸载完成：{result['client_id']} / {result['skill_name']}\n"
+    )
+    return result
 
 
 @router.post("/skills/install", response_model=AgentQueuedResponse, status_code=202)
@@ -1138,6 +1448,11 @@ def _mcp_store(request: Request) -> AgentMcpStore:
 
 def _prompt_store(request: Request) -> AgentPromptStore:
     return AgentPromptStore(agent_data_root(request.app.state.config_root))
+
+
+def _prompt_file_manager(request: Request) -> AgentPromptFileManager:
+    data_root = agent_data_root(request.app.state.config_root)
+    return AgentPromptFileManager(Path.home(), data_root / "prompt-files")
 
 
 def _provider_store(request: Request) -> AgentProviderStore:

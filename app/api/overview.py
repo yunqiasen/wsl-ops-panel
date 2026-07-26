@@ -3,7 +3,11 @@ from fastapi.responses import HTMLResponse
 
 from app.api.assets import get_page_asset
 from app.core.ui import TEMPLATES, build_page_context, page_login_redirect
-from app.services.capabilities import get_category_actions
+from app.services.capabilities import get_actions_for_assets
+from app.services.agent_workbench import build_agent_workbench_context
+from app.services.config_sync import build_config_modules
+from app.services.package_catalog import build_package_catalog
+from app.services.system_overview import build_system_overview
 
 router = APIRouter(tags=['overview'])
 
@@ -26,6 +30,7 @@ def overview_page(request: Request) -> HTMLResponse:
         assets=assets,
         all_categories=nav_categories,
         task_count=len(request.app.state.task_store.list_all()),
+        system_overview=build_system_overview(),
     )
     return TEMPLATES.TemplateResponse(request, 'overview.html', context)
 
@@ -46,8 +51,20 @@ def category_page(category_id: str, request: Request) -> HTMLResponse:
         heading=category.label,
         selected_category=category,
         assets=assets,
-        available_actions=get_category_actions(category_id),
+        available_actions=get_actions_for_assets(category_id, assets),
     )
+    if category.id in {'remote', 'node', 'python', 'agent'}:
+        context['remote_nodes'] = request.app.state.remote_node_store.list_nodes()
+    if category.id in {'node', 'python'}:
+        package_catalog = build_package_catalog(category.id, assets, config_root=request.app.state.config_root)
+        context['package_catalog'] = package_catalog['items']
+        context['package_suggestions'] = package_catalog['suggestions']
+    if category.id == 'remote':
+        context['config_modules'] = build_config_modules()
+        return TEMPLATES.TemplateResponse(request, 'remote_category.html', context)
+    if category.id == 'agent':
+        context.update(build_agent_workbench_context(request.app.state.config_root))
+        return TEMPLATES.TemplateResponse(request, 'agent_category.html', context)
     return TEMPLATES.TemplateResponse(request, 'category.html', context)
 
 
