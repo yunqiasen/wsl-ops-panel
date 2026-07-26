@@ -1,6 +1,6 @@
 # Agent Workbench CC Switch Rebuild Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Rebuild the local WSL Agent workbench around a truthful single-client UI, arbitrary Provider profiles, an independent local Agent Router, and client-specific MCP/Skill/Prompt operations.
 
@@ -51,7 +51,7 @@ The authoritative workspace already contains a large uncommitted Agent implement
 - Modify: `app/services/agent_workbench.py`
 - Create: `tests/test_agent_clients.py`
 
-- [ ] **Step 1: Write failing registry tests**
+- [x] **Step 1: Write failing registry tests**
 
 ```python
 def test_registry_contains_all_eight_clients_and_declares_route_capability():
@@ -67,21 +67,21 @@ def test_payload_returns_detected_clients_separately(tmp_path):
     assert [row["id"] for row in payload if row["detected"]] == ["codex"]
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_clients.py -q`
 Expected: fail because Claude Desktop/Grok Build and route capabilities are absent.
 
-- [ ] **Step 3: Extend the definition and context**
+- [x] **Step 3: Extend the definition and context**
 
 Add `binary_names`, `features`, `write_support`, `route_path`, and `detection_paths`. Detection is true only when a configured path exists or `shutil.which()` finds a declared binary. Return `agent_detected_clients`, `agent_supported_clients`, and `agent_active_client` where active defaults to the first detected client.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_clients.py tests/test_agent_workbench.py -q`
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/services/agent_clients.py app/services/agent_workbench.py tests/test_agent_clients.py
@@ -97,7 +97,7 @@ git commit -m "feat: add truthful agent client capability registry"
 - Modify: `app/api/agent.py`
 - Create: `tests/test_agent_provider_profiles.py`
 
-- [ ] **Step 1: Write failing normalization tests**
+- [x] **Step 1: Write failing normalization tests**
 
 ```python
 def test_custom_provider_accepts_any_base_url():
@@ -119,25 +119,25 @@ def test_secret_store_returns_reference_not_raw_value(tmp_path):
     assert store.path.stat().st_mode & 0o777 == 0o600
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_provider_profiles.py -q`
 Expected: import failure for the new module.
 
-- [ ] **Step 3: Implement profile schema**
+- [x] **Step 3: Implement profile schema**
 
 Implement `ProviderRuntimeProfile` with `base_url`, `api_format`, `api_key`, `auth_mode`, `model`, `model_map`, `headers`, `full_url`, and `use_outbound_proxy`. Add legacy extraction from Codex TOML summary, Claude env, Gemini env, OpenCode options, OpenClaw camelCase, and Hermes snake_case. Save normalized non-secret values under `settings_config.routing`; move `api_key` and secret headers into `AgentProviderSecretStore`, store only `secret_ref`, and preserve client-native configuration for round-trip import.
 
-- [ ] **Step 4: Extend Provider API**
+- [x] **Step 4: Extend Provider API**
 
 Accept optional `routing` in `AgentProviderUpsertRequest`; merge it into `settings_config`. Add `POST /api/agent/providers/{app_id}/{provider_id}/test` using `httpx` with `/v1/models` when the profile is OpenAI compatible, returning status/latency without returning credentials.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_provider_profiles.py tests/test_agent_workbench.py -q`
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit exact files**
+- [x] **Step 6: Commit exact files**
 
 ```bash
 git add app/services/agent_provider_profiles.py app/services/agent_provider_secrets.py app/services/agent_providers.py app/api/agent.py tests/test_agent_provider_profiles.py
@@ -150,7 +150,7 @@ git commit -m "feat: support arbitrary agent provider profiles"
 - Create: `app/services/agent_router_config.py`
 - Create: `tests/test_agent_router.py`
 
-- [ ] **Step 1: Write failing atomic-store tests**
+- [x] **Step 1: Write failing atomic-store tests**
 
 ```python
 def test_router_store_is_atomic_private_and_redacted(tmp_path):
@@ -162,21 +162,21 @@ def test_router_store_is_atomic_private_and_redacted(tmp_path):
     assert saved["listen_port"] == 7888
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_router.py::test_router_store_is_atomic_private_and_redacted -q`
 Expected: import failure for `AgentRouterConfigStore`.
 
-- [ ] **Step 3: Implement store**
+- [x] **Step 3: Implement store**
 
 Use `data/agent/router.json` with schema version 1, default `127.0.0.1:7888`, `show_home_switch`, `outbound_proxy`, `takeover`, `providers`, and `updated_at`. Write through a temporary file, `fsync`, `os.replace`, and `chmod(0600)`. Expose raw `snapshot()` only to trusted service code and `public_snapshot()` to APIs/templates.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_router.py -q`
 Expected: store tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/services/agent_router_config.py tests/test_agent_router.py
@@ -190,7 +190,7 @@ git commit -m "feat: add private agent router configuration store"
 - Create: `app/agent_router/transforms.py`
 - Modify: `tests/test_agent_router.py`
 
-- [ ] **Step 1: Write failing transform tests**
+- [x] **Step 1: Write failing transform tests**
 
 ```python
 def test_anthropic_request_converts_to_openai_chat():
@@ -205,21 +205,21 @@ def test_openai_chat_response_converts_to_anthropic():
     assert body["usage"] == {"input_tokens": 2, "output_tokens": 1}
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_router.py -k transform -q`
 Expected: import failure for transforms.
 
-- [ ] **Step 3: Implement minimal complete transforms**
+- [x] **Step 3: Implement minimal complete transforms**
 
 Implement same-format pass-through plus Anthropic ↔ OpenAI Chat, Anthropic ↔ OpenAI Responses, and OpenAI Responses ↔ OpenAI Chat for text, system messages, tools, tool calls/results, model, token limits, temperature, stop reason, and usage. Unsupported pairs raise `UnsupportedProtocolTransform` with both formats in the message.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_router.py -k transform -q`
 Expected: all transform tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/agent_router/__init__.py app/agent_router/transforms.py tests/test_agent_router.py
@@ -233,7 +233,7 @@ git commit -m "feat: add agent router protocol transforms"
 - Create: `app/agent_router/main.py`
 - Modify: `tests/test_agent_router.py`
 
-- [ ] **Step 1: Write failing proxy tests**
+- [x] **Step 1: Write failing proxy tests**
 
 ```python
 def test_cross_protocol_stream_is_transformed_to_anthropic_sse():
@@ -254,21 +254,21 @@ def test_router_forwards_codex_to_arbitrary_upstream(tmp_path, monkeypatch):
     assert captured.json()["model"] == "relay-model"
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_router.py -k forwards -q`
 Expected: import failure for `create_agent_router_app`.
 
-- [ ] **Step 3: Implement data plane**
+- [x] **Step 3: Implement data plane**
 
 Expose `/health`, `/status`, and namespaced catch-all routes for `claude`, `codex`, `gemini`, `grokbuild`, `opencode`, and `openclaw`. Select the current per-client Provider, apply model mapping, build the upstream URL, set auth/header rules, honor optional HTTP/SOCKS proxy, stream same-format responses, and transform SSE incrementally for supported cross-protocol pairs. Maintain in-memory active/total/success/failure counters without logging bodies or secrets.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_router.py -q`
 Expected: all router tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/agent_router/app.py app/agent_router/main.py tests/test_agent_router.py
@@ -281,7 +281,7 @@ git commit -m "feat: add independent local agent router"
 - Create: `app/services/agent_route_takeover.py`
 - Create: `tests/test_agent_route_takeover.py`
 
-- [ ] **Step 1: Write failing takeover tests**
+- [x] **Step 1: Write failing takeover tests**
 
 ```python
 def test_codex_takeover_preserves_config_and_restores(tmp_path):
@@ -297,21 +297,21 @@ def test_codex_takeover_preserves_config_and_restores(tmp_path):
     assert "https://relay.example/v1" in config.read_text()
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_route_takeover.py -q`
 Expected: import failure for the takeover manager.
 
-- [ ] **Step 3: Implement client adapters**
+- [x] **Step 3: Implement client adapters**
 
 Support Codex TOML, Claude `.claude.json`, Gemini `.env`, OpenCode JSON, and OpenClaw JSON. Store a private snapshot and post-takeover hash per client. On disable, restore the full file when unchanged; when externally changed, restore only fields owned by routing. Validate each written file and read back the local route address.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_route_takeover.py -q`
 Expected: all takeover and external-edit tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/services/agent_route_takeover.py tests/test_agent_route_takeover.py
@@ -327,7 +327,7 @@ git commit -m "feat: add verified client route takeover"
 - Modify: `app/services/agent_workbench.py`
 - Modify: `tests/test_agent_router.py`
 
-- [ ] **Step 1: Write failing controller/API tests**
+- [x] **Step 1: Write failing controller/API tests**
 
 ```python
 def test_router_control_api_updates_provider_and_takeover(auth_client, tmp_path, monkeypatch):
@@ -338,21 +338,21 @@ def test_router_control_api_updates_provider_and_takeover(auth_client, tmp_path,
     assert takeover.json()["takeover"]["codex"] is True
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_router.py -k control_api -q`
 Expected: 404 for the new API.
 
-- [ ] **Step 3: Implement controller and API**
+- [x] **Step 3: Implement controller and API**
 
 Controller probes `/health`, reports port conflicts, and runs exact `sudo -n systemctl start|stop|restart wsl-agent-router.service` commands through an injected runner. API exposes status, global config, lifecycle, current Provider, and per-client takeover. Stopping with active takeovers returns 409 unless `restore_clients=true`; restore all before stopping.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_router.py tests/test_app_smoke.py -q`
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/services/agent_router_control.py app/api/agent_router.py app/main.py app/services/agent_workbench.py tests/test_agent_router.py
@@ -368,7 +368,7 @@ git commit -m "feat: expose agent router control plane"
 - Modify: `tests/test_agent_workbench.py`
 - Create: `tests/frontend/agent-workbench.test.cjs`
 
-- [ ] **Step 1: Write failing page and JS tests**
+- [x] **Step 1: Write failing page and JS tests**
 
 ```python
 def test_agent_page_is_local_single_client_and_has_route_panel(tmp_path, monkeypatch):
@@ -386,25 +386,25 @@ test('客户端选择始终保持一个激活项', () => {
 });
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_workbench.py -k single_client -q && node --test tests/frontend/agent-workbench.test.cjs`
 Expected: page assertion fails and JS export is missing.
 
-- [ ] **Step 3: Replace information architecture**
+- [x] **Step 3: Replace information architecture**
 
 Remove device bar and matrix dialog from the Agent page. Render only detected clients as equal-width exclusive buttons. Add Provider, Route, MCP, Skills, Prompt tabs and hide tabs not listed in the active client capabilities. Route panel includes service status, total switch, homepage switch, per-detected-client takeover buttons, service address, outbound proxy, and current target.
 
-- [ ] **Step 4: Implement local actions**
+- [x] **Step 4: Implement local actions**
 
 Every Provider/MCP/Skill/Prompt action sends exactly one `client_id` and implicit `__local__`. Remove the generic “同步选中 MCP” listener. Keep explicit install/update, uninstall, edit, and local-library delete semantics.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_workbench.py -q && node --test tests/frontend/*.test.cjs`
 Expected: all Python and frontend tests pass.
 
-- [ ] **Step 6: Commit exact files**
+- [x] **Step 6: Commit exact files**
 
 ```bash
 git add app/templates/agent_category.html app/static/app.js app/static/app.css tests/test_agent_workbench.py tests/frontend/agent-workbench.test.cjs
@@ -419,7 +419,7 @@ git commit -m "feat: rebuild agent workbench as single-client UI"
 - Modify: `app/services/agent_workbench.py`
 - Modify: `tests/test_agent_workbench.py`
 
-- [ ] **Step 1: Write failing local-operation tests**
+- [x] **Step 1: Write failing local-operation tests**
 
 ```python
 def test_local_mcp_install_and_uninstall_execute_selected_client(auth_client, monkeypatch):
@@ -431,21 +431,21 @@ def test_local_mcp_install_and_uninstall_execute_selected_client(auth_client, mo
     assert uninstall.json()["verified"] is True
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_workbench.py -k local_mcp -q`
 Expected: 404 for local endpoints.
 
-- [ ] **Step 3: Implement synchronous local endpoints**
+- [x] **Step 3: Implement synchronous local endpoints**
 
 Use `apply_mcp_to_home` and `remove_mcp_from_home` directly for the current WSL, then rescan and update observations. Return added/updated/removed IDs and `verified`; never infer removal from unchecked items. Preserve legacy queue endpoints for compatibility but remove them from the new UI.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_workbench.py -q`
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/api/agent.py app/services/agent_mcp_adapters.py app/services/agent_workbench.py tests/test_agent_workbench.py
@@ -459,7 +459,7 @@ git commit -m "feat: close local single-client MCP workflow"
 - Modify: `app/api/agent.py`
 - Create: `tests/test_agent_skills_prompts.py`
 
-- [ ] **Step 1: Write failing Skill tests**
+- [x] **Step 1: Write failing Skill tests**
 
 ```python
 def test_skill_install_supports_zip_copy_and_symlink(tmp_path):
@@ -472,21 +472,21 @@ def test_skill_install_supports_zip_copy_and_symlink(tmp_path):
     assert (tmp_path / "home/.claude/skills/linked").is_symlink()
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_skills_prompts.py -k skill -q`
 Expected: import failure for direct Skill functions.
 
-- [ ] **Step 3: Implement direct local Skill library**
+- [x] **Step 3: Implement direct local Skill library**
 
 Add safe ZIP extraction that rejects absolute paths and `..`, Git clone/update, local directory copy, and symlink mode. Require a `SKILL.md` entrypoint, write `.wsl-ops-skill.json` source metadata, move removed installs to the backup directory, and return readback status.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_skills_prompts.py -k skill -q`
 Expected: all Skill tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/services/agent_skills.py app/api/agent.py tests/test_agent_skills_prompts.py
@@ -500,7 +500,7 @@ git commit -m "feat: add verified local skill installation modes"
 - Modify: `app/api/agent.py`
 - Modify: `tests/test_agent_skills_prompts.py`
 
-- [ ] **Step 1: Write failing Prompt tests**
+- [x] **Step 1: Write failing Prompt tests**
 
 ```python
 def test_prompt_import_apply_and_restore(tmp_path):
@@ -515,21 +515,21 @@ def test_prompt_import_apply_and_restore(tmp_path):
     assert target.read_text() == "original\n"
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/pytest tests/test_agent_skills_prompts.py -k prompt -q`
 Expected: import failure for `AgentPromptFileManager`.
 
-- [ ] **Step 3: Implement file manager and API**
+- [x] **Step 3: Implement file manager and API**
 
 Resolve the adapter-declared prompt target, import current content, create private backup metadata, atomically write Markdown, verify hash, and restore. Add `/prompts/import-current`, `/prompts/local/apply`, and `/prompts/local/restore` endpoints for one client.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 Run: `.venv/bin/pytest tests/test_agent_skills_prompts.py tests/test_agent_workbench.py -q`
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit exact files**
+- [x] **Step 5: Commit exact files**
 
 ```bash
 git add app/services/agent_prompts.py app/api/agent.py tests/test_agent_skills_prompts.py
@@ -545,11 +545,11 @@ git commit -m "feat: add prompt import apply and restore"
 - Modify: `README.md`
 - Modify: `docs/operations.md`
 
-- [ ] **Step 1: Add Router systemd installer**
+- [x] **Step 1: Add Router systemd installer**
 
 Create `wsl-agent-router.service` with project working directory, `.venv/bin/python -m app.agent_router.main`, `AGENT_ROUTER_CONFIG=<project>/data/agent/router.json`, restart-on-failure, and localhost defaults. Register the unit in the systemd object catalog and sudo check.
 
-- [ ] **Step 2: Run focused verification**
+- [x] **Step 2: Run focused verification**
 
 Run:
 
@@ -561,11 +561,11 @@ node --test tests/frontend/*.test.cjs
 
 Expected: zero failures and zero lint errors.
 
-- [ ] **Step 3: Update documentation**
+- [x] **Step 3: Update documentation**
 
 Document single-client navigation, arbitrary upstreams, direct vs local route, outbound proxy distinction, per-client takeover/restore, explicit MCP operations, Skill modes, Prompt restore, service commands, ports, and credential redaction.
 
-- [ ] **Step 4: Run full project verification**
+- [x] **Step 4: Run full project verification**
 
 Run:
 
@@ -578,7 +578,7 @@ git diff --check
 
 Expected: zero failures, zero lint errors, no whitespace errors.
 
-- [ ] **Step 5: Install and live-verify**
+- [x] **Step 5: Install and live-verify**
 
 Run:
 
@@ -591,9 +591,18 @@ curl -fsS http://127.0.0.1:8328/healthz
 
 Then use the browser to verify the Agent page, route switch, per-client selection, Provider editor, MCP install/uninstall, Skill and Prompt panels, console errors, and failed requests.
 
-- [ ] **Step 6: Commit exact files**
+- [x] **Step 6: Commit exact files**
 
 ```bash
 git add scripts/install_agent_router_service.sh config/objects/systemd-agent-router.yaml scripts/check_sudo_rules.sh README.md docs/operations.md
 git commit -m "docs: ship local agent router operations"
 ```
+
+## 实施验收（2026-07-26）
+
+- 聚焦 Agent 测试：`72 passed`。
+- 全量测试：`345 passed`。
+- 前端 Node 测试：`9 passed`。
+- Ruff、Python 编译、JavaScript 语法、Shell 语法和 `git diff --check` 全部通过。
+- 运行态：`wsl-ops-panel.service` 与 `wsl-agent-router.service` 均为 `active`；`8328/healthz` 与 `7888/health` 返回正常。
+- 浏览器验收：桌面 `1600px`、移动端 `390px` 均无横向溢出；4 个真实检测客户端按钮等宽且单选；5 个页签可切换；无设备栏、无 MCP 矩阵、无控制台错误和失败请求。

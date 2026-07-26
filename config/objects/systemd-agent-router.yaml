@@ -1,0 +1,8 @@
+id: wsl_agent_router
+category: systemd
+type: systemd_unit
+name: WSL Agent Router
+enabled: true
+config:
+  unit_name: "wsl-agent-router.service"
+  working_dir: "/home/div/1_Project_dir/AI/wsl-ops-panel"

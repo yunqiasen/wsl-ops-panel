@@ -27,6 +27,9 @@ if [ "${#SYSTEMD_UNITS[@]}" -eq 0 ]; then
 fi
 
 for unit in "${SYSTEMD_UNITS[@]}"; do
+  for action in start stop restart; do
+    sudo -n -l systemctl "$action" "$unit" >/dev/null
+  done
   sudo -n -l systemctl disable --now "$unit" >/dev/null
 done
 
