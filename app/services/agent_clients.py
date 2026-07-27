@@ -90,7 +90,7 @@ AGENT_CLIENTS: tuple[AgentClientDefinition, ...] = (
         config_paths=("~/.grok/config.toml", "~/.grok/AGENTS.md", "~/.grok/skills"),
         detection_paths=("~/.grok/config.toml", "~/.grok"),
         features=("providers", "route", "mcp", "skills", "prompts"),
-        write_support=(),
+        write_support=("providers", "route", "mcp", "skills", "prompts"),
         route_path="/grokbuild/v1",
     ),
     AgentClientDefinition(

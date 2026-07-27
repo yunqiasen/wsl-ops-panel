@@ -56,3 +56,21 @@ def test_workbench_context_exposes_only_detected_clients_as_main_switcher(
     assert [row["id"] for row in context["agent_detected_clients"]] == ["codex"]
     assert len(context["agent_supported_clients"]) == 8
     assert context["agent_active_client"] == "codex"
+
+
+def test_grokbuild_and_hermes_declare_verified_write_capabilities() -> None:
+    by_id = {item.id: item for item in AGENT_CLIENTS}
+
+    assert set(by_id["grokbuild"].write_support) == {
+        "providers",
+        "route",
+        "mcp",
+        "skills",
+        "prompts",
+    }
+    assert set(by_id["hermes"].write_support) == {
+        "providers",
+        "mcp",
+        "skills",
+        "prompts",
+    }
