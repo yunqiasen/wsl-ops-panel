@@ -1787,6 +1787,23 @@
     };
   }
 
+  function createAgentClientState(initialClient) {
+    let current = initialClient;
+    let epoch = 0;
+    const requests = new Map();
+    return {
+      select(client) { if (client !== current) { current = client; epoch += 1; } },
+      begin(kind) {
+        const version = (requests.get(kind) || 0) + 1;
+        requests.set(kind, version);
+        return { client: current, epoch, kind, version };
+      },
+      accepts(ticket) {
+        return ticket.client === current && ticket.epoch === epoch && requests.get(ticket.kind) === ticket.version;
+      },
+    };
+  }
+
   function initAgentWorkbench() {
     const panel = document.querySelector('[data-agent-workbench]');
     if (!panel) return;
@@ -1795,6 +1812,7 @@
     const buttons = Array.from(panel.querySelectorAll('[data-agent-app]'));
     const clientById = (id) => buttons.find((button) => button.value === id);
     const activeClient = () => panel.dataset.agentActiveClient || buttons.find((button) => button.getAttribute('aria-pressed') === 'true')?.value || '';
+    const clientState = createAgentClientState(activeClient());
     const clientName = (id) => clientById(id)?.dataset.agentAppName || id || '当前客户端';
     const flash = (message, options = {}) => setFlash(result, message, options);
     const reloadSoon = (delay = 520) => window.setTimeout(() => window.location.reload(), delay);
@@ -1898,7 +1916,7 @@
       save: panel.querySelector('[data-agent-failover-queue-save]'),
       state: panel.querySelector('[data-agent-failover-queue-state]'),
     };
-    let failoverQueueState = { providerIds: [], available: [], names: {} };
+    let failoverQueueState = { clientId: '', ready: false, providerIds: [], available: [], names: {} };
     const renderFailoverQueue = () => {
       const controls = failoverQueueControls;
       if (!controls.list) return;
@@ -1918,7 +1936,7 @@
         controls.addSelect.disabled = !getAgentRouterPolicy(clientById(activeClient())).configured || !available.length;
       }
       if (controls.addButton) controls.addButton.disabled = controls.addSelect?.disabled || !controls.addSelect?.value;
-      if (controls.save) controls.save.disabled = !getAgentRouterPolicy(clientById(activeClient())).configured;
+      if (controls.save) controls.save.disabled = !failoverQueueState.ready || failoverQueueState.clientId !== activeClient() || !getAgentRouterPolicy(clientById(activeClient())).configured;
       if (controls.state) {
         controls.state.textContent = failoverQueueState.providerIds.length ? `${failoverQueueState.providerIds.length} 个 Provider` : '队列为空';
         controls.state.classList.toggle('is-good', Boolean(failoverQueueState.providerIds.length));
@@ -1927,15 +1945,20 @@
     };
     const loadFailoverQueue = async (clientId) => {
       if (!failoverQueueControls.root || !clientId) return;
+      const ticket = clientState.begin('queue');
+      failoverQueueState = { clientId, ready: false, providerIds: [], available: [], names: {} };
+      renderFailoverQueue();
       try {
         const body = await requestJson(`/api/agent/router/apps/${encodeURIComponent(clientId)}/failover-queue`, { method: 'GET' });
+        if (!clientState.accepts(ticket)) return;
         const names = {};
         (body?.items || []).forEach((item) => { names[item.provider_id] = item.name; });
         (body?.available || []).forEach((item) => { names[item.provider_id] = item.name; });
-        failoverQueueState = { providerIds: Array.isArray(body?.provider_ids) ? body.provider_ids : [], available: Array.isArray(body?.available) ? body.available : [], names };
+        failoverQueueState = { clientId, ready: true, providerIds: Array.isArray(body?.provider_ids) ? body.provider_ids : [], available: Array.isArray(body?.available) ? body.available : [], names };
         renderFailoverQueue();
       } catch (error) {
-        failoverQueueState = { providerIds: [], available: [], names: {} };
+        if (!clientState.accepts(ticket)) return;
+        failoverQueueState = { clientId, ready: false, providerIds: [], available: [], names: {} };
         if (failoverQueueControls.state) { failoverQueueControls.state.textContent = '加载失败'; failoverQueueControls.state.classList.remove('is-good'); }
       }
     };
@@ -2268,6 +2291,7 @@
     };
     const syncClientView = () => {
       const appId = activeClient();
+      clientState.select(appId);
       panel.dataset.agentActiveClient = appId;
       buttons.forEach((button) => setButtonState(button, button.value === appId));
       panel.querySelectorAll('[data-agent-active-name]').forEach((node) => { node.textContent = clientName(appId); });
@@ -2370,6 +2394,7 @@
     };
     const clearProvider = () => {
       if (!providerEditor) return;
+      clientState.begin('provider');
       setProviderEditorEditable(true);
       providerEditor.dataset.agentProviderApp = activeClient();
       providerEditor.querySelectorAll('input:not([type="checkbox"]), textarea').forEach((input) => { input.value = ''; });
@@ -2391,8 +2416,7 @@
     const fillProvider = (provider) => {
       if (!provider) return;
       const appId = provider.app_id || activeClient();
-      panel.dataset.agentActiveClient = appId;
-      syncClientView();
+      if (appId !== activeClient()) return;
       clearProvider();
       const form = provider.form || {};
       const meta = provider.meta || {};
@@ -2430,7 +2454,14 @@
     const loadProvider = async (key) => {
       const { appId, providerId: id } = providerKeyParts(key);
       if (!appId || !id) return null;
-      return requestJson(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}`, { method: 'GET' });
+      const ticket = clientState.begin('provider');
+      try {
+        const provider = await requestJson(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}`, { method: 'GET' });
+        return clientState.accepts(ticket) && appId === activeClient() ? provider : null;
+      } catch (error) {
+        if (clientState.accepts(ticket)) throw error;
+        return null;
+      }
     };
     const providerPayload = () => {
       const appId = activeClient();
@@ -2480,8 +2511,22 @@
       });
     };
     if (providerEditor && !providerEditor.dataset.agentProviderApp) providerEditor.dataset.agentProviderApp = activeClient();
+    const providerDrafts = new Map();
+    providerEditor?.addEventListener('input', () => clientState.begin('provider'));
     buttons.forEach((button) => button.addEventListener('click', () => {
+      if (!providerEditor || providerEditor.dataset.agentProviderApp === button.value) return;
+      const controls = Array.from(providerEditor.querySelectorAll('input, select, textarea'));
+      providerDrafts.set(providerEditor.dataset.agentProviderApp, {
+        values: controls.map((field) => ({ value: field.value, checked: field.checked, readOnly: field.readOnly })),
+        editable: providerEditor.dataset.agentProviderEditable !== 'false',
+        reason: providerReadonly?.textContent || '',
+      });
       if (providerEditor?.dataset.agentProviderApp !== button.value) clearProvider();
+      const draft = providerDrafts.get(button.value);
+      if (draft) {
+        setProviderEditorEditable(draft.editable, draft.reason);
+        controls.forEach((field, index) => Object.assign(field, draft.values[index]));
+      }
     }));
     panel.querySelector('[data-agent-provider-new]')?.addEventListener('click', () => { clearProvider(); providerId?.focus(); });
     panel.querySelector('[data-agent-provider-clear]')?.addEventListener('click', clearProvider);
@@ -2499,7 +2544,9 @@
       const trigger = event.currentTarget;
       try {
         setPending(trigger, true);
-        fillProvider(await loadProvider(trigger.dataset.agentProviderEdit));
+        const loaded = await loadProvider(trigger.dataset.agentProviderEdit);
+        if (!loaded) return;
+        fillProvider(loaded);
         flash('Provider 详情已载入', { success: true });
       } catch (error) { flash(`读取失败：${error.message}`); }
       finally { setPending(trigger, false); }
@@ -2598,15 +2645,18 @@
     failoverQueueControls.save?.addEventListener('click', async (event) => {
       const trigger = event.currentTarget;
       const clientId = activeClient();
+      if (!failoverQueueState.ready || failoverQueueState.clientId !== clientId) return;
+      const ticket = clientState.begin('queue');
       const policy = getAgentRouterPolicy(clientById(clientId));
       if (!policy.configured) { flash('先在 Providers 中选择“当前” Provider'); return; }
       try {
         setPending(trigger, true);
         const body = await putJson(`/api/agent/router/apps/${encodeURIComponent(clientId)}/failover-queue`, { provider_ids: failoverQueueState.providerIds });
+        if (!clientState.accepts(ticket)) return;
         failoverQueueState.providerIds = Array.isArray(body?.provider_ids) ? body.provider_ids : failoverQueueState.providerIds;
         renderFailoverQueue();
         flash('故障转移队列已保存，顺序已生效', { success: true });
-      } catch (error) { flash(`队列保存失败：${error.message}`); } finally { setPending(trigger, false); }
+      } catch (error) { if (clientState.accepts(ticket)) flash(`队列保存失败：${error.message}`); } finally { setPending(trigger, false); renderFailoverQueue(); }
     });
 
     // Router control plane.
@@ -2632,31 +2682,37 @@
     }));
     panel.querySelector('[data-agent-router-save]')?.addEventListener('click', async (event) => {
       const trigger = event.currentTarget;
+      const clientId = activeClient();
+      const ticket = clientState.begin('policy');
+      const policy = getAgentRouterPolicy(clientById(clientId));
+      const policyPayload = buildAgentRouterPolicyPayload({
+        autoFailover: routerPolicyControls.autoFailover?.checked,
+        maxRetries: routerPolicyControls.maxRetries?.value,
+        failureThreshold: routerPolicyControls.failureThreshold?.value,
+        cooldownSeconds: routerPolicyControls.cooldownSeconds?.value,
+      });
       const address = panel.querySelector('[data-agent-router-address-input]')?.value?.trim();
       const port = Number(panel.querySelector('[data-agent-router-port]')?.value || 7888);
       const proxy = panel.querySelector('[data-agent-router-proxy]')?.value?.trim() || null;
       try {
         setPending(trigger, true);
         await putJson('/api/agent/router/config', { listen_address: address, listen_port: port, show_home_switch: Boolean(panel.querySelector('[data-agent-router-home-switch]')?.checked), outbound_proxy: proxy });
-        const policy = getAgentRouterPolicy(clientById(activeClient()));
+        if (!clientState.accepts(ticket)) return;
         if (policy.configured) {
-          const values = await putJson(`/api/agent/router/apps/${encodeURIComponent(activeClient())}/policy`, buildAgentRouterPolicyPayload({
-            autoFailover: routerPolicyControls.autoFailover?.checked,
-            maxRetries: routerPolicyControls.maxRetries?.value,
-            failureThreshold: routerPolicyControls.failureThreshold?.value,
-            cooldownSeconds: routerPolicyControls.cooldownSeconds?.value,
-          }));
-          const button = clientById(activeClient());
+          const values = await putJson(`/api/agent/router/apps/${encodeURIComponent(clientId)}/policy`, policyPayload);
+          if (!clientState.accepts(ticket)) return;
+          const button = clientById(clientId);
           applyAgentRouterProfileDataset(button, button?.dataset.agentRouterProvider, values?.provider || {});
           syncRouterPolicyControls();
         }
         flash(policy.configured ? 'Router 运行配置与当前客户端路由策略已保存' : 'Router 运行配置已保存；先选择当前 Provider 才能启用故障转移策略', { success: true });
       }
-      catch (error) { flash(`保存失败：${error.message}`); } finally { setPending(trigger, false); }
+      catch (error) { if (clientState.accepts(ticket)) flash(`保存失败：${error.message}`); } finally { setPending(trigger, false); }
     });
     routerPolicyControls.save?.addEventListener('click', async (event) => {
       const trigger = event.currentTarget;
       const clientId = activeClient();
+      const ticket = clientState.begin('policy');
       const policy = getAgentRouterPolicy(clientById(clientId));
       if (!policy.configured) { flash('先在 Providers 中选择“当前” Provider'); return; }
       try {
@@ -2667,11 +2723,12 @@
           failureThreshold: routerPolicyControls.failureThreshold?.value,
           cooldownSeconds: routerPolicyControls.cooldownSeconds?.value,
         }));
+        if (!clientState.accepts(ticket)) return;
         const button = clientById(clientId);
         applyAgentRouterProfileDataset(button, button?.dataset.agentRouterProvider, body?.provider || {});
         syncRouterPolicyControls();
         flash('当前客户端的故障转移策略已保存', { success: true });
-      } catch (error) { flash(`策略保存失败：${error.message}`); } finally { setPending(trigger, false); }
+      } catch (error) { if (clientState.accepts(ticket)) flash(`策略保存失败：${error.message}`); } finally { setPending(trigger, false); }
     });
     panel.querySelectorAll('[data-agent-route-takeover]').forEach((button) => button.addEventListener('click', async (event) => {
       const target = event.currentTarget;
@@ -4256,7 +4313,7 @@
   }
 
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { getMcpMatrixCellState, getUnmanagedMcpIds, getVisibleAgentTargetSummary, getAgentClientStatus, getAgentResourceClientState, describeAgentReconcileResult, getAgentDiscoveryForClient, getAgentInstalledSkillCount, buildAgentProfilePayload, nextAgentClient, buildMcpSavePayload, moveAgentResourceId, buildAgentResourceOrderPayload, buildAgentProviderRouting, buildAgentProviderPayload, getAgentProviderPrimaryAction, getAgentRouterPolicy, buildAgentRouterPolicyPayload, applyAgentRouterProfileDataset, getAgentProviderOwnershipState, applyAgentRouterTakeoverDataset, initAssetSearch, matchesAssetFilter, nextRuntimeFilter };
+    module.exports = { createAgentClientState, getMcpMatrixCellState, getUnmanagedMcpIds, getVisibleAgentTargetSummary, getAgentClientStatus, getAgentResourceClientState, describeAgentReconcileResult, getAgentDiscoveryForClient, getAgentInstalledSkillCount, buildAgentProfilePayload, nextAgentClient, buildMcpSavePayload, moveAgentResourceId, buildAgentResourceOrderPayload, buildAgentProviderRouting, buildAgentProviderPayload, getAgentProviderPrimaryAction, getAgentRouterPolicy, buildAgentRouterPolicyPayload, applyAgentRouterProfileDataset, getAgentProviderOwnershipState, applyAgentRouterTakeoverDataset, initAssetSearch, matchesAssetFilter, nextRuntimeFilter };
   }
 
   if (typeof document !== 'undefined') {

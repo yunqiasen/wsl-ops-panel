@@ -51,7 +51,7 @@ def logs_page(request: Request) -> RedirectResponse:
 
 
 def _build_task_item(task: TaskRecord) -> dict[str, object]:
-    plan_text = _read_text_excerpt(Path(task.plan_path), max_chars=8000) if task.plan_path else ''
+    plan_text = _public_plan(task)
     stdout = _read_text_excerpt(Path(task.stdout_log_path), max_chars=6000)
     stderr = _read_text_excerpt(Path(task.stderr_log_path), max_chars=6000)
     plan_steps = _plan_steps(plan_text)
@@ -80,6 +80,22 @@ def _build_task_item(task: TaskRecord) -> dict[str, object]:
         'stdout_line_count': _line_count(stdout),
         'stderr_line_count': _line_count(stderr),
     }
+
+
+def _public_plan(task: TaskRecord) -> str:
+    if not task.plan_path or not Path(task.plan_path).is_file():
+        return ''
+    content = Path(task.plan_path).read_text(encoding='utf-8', errors='replace')
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return '执行计划格式异常'
+    if payload.get('provider_projection') or task.action.startswith('agent_provider_'):
+        # Execution snapshots and shell payloads are private; expose step labels only.
+        payload.pop('provider_projection', None)
+        for key in ('commands', 'success_commands'):
+            payload[key] = [[_command_label(command)] for command in payload.get(key, [])]
+    return json.dumps(payload, ensure_ascii=False, indent=2)[-8000:]
 
 
 def _count_task_statuses(tasks: list[TaskRecord]) -> dict[str, int]:

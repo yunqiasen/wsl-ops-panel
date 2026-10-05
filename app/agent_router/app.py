@@ -489,7 +489,9 @@ async def _proxy_request_once(
                 if transformer is not None:
                     for output in transformer.finish():
                         yield output
-                if finish_counter:
+                if transformer is not None and transformer.failed:
+                    counter.finish(False)
+                elif finish_counter:
                     counter.finish(status_code < 400)
             except BaseException:
                 if finish_counter:

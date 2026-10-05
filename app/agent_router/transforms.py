@@ -1252,63 +1252,75 @@ def _responses_status_to_finish(status: Any) -> str:
 
 
 class SseTransformer:
-    """Incrementally transform complete SSE events without buffering a stream."""
+    """One stream owns block identity, argument fragments and the terminal outcome.
+
+    feed never buffers the entire wire stream. Same-protocol traffic stays byte
+    exact. EOF is successful only after an explicit upstream terminal signal.
+    """
 
     def __init__(self, source_format: str, target_format: str) -> None:
         self.source = _format(source_format)
         self.target = _format(target_format)
-        if self.source != self.target and not (
-            self.source in _FORMATS and self.target in _FORMATS
-        ):
-            raise UnsupportedProtocolTransform(
-                f"unsupported protocol transform: {self.source} -> {self.target}"
-            )
         self._buffer = bytearray()
         self._started = False
-        self._content_started = False
         self._finished = False
-        self._finish_emitted = False
+        self.failed = False
+        self._reason: str | None = None
+        self._id = ""
+        self._model = ""
+        self._usage: dict[str, Any] = {}
+        self._tools: dict[str, dict[str, Any]] = {}
+        self._blocks: dict[str, int] = {}
+        self._text = ""
+        self._output: dict[int, dict[str, Any]] = {}
 
     def feed(self, chunk: bytes) -> list[bytes]:
         if self.source == self.target:
             return [chunk]
-        if not chunk:
+        if self._finished:
             return []
         self._buffer.extend(chunk)
-        result: list[bytes] = []
-        while True:
+        output: list[bytes] = []
+        while not self._finished:
             block = self._take_block()
             if block is None:
                 break
             event, data = _parse_sse_block(block)
-            if data is None:
-                continue
-            result.extend(self._convert(event, data))
-        return result
+            if data is not None:
+                output.extend(self._convert(event, data))
+        return output
 
     def finish(self) -> list[bytes]:
         if self.source == self.target or self._finished:
             return []
-        result: list[bytes] = []
+        output: list[bytes] = []
         if self._buffer.strip():
             event, data = _parse_sse_block(bytes(self._buffer))
             self._buffer.clear()
             if data is not None:
-                result.extend(self._convert(event, data))
-        if not self._finish_emitted:
-            result.extend(self._convert("", "[DONE]"))
-        return result
+                output.extend(self._convert(event, data))
+        if not self._finished:
+            if self.source == "openai_chat" and self._reason is not None:
+                output.extend(self._finish())
+            else:
+                output.extend(
+                    self._error(
+                        {
+                            "type": "incomplete_stream",
+                            "message": "Upstream stream ended before a terminal event",
+                        },
+                        incomplete=True,
+                    )
+                )
+        return output
 
     def _take_block(self) -> bytes | None:
         raw = bytes(self._buffer)
-        candidates = [
-            (raw.find(b"\n\n"), 2),
-            (raw.find(b"\r\n\r\n"), 4),
-        ]
-        candidates = [(index, size) for index, size in candidates if index >= 0]
+        candidates = [(raw.find(b"\n\n"), 2), (raw.find(b"\r\n\r\n"), 4)]
+        candidates = [(i, n) for i, n in candidates if i >= 0]
         if not candidates:
             return None
-        index, size = min(candidates, key=lambda item: item[0])
+        index, size = min(candidates)
         block = raw[:index]
         del self._buffer[: index + size]
         return block
@@ -1317,145 +1329,642 @@ class SseTransformer:
         if data.strip() == "[DONE]":
             return self._finish()
         try:
-            payload = json.loads(data)
+            value = json.loads(data)
         except json.JSONDecodeError:
-            return []
-        if not isinstance(payload, dict):
-            return []
-        if self.source == "gemini":
-            kind, value = _gemini_sse_to_chat(payload)
-        elif self.source == "anthropic":
-            kind, value = _anthropic_sse_to_chat(event, payload)
-        elif self.source == "openai_responses":
-            kind, value = _responses_sse_to_chat(event, payload)
-        else:
-            kind, value = _openai_chat_sse_to_chat(payload)
-        if kind == "done":
-            return self._finish()
-        if self.target == "openai_chat":
-            return _chat_sse_to_openai(value)
-        if self.target == "anthropic":
-            return self._chat_sse_to_anthropic(kind, value)
-        if self.target == "openai_responses":
-            return _chat_sse_to_responses(kind, value)
-        if self.target == "gemini":
-            return _chat_sse_to_gemini(kind, value)
-        return []
+            return self._error(
+                {
+                    "type": "invalid_stream_event",
+                    "message": "Upstream sent invalid JSON",
+                }
+            )
+        if not isinstance(value, dict):
+            return self._error(
+                {
+                    "type": "invalid_stream_event",
+                    "message": "Upstream event is not an object",
+                }
+            )
+        kind = str(value.get("type") or event)
+        if value.get("error") or kind in {
+            "error",
+            "response.failed",
+            "response.incomplete",
+        }:
+            response = value.get("response") or {}
+            error = (
+                value.get("error")
+                or response.get("error")
+                or {
+                    "type": kind,
+                    "message": "Upstream did not complete",
+                    "details": response.get("incomplete_details"),
+                }
+            )
+            return self._error(error, incomplete=kind == "response.incomplete")
+        if self.source == "openai_chat":
+            return self._chat(value)
+        if self.source == "anthropic":
+            return self._anthropic(kind, value)
+        if self.source == "openai_responses":
+            return self._responses(kind, value)
+        return self._gemini(value)
 
-    def _finish(self) -> list[bytes]:
-        if self._finish_emitted:
+    def _usage_tokens(self) -> dict[str, int]:
+        return {
+            'input_tokens': _as_int(self._usage.get('input_tokens', self._usage.get('prompt_tokens', 0))),
+            'output_tokens': _as_int(self._usage.get('output_tokens', self._usage.get('completion_tokens', 0))),
+        }
+
+    def _metadata(self, value: dict[str, Any]) -> None:
+        self._id = str(value.get("id") or self._id)
+        self._model = str(value.get("model") or self._model)
+        self._usage.update(value.get("usage") or {})
+
+    def _chat(self, value: dict[str, Any]) -> list[bytes]:
+        self._metadata(value)
+        choices = value.get("choices") or []
+        if not choices:
             return []
-        self._finish_emitted = True
-        self._finished = True
-        result: list[bytes] = []
-        if self.target == "anthropic":
-            if not self._started:
-                result.append(
-                    _sse(
-                        "message_start",
-                        {
-                            "type": "message_start",
-                            "message": {
-                                "id": "",
-                                "type": "message",
-                                "role": "assistant",
-                                "model": "",
-                                "content": [],
-                                "usage": {"input_tokens": 0, "output_tokens": 0},
-                            },
-                        },
-                    )
-                )
-                self._started = True
-            if self._content_started:
-                result.append(
-                    _sse(
-                        "content_block_stop",
-                        {"type": "content_block_stop", "index": 0},
-                    )
-                )
-            result.append(
-                _sse(
-                    "message_stop",
-                    {"type": "message_stop"},
+        choice = choices[0]
+        delta = choice.get("delta") or {}
+        output = self._content(str(delta.get("content") or ""))
+        output.extend(self._extra(delta))
+        for tool in delta.get("tool_calls") or []:
+            function = tool.get("function") or {}
+            output.extend(
+                self._tool(
+                    str(tool.get("index", 0)),
+                    tool.get("id"),
+                    function.get("name"),
+                    function.get("arguments", ""),
+                    tool.get("extra_content"),
                 )
             )
-            return result
-        if self.target == "openai_chat":
-            return [b"data: [DONE]\n\n"]
-        if self.target == "openai_responses":
-            return [
-                _sse(
-                    "response.completed",
-                    {"type": "response.completed", "response": {"status": "completed"}},
+        if choice.get("finish_reason"):
+            self._reason = str(choice["finish_reason"])
+        return output
+
+    def _anthropic(self, kind: str, value: dict[str, Any]) -> list[bytes]:
+        if kind == "message_start":
+            self._metadata(value.get("message") or {})
+            return []
+        if kind == "message_delta":
+            self._metadata(value)
+            reason = (value.get("delta") or {}).get("stop_reason")
+            self._reason = {
+                "end_turn": "stop",
+                "stop_sequence": "stop",
+                "tool_use": "tool_calls",
+                "max_tokens": "length",
+            }.get(reason, reason)
+            return []
+        if kind == "message_stop":
+            return self._finish()
+        index = str(value.get("index", 0))
+        if kind == "content_block_start":
+            block = value.get("content_block") or {}
+            if block.get("type") == "tool_use":
+                initial = (
+                    json.dumps(block["input"], separators=(",", ":"))
+                    if block.get("input")
+                    else ""
                 )
-            ]
+                return self._tool(index, block.get("id"), block.get("name"), initial)
+            if block.get("type") == "text":
+                return self._content(str(block.get("text") or ""))
+        if kind == "content_block_delta":
+            delta = value.get("delta") or {}
+            if delta.get("type") == "input_json_delta":
+                return self._tool(index, None, None, delta.get("partial_json") or "")
+            if delta.get("type") == "thinking_delta":
+                return self._extra({"reasoning_content": delta.get("thinking", "")})
+            return self._content(str(delta.get("text") or ""))
         return []
 
-    def _chat_sse_to_anthropic(self, kind: str, value: dict[str, Any]) -> list[bytes]:
-        result: list[bytes] = []
-        if not self._started:
-            result.append(
+    def _responses(self, kind: str, value: dict[str, Any]) -> list[bytes]:
+        response = value.get("response") or {}
+        self._metadata(response)
+        if kind in {"response.completed", "response.done"}:
+            status = response.get("status")
+            if status in {"failed", "incomplete", "cancelled"}:
+                return self._error(
+                    response.get("error")
+                    or {"type": status, "message": "Upstream did not complete"},
+                    incomplete=status == "incomplete",
+                )
+            return self._finish()
+        index = str(value.get("output_index", 0))
+        if kind == "response.output_item.added":
+            item = value.get("item") or {}
+            if item.get("type") == "function_call":
+                return self._tool(
+                    index,
+                    item.get("call_id") or item.get("id"),
+                    item.get("name"),
+                    item.get("arguments") or "",
+                )
+        if kind == "response.function_call_arguments.delta":
+            return self._tool(index, None, None, value.get("delta") or "")
+        if kind == "response.output_text.delta":
+            return self._content(str(value.get("delta") or ""))
+        if kind in {
+            "response.reasoning_text.delta",
+            "response.reasoning_summary_text.delta",
+        }:
+            return self._extra({"reasoning_content": value.get("delta") or ""})
+        return []
+
+    def _gemini(self, payload: dict[str, Any]) -> list[bytes]:
+        kind, value = _gemini_sse_to_chat(payload)
+        self._metadata(value)
+        output = self._content(str(value.get("text") or ""))
+        output.extend(self._extra(value))
+        for tool in value.get("tool_calls") or []:
+            function = tool.get("function") or {}
+            output.extend(
+                self._tool(
+                    str(tool.get("id") or f"gemini:{len(self._tools)}"),
+                    tool.get("id"),
+                    function.get("name"),
+                    function.get("arguments") or "",
+                    tool.get("extra_content"),
+                )
+            )
+        if kind == "finish":
+            self._reason = value.get("finish_reason") or "stop"
+            output.extend(self._finish())
+        return output
+
+    def _start(self) -> list[bytes]:
+        if self._started:
+            return []
+        self._started = True
+        if self.target == "anthropic":
+            return [
                 _sse(
                     "message_start",
                     {
                         "type": "message_start",
                         "message": {
-                            "id": value.get("id", ""),
+                            "id": self._id,
                             "type": "message",
                             "role": "assistant",
-                            "model": value.get("model", ""),
+                            "model": self._model,
                             "content": [],
-                            "usage": {"input_tokens": 0, "output_tokens": 0},
+                            "usage": {
+                                "input_tokens": self._usage_tokens()["input_tokens"],
+                                "output_tokens": 0,
+                            },
                         },
                     },
                 )
-            )
-            self._started = True
-        text = value.get("text")
-        if text:
-            if not self._content_started:
-                result.append(
-                    _sse(
-                        "content_block_start",
-                        {
-                            "type": "content_block_start",
-                            "index": 0,
-                            "content_block": {"type": "text", "text": ""},
+            ]
+        if self.target == "openai_responses":
+            return [
+                _sse(
+                    "response.created",
+                    {
+                        "type": "response.created",
+                        "response": {
+                            "id": self._id,
+                            "model": self._model,
+                            "status": "in_progress",
+                            "output": [],
                         },
-                    )
+                    },
                 )
-                self._content_started = True
-            result.append(
+            ]
+        return []
+
+    def _block(self, key: str, block: dict[str, Any]) -> tuple[int, list[bytes]]:
+        output = self._start()
+        if key in self._blocks:
+            return self._blocks[key], output
+        index = len(self._blocks)
+        self._blocks[key] = index
+        if self.target == "anthropic":
+            output.append(
+                _sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": index,
+                        "content_block": block,
+                    },
+                )
+            )
+        return index, output
+
+    def _chat_chunk(self, delta: dict[str, Any], reason: str | None = None) -> bytes:
+        choice: dict[str, Any] = {"index": 0, "delta": delta}
+        if reason is not None:
+            choice["finish_reason"] = reason
+        data: dict[str, Any] = {
+            "id": self._id,
+            "object": "chat.completion.chunk",
+            "model": self._model,
+            "choices": [choice],
+        }
+        if self._usage:
+            usage = dict(self._usage)
+            if "input_tokens" in usage:
+                usage["prompt_tokens"] = usage.pop("input_tokens")
+            if "output_tokens" in usage:
+                usage["completion_tokens"] = usage.pop("output_tokens")
+            usage.setdefault(
+                "total_tokens",
+                usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
+            )
+            data["usage"] = usage
+        return _json_sse(data)
+
+    def _content(self, text: str) -> list[bytes]:
+        if not text:
+            return []
+        self._text += text
+        if self.target == "openai_chat":
+            return [self._chat_chunk({"content": text})]
+        if self.target == "gemini":
+            return [
+                _json_sse(
+                    {
+                        "candidates": [
+                            {"content": {"role": "model", "parts": [{"text": text}]}}
+                        ]
+                    }
+                )
+            ]
+        index, output = self._block("text", {"type": "text", "text": ""})
+        if self.target == "anthropic":
+            output.append(
                 _sse(
                     "content_block_delta",
                     {
                         "type": "content_block_delta",
-                        "index": 0,
+                        "index": index,
                         "delta": {"type": "text_delta", "text": text},
                     },
                 )
             )
-        if kind == "finish":
-            reason = value.get("finish_reason")
-            result.append(
-                _sse(
-                    "message_delta",
-                    {
-                        "type": "message_delta",
-                        "delta": {
-                            "stop_reason": {
-                                "stop": "end_turn",
-                                "length": "max_tokens",
-                                "tool_calls": "tool_use",
-                            }.get(reason, reason),
-                            "stop_sequence": None,
+        else:
+            if index not in self._output:
+                item = {
+                    "id": f"{self._id}_message_{index}",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "content": [],
+                }
+                self._output[index] = item
+                output.append(
+                    _sse(
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": index,
+                            "item": copy.deepcopy(item),
                         },
-                        "usage": value.get("usage", {}),
+                    )
+                )
+                output.append(
+                    _sse(
+                        "response.content_part.added",
+                        {
+                            "type": "response.content_part.added",
+                            "output_index": index,
+                            "item_id": item["id"],
+                            "content_index": 0,
+                            "part": {
+                                "type": "output_text",
+                                "text": "",
+                                "annotations": [],
+                            },
+                        },
+                    )
+                )
+            item = self._output[index]
+            item["content"] = [
+                {"type": "output_text", "text": self._text, "annotations": []}
+            ]
+            output.append(
+                _sse(
+                    "response.output_text.delta",
+                    {
+                        "type": "response.output_text.delta",
+                        "item_id": item["id"],
+                        "output_index": index,
+                        "content_index": 0,
+                        "delta": text,
                     },
                 )
             )
-        return result
+        return output
+
+    def _tool(
+        self, key: str, tool_id: Any, name: Any, arguments: str, extra: Any = None
+    ) -> list[bytes]:
+        first = key not in self._tools
+        tool = self._tools.setdefault(
+            key,
+            {
+                "id": str(tool_id or f"call_{len(self._tools)}"),
+                "name": str(name or ""),
+                "arguments": "",
+                "index": len(self._tools),
+            },
+        )
+        if tool_id:
+            tool["id"] = str(tool_id)
+        if name:
+            tool["name"] = str(name)
+        tool["arguments"] += str(arguments)
+        if self.target == "openai_chat":
+            function = {"arguments": str(arguments)}
+            delta: dict[str, Any] = {"index": tool["index"], "function": function}
+            if first:
+                delta.update(id=tool["id"], type="function")
+                function["name"] = tool["name"]
+            if extra:
+                delta["extra_content"] = extra
+            return [self._chat_chunk({"tool_calls": [delta]})]
+        if self.target == "gemini":
+            # Gemini args are objects, not text fragments. Emit each complete
+            # call once at terminal time, retaining parallel call identities.
+            return []
+        index, output = self._block(
+            "tool:" + key,
+            {"type": "tool_use", "id": tool["id"], "name": tool["name"], "input": {}},
+        )
+        if self.target == "anthropic":
+            if arguments:
+                output.append(
+                    _sse(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": str(arguments),
+                            },
+                        },
+                    )
+                )
+        else:
+            if first:
+                item = {
+                    "type": "function_call",
+                    "id": "fc_" + tool["id"],
+                    "call_id": tool["id"],
+                    "name": tool["name"],
+                    "arguments": "",
+                    "status": "in_progress",
+                }
+                self._output[index] = item
+                output.append(
+                    _sse(
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": index,
+                            "item": copy.deepcopy(item),
+                        },
+                    )
+                )
+            item = self._output[index]
+            item["arguments"] = tool["arguments"]
+            if arguments:
+                output.append(
+                    _sse(
+                        "response.function_call_arguments.delta",
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": item["id"],
+                            "output_index": index,
+                            "delta": str(arguments),
+                        },
+                    )
+                )
+        return output
+
+    def _extra(self, value: dict[str, Any]) -> list[bytes]:
+        keys = ("reasoning_content", "images", "extra_content")
+        if self.target == "openai_chat":
+            delta = {k: value[k] for k in keys if value.get(k)}
+            return [self._chat_chunk(delta)] if delta else []
+        if self.target == "gemini" and value.get("reasoning_content"):
+            return [
+                _json_sse(
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "role": "model",
+                                    "parts": [
+                                        {
+                                            "text": value["reasoning_content"],
+                                            "thought": True,
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            ]
+        if self.target == "anthropic" and value.get("reasoning_content"):
+            index, output = self._block(
+                "thinking", {"type": "thinking", "thinking": ""}
+            )
+            output.append(
+                _sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "thinking_delta",
+                            "thinking": value["reasoning_content"],
+                        },
+                    },
+                )
+            )
+            return output
+        return []
+
+    def _finish(self) -> list[bytes]:
+        if self._finished:
+            return []
+        reason = self._reason or ("tool_calls" if self._tools else "stop")
+        # Validate assembled tool input before advertising any successful result.
+        for tool in self._tools.values():
+            try:
+                tool["input"] = json.loads(tool["arguments"] or "{}")
+            except json.JSONDecodeError:
+                return self._error(
+                    {
+                        "type": "incomplete_tool_arguments",
+                        "message": "Tool arguments ended before valid JSON",
+                    },
+                    incomplete=True,
+                )
+        self._finished = True
+        output = self._start()
+        if self.target == "openai_chat":
+            output.extend([self._chat_chunk({}, reason), b"data: [DONE]\n\n"])
+        elif self.target == "anthropic":
+            output.extend(
+                _sse(
+                    "content_block_stop", {"type": "content_block_stop", "index": index}
+                )
+                for index in self._blocks.values()
+            )
+            output.extend(
+                [
+                    _sse(
+                        "message_delta",
+                        {
+                            "type": "message_delta",
+                            "delta": {
+                                "stop_reason": {
+                                    "stop": "end_turn",
+                                    "tool_calls": "tool_use",
+                                    "length": "max_tokens",
+                                }.get(reason, reason),
+                                "stop_sequence": None,
+                            },
+                            "usage": {
+                                "input_tokens": self._usage_tokens()["input_tokens"],
+                                "output_tokens": self._usage_tokens()["output_tokens"],
+                            },
+                        },
+                    ),
+                    _sse("message_stop", {"type": "message_stop"}),
+                ]
+            )
+        elif self.target == "openai_responses":
+            incomplete = reason in {"length", "content_filter"}
+            for index, item in self._output.items():
+                item["status"] = "incomplete" if incomplete else "completed"
+                if item["type"] == "function_call":
+                    output.append(
+                        _sse(
+                            "response.function_call_arguments.done",
+                            {
+                                "type": "response.function_call_arguments.done",
+                                "item_id": item["id"],
+                                "output_index": index,
+                                "arguments": item["arguments"],
+                            },
+                        )
+                    )
+                else:
+                    output.append(
+                        _sse(
+                            "response.output_text.done",
+                            {
+                                "type": "response.output_text.done",
+                                "item_id": item["id"],
+                                "output_index": index,
+                                "content_index": 0,
+                                "text": self._text,
+                            },
+                        )
+                    )
+                    output.append(
+                        _sse(
+                            "response.content_part.done",
+                            {
+                                "type": "response.content_part.done",
+                                "item_id": item["id"],
+                                "output_index": index,
+                                "content_index": 0,
+                                "part": item["content"][0],
+                            },
+                        )
+                    )
+                output.append(
+                    _sse(
+                        "response.output_item.done",
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": index,
+                            "item": copy.deepcopy(item),
+                        },
+                    )
+                )
+            status = "incomplete" if incomplete else "completed"
+            usage = {
+                "input_tokens": self._usage_tokens()["input_tokens"],
+                "output_tokens": self._usage_tokens()["output_tokens"],
+            }
+            response = {
+                "id": self._id,
+                "model": self._model,
+                "status": status,
+                "output": [self._output[i] for i in sorted(self._output)],
+                "usage": usage,
+            }
+            if incomplete:
+                response["incomplete_details"] = {
+                    "reason": "max_output_tokens"
+                    if reason == "length"
+                    else "content_filter"
+                }
+            output.append(
+                _sse(
+                    "response." + status,
+                    {"type": "response." + status, "response": response},
+                )
+            )
+        else:
+            parts = [
+                {"functionCall": {"id": t["id"], "name": t["name"], "args": t["input"]}}
+                for t in self._tools.values()
+            ]
+            candidate = {
+                "content": {"role": "model", "parts": parts},
+                "finishReason": {
+                    "length": "MAX_TOKENS",
+                    "content_filter": "SAFETY",
+                }.get(reason, "STOP"),
+            }
+            output.append(
+                _json_sse(
+                    {
+                        "candidates": [candidate],
+                        "usageMetadata": {
+                            "promptTokenCount": self._usage_tokens()["input_tokens"],
+                            "candidatesTokenCount": self._usage_tokens()["output_tokens"],
+                        },
+                    }
+                )
+            )
+        return output
+
+    def _error(self, error: Any, *, incomplete: bool = False) -> list[bytes]:
+        if self._finished:
+            return []
+        self._finished = True
+        self.failed = True
+        if self.target == "openai_responses":
+            kind = "response.incomplete" if incomplete else "response.failed"
+            return [
+                _sse(
+                    kind,
+                    {
+                        "type": kind,
+                        "response": {
+                            "id": self._id,
+                            "status": kind.split(".")[1],
+                            "error": error,
+                        },
+                    },
+                )
+            ]
+        if self.target == "anthropic":
+            return [_sse("error", {"type": "error", "error": error})]
+        return [_json_sse({"error": error})]
 
 
 def _parse_sse_block(block: bytes) -> tuple[str, str | None]:
@@ -1467,56 +1976,6 @@ def _parse_sse_block(block: bytes) -> tuple[str, str | None]:
         elif line.startswith(b"data:"):
             data_lines.append(line[5:].lstrip().decode("utf-8", errors="replace"))
     return event, "\n".join(data_lines) if data_lines else None
-
-
-def _openai_chat_sse_to_chat(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    choices = payload.get("choices") or []
-    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
-    delta = choice.get("delta") or {}
-    return (
-        "finish" if choice.get("finish_reason") else "delta",
-        {
-            "id": payload.get("id", ""),
-            "model": payload.get("model", ""),
-            "text": delta.get("content") or "",
-            "tool_calls": delta.get("tool_calls") or [],
-            "finish_reason": choice.get("finish_reason"),
-            "usage": payload.get("usage") or {},
-        },
-    )
-
-
-def _anthropic_sse_to_chat(
-    event: str, payload: dict[str, Any]
-) -> tuple[str, dict[str, Any]]:
-    event_type = str(payload.get("type") or event)
-    if event_type == "message_stop":
-        return "done", {}
-    if event_type == "message_delta":
-        delta = payload.get("delta") or {}
-        return "finish", {"finish_reason": delta.get("stop_reason"), "usage": payload.get("usage") or {}}
-    delta = payload.get("delta") or {}
-    return "delta", {
-        "id": (payload.get("message") or {}).get("id", ""),
-        "model": (payload.get("message") or {}).get("model", ""),
-        "text": delta.get("text") or "",
-        "finish_reason": None,
-        "usage": payload.get("usage") or {},
-    }
-
-
-def _responses_sse_to_chat(
-    event: str, payload: dict[str, Any]
-) -> tuple[str, dict[str, Any]]:
-    event_type = str(payload.get("type") or event)
-    if event_type in {"response.completed", "response.done"}:
-        response = payload.get("response") or {}
-        return "finish", {"finish_reason": "stop", "usage": response.get("usage") or {}}
-    if event_type.endswith("output_text.delta") or event_type == "response.output_text.delta":
-        return "delta", {"text": payload.get("delta") or ""}
-    if payload.get("delta") is not None:
-        return "delta", {"text": _text_content(payload.get("delta"))}
-    return "delta", {"text": ""}
 
 
 def _gemini_sse_to_chat(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -1550,171 +2009,6 @@ def _gemini_sse_to_chat(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         else None
     )
     return kind, value
-
-
-def _chat_sse_to_openai(value: dict[str, Any]) -> list[bytes]:
-    delta: dict[str, Any] = {}
-    if value.get("text"):
-        delta["content"] = value["text"]
-    if value.get("reasoning_content"):
-        delta["reasoning_content"] = value["reasoning_content"]
-    if value.get("images"):
-        delta["images"] = value["images"]
-    if value.get("tool_calls"):
-        delta["tool_calls"] = value["tool_calls"]
-    if value.get("extra_content"):
-        delta["extra_content"] = value["extra_content"]
-    choice: dict[str, Any] = {"index": 0, "delta": delta}
-    if value.get("finish_reason"):
-        choice["finish_reason"] = value["finish_reason"]
-    result: dict[str, Any] = {
-        "id": value.get("id", ""),
-        "model": value.get("model", ""),
-        "choices": [choice],
-    }
-    if value.get("usage"):
-        result["usage"] = value["usage"]
-    return [_json_sse(result)]
-
-
-def _chat_sse_to_responses(kind: str, value: dict[str, Any]) -> list[bytes]:
-    if kind == "finish":
-        return [
-            _sse(
-                "response.completed",
-                {"type": "response.completed", "response": {"status": "completed"}},
-            )
-        ]
-    return [
-        _sse(
-            "response.output_text.delta",
-            {"type": "response.output_text.delta", "delta": value.get("text", "")},
-        )
-    ]
-
-
-def _chat_sse_to_gemini(kind: str, value: dict[str, Any]) -> list[bytes]:
-    candidate: dict[str, Any] = {"content": {"role": "model", "parts": []}}
-    if value.get("text"):
-        candidate["content"]["parts"].append({"text": value["text"]})
-    if kind == "finish":
-        candidate["finishReason"] = value.get("finish_reason") or "STOP"
-    return [_json_sse({"candidates": [candidate]})]
-
-def _transform_chat_anthropic_sse(
-    source: str, target: str, chunks: list[bytes]
-) -> list[bytes]:
-    events: list[bytes] = []
-    for raw_event in _parse_sse_events(chunks):
-        if raw_event == "[DONE]":
-            if target == "anthropic":
-                events.append(_sse("message_stop", {"type": "message_stop"}))
-            else:
-                events.append(b"data: [DONE]\n\n")
-            continue
-        try:
-            payload = json.loads(raw_event)
-        except json.JSONDecodeError:
-            continue
-        if source == "openai_chat" and target == "anthropic":
-            delta = ((payload.get("choices") or [{}])[0].get("delta") or {})
-            text = delta.get("content")
-            if text:
-                events.append(
-                    _sse(
-                        "content_block_delta",
-                        {
-                            "type": "content_block_delta",
-                            "index": 0,
-                            "delta": {"type": "text_delta", "text": text},
-                        },
-                    )
-                )
-            if delta.get("tool_calls"):
-                for call in delta["tool_calls"]:
-                    function = call.get("function") or {}
-                    if function.get("arguments"):
-                        events.append(
-                            _sse(
-                                "content_block_delta",
-                                {
-                                    "type": "content_block_delta",
-                                    "index": 0,
-                                    "delta": {
-                                        "type": "input_json_delta",
-                                        "partial_json": function["arguments"],
-                                    },
-                                },
-                            )
-                        )
-        elif source == "anthropic" and target == "openai_chat":
-            event_type = payload.get("type")
-            if event_type == "content_block_delta":
-                delta = payload.get("delta") or {}
-                if delta.get("text"):
-                    events.append(
-                        _json_sse(
-                            {
-                                "choices": [
-                                    {"index": 0, "delta": {"content": delta["text"]}}
-                                ]
-                            }
-                        )
-                    )
-        else:
-            # Responses and Anthropic both use named events; text deltas have
-            # a compatible shape after normalizing the event payload.
-            delta = payload.get("delta") or {}
-            text = delta.get("text") or payload.get("text")
-            if text:
-                if target == "anthropic":
-                    events.append(
-                        _sse(
-                            "content_block_delta",
-                            {
-                                "type": "content_block_delta",
-                                "index": 0,
-                                "delta": {"type": "text_delta", "text": text},
-                            },
-                        )
-                    )
-                else:
-                    events.append(_json_sse({"choices": [{"index": 0, "delta": {"content": text}}]}))
-    return events
-
-
-def _transform_chat_responses_sse(
-    source: str, target: str, chunks: list[bytes]
-) -> list[bytes]:
-    # Both formats carry incremental text in a delta; normalize the wire event
-    # rather than buffering the whole response.
-    events: list[bytes] = []
-    for raw_event in _parse_sse_events(chunks):
-        if raw_event == "[DONE]":
-            events.append(b"data: [DONE]\n\n")
-            continue
-        try:
-            payload = json.loads(raw_event)
-        except json.JSONDecodeError:
-            continue
-        text = _text_content(payload.get("delta"))
-        if not text:
-            text = _text_content(payload.get("text"))
-        if target == "openai_chat":
-            events.append(_json_sse({"choices": [{"index": 0, "delta": {"content": text}}]}))
-        else:
-            events.append(_json_sse({"type": "response.output_text.delta", "delta": text}))
-    return events
-
-
-def _parse_sse_events(chunks: Iterable[bytes]) -> list[str]:
-    buffer = b"".join(chunks)
-    result: list[str] = []
-    for block in buffer.replace(b"\r\n", b"\n").split(b"\n\n"):
-        data_lines = [line[6:] for line in block.splitlines() if line.startswith(b"data:")]
-        if data_lines:
-            result.append(b"\n".join(data_lines).decode("utf-8", errors="replace"))
-    return result
 
 
 def _sse(event: str, payload: dict[str, Any]) -> bytes:

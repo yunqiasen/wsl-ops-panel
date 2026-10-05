@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.adapters.base import ActionPlan
+from app.services.compose_target import capture_compose_context
 from app.adapters.docker_adapter import DockerComposeAdapter, detect_image_repository_from_compose, parse_image_repository
 from app.adapters.host_port_adapter import HostPortAdapter
 from app.adapters.node_adapter import NodePackageAdapter
@@ -397,7 +398,7 @@ def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetS
         version_service=docker_version_service,
         config_root=str(request.app.state.config_root),
         asset_snapshot_json=asset_to_notification_json(asset),
-        runtime_context=_docker_runtime_context(asset, primary_container, obj.config),
+        runtime_context=capture_compose_context(asset, primary_container, obj.config),
     )
 
 
@@ -434,7 +435,7 @@ def _build_discovered_docker_adapter(request: Request, asset: AssetSnapshot) -> 
         version_service=docker_version_service,
         config_root=str(request.app.state.config_root),
         asset_snapshot_json=asset_to_notification_json(asset),
-        runtime_context=_docker_runtime_context(asset, primary_container, asset.metadata),
+        runtime_context=capture_compose_context(asset, primary_container, asset.metadata),
     )
 
 
@@ -446,16 +447,3 @@ def _get_registry_object(request: Request, object_id: str, *, required: bool = T
     if required:
         raise HTTPException(status_code=404, detail='asset not found')
     return None
-
-
-def _docker_runtime_context(asset, primary, config):
-    labels = primary.labels if primary else {}
-    files = config.get('compose_files') or [part for part in labels.get('com.docker.compose.project.config_files', '').split(',') if part]
-    env_files = config.get('env_files') or [part for part in labels.get('com.docker.compose.project.environment_file', '').split(',') if part]
-    project = config.get('compose_project') or (primary.compose_project if primary else None)
-    return {
-        'project': project,
-        'compose_files': files or [config.get('compose_file') or 'docker-compose.yml'],
-        'env_files': env_files,
-        'containers': [{'id': c.id, 'name': c.name} for c in asset.containers if not project or c.compose_project == project],
-    }

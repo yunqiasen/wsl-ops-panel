@@ -8,6 +8,7 @@ from typing import Literal
 import yaml
 
 from app.adapters.base import ActionPlan
+from app.services.compose_target import ComposeTarget
 from app.models.assets import PackageVersionInfo, RuntimeVersionInfo
 from app.services.docker_versions import DockerVersionService, REMOTE_TAG_REF_NAMESPACE
 
@@ -225,12 +226,15 @@ class DockerComposeAdapter:
 
 
     def _runtime_context(self) -> dict:
-        return {
+        context = {
             'project_dir': self.project_dir, 'primary_container': self.primary_container,
             'compose_service': self.compose_service, 'image_repository': self.image_repository,
             'managed_services': self.managed_services, 'ignored_services': self.ignored_services,
-            'compose_files': [self.compose_file], **(self.runtime_context or {}),
+            'compose_file': self.compose_file, **(self.runtime_context or {}),
         }
+        target = ComposeTarget.from_context(context)
+        context.update(compose_files=list(target.files), env_files=list(target.env_files))
+        return context
 
     def _runtime_command(self, action: str, version: str | None = None) -> list[str]:
         command = [sys.executable, '-m', 'app.services.docker_lifecycle',
@@ -471,18 +475,8 @@ class DockerComposeAdapter:
             ],
         ]
         if self.runtime_context is not None:
-            context = self._runtime_context()
-            project_dir = Path(self.project_dir).resolve()
-            compose = ['env', f'WSL_OPS_IMAGE={image_ref}', 'docker', 'compose',
-                       '--project-directory', str(project_dir)]
-            if context.get('project'):
-                compose += ['-p', context['project']]
-            for file in dict.fromkeys([*context['compose_files'], self.override_file]):
-                path = Path(file)
-                compose += ['-f', str(path if path.is_absolute() else project_dir / path)]
-            for file in context.get('env_files', []):
-                path = Path(file)
-                compose += ['--env-file', str(path if path.is_absolute() else project_dir / path)]
+            target = ComposeTarget.from_context(self._runtime_context())
+            compose = ['env', f'WSL_OPS_IMAGE={image_ref}', *target.command(extra_files=[self.override_file])]
             commands[-1] = [*compose, 'up', '-d', '--no-build', self.compose_service]
             commands.insert(0, [*compose, 'config', '--quiet'])
         if self.healthcheck_url:

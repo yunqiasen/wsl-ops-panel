@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.adapters.base import ActionPlan
+from app.services.agent_provider_projection import ProviderProjection, provider_projection
 from app.core.security import require_authenticated_request
 from app.models.tasks import TaskRecord
 from app.services.agent_mcp import (
@@ -853,6 +854,7 @@ def activate_provider(
     queued = _queue_agent_shell_tasks(
         request,
         node_ids=["__local__"],
+        projection=_provider_projection(request, apply_provider, write_secrets=(payload.write_secrets if payload else True)),
         action="agent_provider_add"
         if clean_app in ADDITIVE_PROVIDER_APPS
         else "agent_provider_activate",
@@ -865,7 +867,6 @@ def activate_provider(
     )
     if queued.queued_count < 1:
         raise HTTPException(status_code=400, detail=queued.skipped or "Provider 写入未入队")
-    store.set_current(clean_app, clean_provider)
     response.status_code = 202
     return {
         **queued.model_dump(),
@@ -901,6 +902,7 @@ def remove_live_provider(
         request,
         node_ids=["__local__"],
         action="agent_provider_remove",
+        projection=_provider_projection(request, provider, operation="remove"),
         object_suffix=f"provider_remove__{clean_app}__{clean_provider}",
         build_shell=lambda windows: build_provider_remove_shell(
             clean_app, clean_provider, windows=windows
@@ -908,7 +910,6 @@ def remove_live_provider(
     )
     if queued.queued_count < 1:
         raise HTTPException(status_code=400, detail=queued.skipped or "Provider 移除未入队")
-    store.clear_current(clean_app, clean_provider)
     response.status_code = 202
     return {
         **queued.model_dump(),
@@ -995,6 +996,7 @@ def queue_provider_apply(
         request,
         node_ids=payload.node_ids,
         action="agent_provider_apply",
+        projection=_provider_projection(request, apply_provider, write_secrets=payload.write_secrets),
         object_suffix=f"provider__{provider['app_id']}__{provider['id']}",
         build_shell=lambda windows: build_provider_apply_shell(
             apply_provider, windows=windows, write_secrets=payload.write_secrets
@@ -2146,17 +2148,17 @@ def _execute_resource_operation(
         )
         if not shell:
             raise ValueError(f"{operation.client_id} 暂不支持 Provider 写入")
-        completed = subprocess.run(
-            ["bash", "-lc", shell],
-            cwd=Path.cwd(),
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise RuntimeError("Provider 客户端写入失败")
-        store.set_current(operation.client_id, operation.resource_id)
+        with provider_projection(_provider_projection(request, provider, write_secrets=include_secrets)):
+            completed = subprocess.run(
+                ["bash", "-lc", shell],
+                cwd=Path.cwd(),
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError("Provider 客户端写入失败")
         return {
             "client_id": operation.client_id,
             "provider_id": operation.resource_id,
@@ -2462,6 +2464,7 @@ def _queue_agent_shell_tasks(
     action: str,
     object_suffix: str,
     build_shell,
+    projection: ProviderProjection | None = None,
 ) -> AgentQueuedResponse:
     tasks: list[str] = []
     skipped: list[str] = []
@@ -2501,6 +2504,7 @@ def _queue_agent_shell_tasks(
             action,
             plan=ActionPlan(
                 commands=[command],
+                provider_projection=projection if node_id == "__local__" else None,
                 command_timeout_seconds=120,
                 working_dir=str(Path.cwd()),
             ),
@@ -2510,6 +2514,14 @@ def _queue_agent_shell_tasks(
         f"Agent 任务已入队：{action} · {len(tasks)} 个，跳过 {len(skipped)} 个\n"
     )
     return AgentQueuedResponse(queued_count=len(tasks), tasks=tasks, skipped=skipped)
+
+
+def _provider_projection(request: Request, provider: dict, *, operation: str = "apply", write_secrets: bool = True) -> ProviderProjection:
+    return ProviderProjection(
+        data_root=str(agent_data_root(request.app.state.config_root).resolve()),
+        home=str(Path.home()), client_id=provider["app_id"], provider_id=provider["id"],
+        operation=operation, provider=provider, write_secrets=write_secrets,
+    )
 
 
 def _mcp_store(request: Request) -> AgentMcpStore:

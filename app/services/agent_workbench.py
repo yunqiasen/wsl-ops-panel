@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_provider_projection import provider_matches
 from app.services.agent_clients import agent_clients_payload
 from app.services.agent_mcp import AgentMcpStore, agent_data_root, public_mcp_server
 from app.services.agent_mcp_adapters import (
@@ -296,6 +297,7 @@ def _provider_public_rows(
     providers: dict[str, list[dict[str, Any]]],
     home: Path,
 ) -> dict[str, list[dict[str, Any]]]:
+    active = AgentRouterController(AgentRouterConfigStore(store.data_root), home=home).active_takeover_clients()
     rows: dict[str, list[dict[str, Any]]] = {}
     for app_id, items in providers.items():
         live_ids: set[str] = set()
@@ -319,7 +321,14 @@ def _provider_public_rows(
                 )
             else:
                 row["live_state_known"] = True
-                row["live_state"] = "current" if row.get("is_current") else "saved"
+                row["live_state"] = "saved"
+                if row.get("is_current"):
+                    try:
+                        matches = app_id in active or provider_matches(home, provider, write_secrets=False)
+                        row["live_state"] = "current" if matches else "drifted"
+                        row["is_current"] = matches
+                    except (OSError, ValueError):
+                        row.update(live_state="unknown", live_state_known=False, is_current=False)
             public_rows.append(row)
         rows[app_id] = public_rows
     return rows

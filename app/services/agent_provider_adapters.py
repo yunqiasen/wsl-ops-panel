@@ -16,6 +16,11 @@ from app.services.agent_paths import resolve_agent_paths
 EXCLUSIVE_PROVIDER_APPS = {"claude", "codex", "gemini", "grokbuild"}
 ADDITIVE_PROVIDER_APPS = {"opencode", "openclaw", "hermes"}
 SUPPORTED_PROVIDER_APPS = EXCLUSIVE_PROVIDER_APPS | ADDITIVE_PROVIDER_APPS
+# These are independently managed resources, not Provider identity.
+PROVIDER_RESOURCE_SECTIONS = {
+    'codex': {'mcp_servers'}, 'grokbuild': {'mcp_servers', 'mcp'},
+    'gemini': {'mcpServers'},
+}
 
 _API_FORMAT_ALIASES = {
     "anthropic": "anthropic",
@@ -421,14 +426,15 @@ def read_provider_records(
             return []
         settings = {
             "config": _strip_toml_resource_tables(
-                _read_text(config_path), {"mcp_servers"}
+                _read_text(config_path), PROVIDER_RESOURCE_SECTIONS[app_id]
             ),
             "auth": _read_json(auth_path) or {},
         }
         records.append(_record(app_id, "default", "当前配置", settings, {}))
     elif app_id == "gemini":
         config = _read_json(paths.root / "settings.json") or {}
-        config.pop("mcpServers", None)
+        for section in PROVIDER_RESOURCE_SECTIONS[app_id]:
+            config.pop(section, None)
         env = _gemini_env(_read_text(paths.root / ".env"))
         if not config and not env:
             return []
@@ -441,7 +447,7 @@ def read_provider_records(
             return []
         settings = {
             "config": _strip_toml_resource_tables(
-                _read_text(path), {"mcp_servers", "mcp"}
+                _read_text(path), PROVIDER_RESOURCE_SECTIONS[app_id]
             )
         }
         parsed = _toml_load(settings["config"])

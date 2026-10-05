@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 
+from app.services.compose_target import ComposeTarget
+
 PREFIX = 'com.docker.compose.'
 
 
@@ -217,24 +219,8 @@ def execute(context, action, *, version=None, runner=subprocess.run, verify_time
         return
 
     # Deployment path: preserve explicitly supplied context, then validate before pull/up.
-    files = context.get('compose_files') or ['docker-compose.yml']
-    if not project_dir.is_dir():
-        raise ValueError(f'Compose 工作目录不存在：{project_dir}；启停原容器不依赖此目录')
-    command = ['docker', 'compose']
-    if project:
-        command += ['-p', project]
-    for file in files:
-        path = Path(file)
-        path = path if path.is_absolute() else project_dir / path
-        if not path.is_file():
-            raise ValueError(f'Compose 文件不存在：{path}')
-        command += ['-f', str(path)]
-    for file in context.get('env_files', []):
-        path = Path(file)
-        path = path if path.is_absolute() else project_dir / path
-        if not path.is_file():
-            raise ValueError(f'Compose 环境文件不存在：{path}')
-        command += ['--env-file', str(path)]
+    target = ComposeTarget.from_context({**context, 'project': project})
+    command = target.command(validate=True)
     persistent_override = project_dir / '.wsl-ops-panel.version.json'
     if persistent_override.exists() and str(persistent_override) not in command:
         if persistent_override.is_symlink():

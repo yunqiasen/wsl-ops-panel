@@ -8,6 +8,7 @@ from typing import Literal
 from app.adapters.base import ActionPlan
 from app.models.tasks import TaskRecord
 from app.tasks.store import TaskStore
+from app.services.agent_provider_projection import provider_projection
 from app.terminals.system_terminal import SystemTerminalSink
 
 
@@ -648,80 +649,81 @@ def execute_action_plan(
         store.update(task)
 
     try:
-        all_steps = len(plan.commands) + len(plan.success_commands)
-        device = _task_device_label(task.object_id)
-        category = _task_category_label(task.object_id)
-        target = _task_target_label(task.object_id)
-        context_lines = ""
-        if device:
-            context_lines += f"│  设备：{device}\n"
-        if category:
-            context_lines += f"│  类型：{category}\n"
-        if target:
-            context_lines += f"│  对象：{target}\n"
-        append_system_chunk(
-            sink,
-            (
-                "\n"
-                f"┌─ 任务开始：{_friendly_action(task.action)}\n"
-                f"│  项目：{_friendly_object(task.object_id)}\n"
-                f"{context_lines}"
-                f"│  版本：{task.requested_version or 'latest'}\n"
-                f"│  流程：{_workflow_summary(plan)}\n"
-                f"│  任务ID：{task.id}\n"
-            ),
-        )
-        step_index = 0
-        for command in plan.commands:
-            step_index += 1
-            completed = _run_command_with_retry(
-                task,
-                command,
-                plan,
-                sink=sink,
-                step_index=step_index,
-                step_total=all_steps,
+        with provider_projection(plan.provider_projection):
+            all_steps = len(plan.commands) + len(plan.success_commands)
+            device = _task_device_label(task.object_id)
+            category = _task_category_label(task.object_id)
+            target = _task_target_label(task.object_id)
+            context_lines = ""
+            if device:
+                context_lines += f"│  设备：{device}\n"
+            if category:
+                context_lines += f"│  类型：{category}\n"
+            if target:
+                context_lines += f"│  对象：{target}\n"
+            append_system_chunk(
+                sink,
+                (
+                    "\n"
+                    f"┌─ 任务开始：{_friendly_action(task.action)}\n"
+                    f"│  项目：{_friendly_object(task.object_id)}\n"
+                    f"{context_lines}"
+                    f"│  版本：{task.requested_version or 'latest'}\n"
+                    f"│  流程：{_workflow_summary(plan)}\n"
+                    f"│  任务ID：{task.id}\n"
+                ),
             )
-            if completed.returncode != 0:
-                append_system_chunk(
-                    sink,
-                    f"└─ 结论：❌ 失败 · 退出码 {completed.returncode} · 完整报错已保存到任务详情\n",
-                )
-                raise subprocess.CalledProcessError(
-                    completed.returncode,
+            step_index = 0
+            for command in plan.commands:
+                step_index += 1
+                completed = _run_command_with_retry(
+                    task,
                     command,
-                    output=completed.stdout,
-                    stderr=completed.stderr,
+                    plan,
+                    sink=sink,
+                    step_index=step_index,
+                    step_total=all_steps,
                 )
-        for command in plan.success_commands:
-            step_index += 1
-            success_plan = plan.model_copy(
-                update={
-                    "working_dir": plan.working_dir
-                    if plan.working_dir and Path(plan.working_dir).exists()
-                    else None
-                }
-            )
-            completed = _run_command_with_retry(
-                task,
-                command,
-                success_plan,
-                sink=sink,
-                step_index=step_index,
-                step_total=all_steps,
-                post_success=True,
-            )
-            if completed.returncode != 0:
-                append_system_chunk(
-                    sink,
-                    f"└─ 结论：❌ 收尾失败 · 退出码 {completed.returncode} · 完整报错已保存到任务详情\n",
+                if completed.returncode != 0:
+                    append_system_chunk(
+                        sink,
+                        f"└─ 结论：❌ 失败 · 退出码 {completed.returncode} · 完整报错已保存到任务详情\n",
+                    )
+                    raise subprocess.CalledProcessError(
+                        completed.returncode,
+                        command,
+                        output=completed.stdout,
+                        stderr=completed.stderr,
+                    )
+            for command in plan.success_commands:
+                step_index += 1
+                success_plan = plan.model_copy(
+                    update={
+                        "working_dir": plan.working_dir
+                        if plan.working_dir and Path(plan.working_dir).exists()
+                        else None
+                    }
                 )
-                raise subprocess.CalledProcessError(
-                    completed.returncode,
+                completed = _run_command_with_retry(
+                    task,
                     command,
-                    output=completed.stdout,
-                    stderr=completed.stderr,
+                    success_plan,
+                    sink=sink,
+                    step_index=step_index,
+                    step_total=all_steps,
+                    post_success=True,
                 )
+                if completed.returncode != 0:
+                    append_system_chunk(
+                        sink,
+                        f"└─ 结论：❌ 收尾失败 · 退出码 {completed.returncode} · 完整报错已保存到任务详情\n",
+                    )
+                    raise subprocess.CalledProcessError(
+                        completed.returncode,
+                        command,
+                        output=completed.stdout,
+                        stderr=completed.stderr,
+                    )
     except Exception:
         task.status = "failed"
         task.finished_at = datetime.now(UTC)

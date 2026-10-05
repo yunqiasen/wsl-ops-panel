@@ -642,7 +642,7 @@ def test_asset_action_endpoints_enqueue_tasks_and_persist_plan(tmp_path: Path, m
     assert command[1:3] == ['-m', 'app.services.docker_lifecycle']
     context = json.loads(command[3])
     assert context['project'] == 'cliproxyapi'
-    assert context['compose_files'] == ['compose.custom.yml']
+    assert context['compose_files'] == ['/srv/cpa/compose.custom.yml']
     assert command[4] == 'update_latest'
 
     deploy_response = client.post('/api/assets/cpa/actions/deploy-version', json={'version': 'v1.2.3'})

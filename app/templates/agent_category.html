@@ -138,6 +138,7 @@
             {% if provider.native_read_only %}<span class="agent-state-pill is-muted">原生只读</span>
             {% elif summary.official_mode %}<span class="agent-state-pill is-muted">官方配置</span>
             {% elif live_state == 'unknown' %}<span class="agent-state-pill is-warning">现场未知</span>
+            {% elif live_state == 'drifted' %}<span class="agent-state-pill is-warning">配置漂移</span>
             {% elif live_state == 'added' %}<span class="agent-state-pill is-good">已添加</span>
             {% elif provider.is_current %}<span class="agent-state-pill is-good">{{ '路由当前' if takeover.get(client.id) else '当前' }}</span>
             {% else %}<span class="agent-state-pill">数据库</span>{% endif %}

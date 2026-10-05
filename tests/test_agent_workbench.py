@@ -3236,7 +3236,7 @@ def test_provider_activate_under_router_takeover_only_hot_switches_router(
     assert "private-key" not in response.text
 
 
-def test_provider_activate_direct_queues_native_write_and_sets_current(
+def test_provider_activate_direct_queues_native_write_without_premature_current(
     tmp_path: Path,
 ) -> None:
     from app.services.agent_providers import AgentProviderStore
@@ -3269,8 +3269,8 @@ def test_provider_activate_direct_queues_native_write_and_sets_current(
     assert response.json()["mode"] == "direct"
     assert response.json()["queued_count"] == 1
     assert tasks.list_all()[0].action == "agent_provider_activate"
-    assert providers.get_provider("codex", "one")["is_current"] is False
-    assert providers.get_provider("codex", "two")["is_current"] is True
+    assert providers.get_provider("codex", "one")["is_current"] is True
+    assert providers.get_provider("codex", "two")["is_current"] is False
 
 
 def test_additive_provider_apply_and_remove_shell_preserve_siblings(

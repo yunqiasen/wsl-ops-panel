@@ -439,3 +439,14 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 - MCP 扫描统一通过 Store，错误独立于资源 ID；名为 `__scan__` 的真实 MCP 不再污染错误区。
 - 两个过时本机实例快照测试改成确定性配置契约测试；隔离测试子进程使用项目虚拟环境依赖。
 - 双轴发现及处理见 [审查记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-20261005.md)。审查补修后暂存区独立快照全量 578 项通过，前端 43 项通过；本地已加载：8 条正式接口实机任务全部成功，37 个业务容器状态保持不变；详见 [验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/reliability-verification-20261005.md)。
+
+## 2026-10-05：Agent ABCD 修复与审查补修
+
+- Provider 切换入队不等于生效：执行、原生回读和权限处理成功后才更新数据库 current；失败恢复原文件。Profile 同步沿用同一流程。累加客户端移除先核验目标消失，再清 current，其他条目保留。数据库与本机不一致时显示“配置漂移”。
+- 关闭“写入密钥”时，回读也遵守客户端凭证保留规则；七个 Provider 客户端均有真实 writer 夹具测试。入队后编辑资源会使旧计划失效。任务详情隐藏 Provider 执行快照及编码载荷。
+- 跨协议 SSE 保留工具 ID、分段参数、usage 和结束原因；上游错误、截断工具参数或缺少终态时输出失败，并计入 Router 失败数。同协议仍原字节透传。
+- 客户端切换后，旧队列/详情/保存回包不再覆盖当前页面；每个客户端保留编辑草稿。Router 保存操作绑定发起时客户端，避免保存途中切换造成策略串写。
+- Compose 拉取部署与本地构建共用目标与参数拼装，保序去重。优先使用显式 compose_files，其次运行标签，再回退 compose_file；现有容器启停、执行时身份核验和共享资源保护保持。
+- 审查补修后隔离全量 **661 项**、前端 **45 项**、原始 **5 条**复现及 Chromium **8 类**交互断言通过；本地加载记录另列。详见 [ABCD 修复记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/superpowers/plans/2026-10-05-agent-abcd-repair.md)。
+
+- 审查补修：Provider 与 Router 接管共用原生写锁；MCP 独立配置段不算 Provider 漂移；Gemini 无 ID 的不同工具调用分配独立身份。[审查记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-abcd-20261005.md)。

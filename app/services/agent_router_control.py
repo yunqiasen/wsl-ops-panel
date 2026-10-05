@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import httpx
 
+from app.services.agent_native_lock import native_client_lock
 from app.services.agent_route_takeover import AgentRouteTakeover
 from app.services.agent_router_config import AgentRouterConfigStore
 
@@ -58,8 +59,7 @@ class AgentRouterController:
         restored: list[str] = []
         if restore_clients:
             for client_id in active:
-                self.takeover.disable(client_id)
-                self.store.set_takeover(client_id, False)
+                self.disable_takeover(client_id)
                 restored.append(client_id)
         result = self._lifecycle("stop")
         result["restored_clients"] = restored
@@ -99,23 +99,25 @@ class AgentRouterController:
         }
 
     def enable_takeover(self, client_id: str) -> dict[str, Any]:
-        health = self._health_probe()
-        if str(health.get("status") or "") != "ok":
-            raise AgentRouterControlError("router service is not healthy")
-        config = self.store.snapshot()
-        route_path = _route_path(client_id)
-        route_url = (
-            f"http://{config['listen_address']}:{config['listen_port']}"
-            f"{route_path}"
-        )
-        result = self.takeover.enable(client_id, route_url)
-        self.store.set_takeover(client_id, True)
-        return {"takeover": self.takeover.status(), "result": result}
+        with native_client_lock(self.store.data_root, client_id):
+            health = self._health_probe()
+            if str(health.get("status") or "") != "ok":
+                raise AgentRouterControlError("router service is not healthy")
+            config = self.store.snapshot()
+            route_path = _route_path(client_id)
+            route_url = (
+                f"http://{config['listen_address']}:{config['listen_port']}"
+                f"{route_path}"
+            )
+            result = self.takeover.enable(client_id, route_url)
+            self.store.set_takeover(client_id, True)
+            return {"takeover": self.takeover.status(), "result": result}
 
     def disable_takeover(self, client_id: str) -> dict[str, Any]:
-        result = self.takeover.disable(client_id)
-        self.store.set_takeover(client_id, False)
-        return {"takeover": self.takeover.status(), "result": result}
+        with native_client_lock(self.store.data_root, client_id):
+            result = self.takeover.disable(client_id)
+            self.store.set_takeover(client_id, False)
+            return {"takeover": self.takeover.status(), "result": result}
 
     def _lifecycle(self, action: str) -> dict[str, Any]:
         command = ["sudo", "-n", "systemctl", action, ROUTER_SERVICE_NAME]
