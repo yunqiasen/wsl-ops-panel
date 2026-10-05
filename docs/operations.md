@@ -438,4 +438,4 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 - 已捕获的容器上下文遇到新名称/新 ID 时阻止操作并要求刷新，首次部署空上下文仍支持。
 - MCP 扫描统一通过 Store，错误独立于资源 ID；名为 `__scan__` 的真实 MCP 不再污染错误区。
 - 两个过时本机实例快照测试改成确定性配置契约测试；隔离测试子进程使用项目虚拟环境依赖。
-- 双轴发现及处理见 [审查记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-20261005.md)。审查补修后暂存区独立快照全量 578 项通过，前端 43 项通过；本地加载结果在下方验收记录中补录。
+- 双轴发现及处理见 [审查记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-20261005.md)。审查补修后暂存区独立快照全量 578 项通过，前端 43 项通过；本地已加载：8 条正式接口实机任务全部成功，37 个业务容器状态保持不变；详见 [验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/reliability-verification-20261005.md)。

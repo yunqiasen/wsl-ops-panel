@@ -15,7 +15,7 @@
 - [x] 用户批准进入 code-review，完成一次 Standards / Spec 双轴审查并补修有效发现。
 - [x] 审查回归：修复身份绕过、批量错误隔离、MCP 名称冲突及 worker 查询异常。
 - [x] 将两条过时本机快照测试转换为确定性契约夹具。
-- [ ] 最终完整门禁、提交和本地加载/Live 验收。
+- [x] 最终完整门禁、提交和本地加载/Live 验收：578 + 43 测试、8 条实机任务通过，业务容器保持不变。
 
 ## 反馈循环
 
@@ -56,3 +56,7 @@
 ## 审查进展
 
 详见 [双轴审查记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-20261005.md)。暂存区独立快照全量 578 项 Python 测试通过，前端 43 项通过，Ruff、shell 语法及 staged diff 检查通过。
+
+## 已完成
+
+代码提交 `86ba544`，本地已加载，未推送。结果与证据见 [本地验收](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/reliability-verification-20261005.md)。本计划无剩余待办。
