@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.core.security import COOKIE_NAME, issue_session_token
-from app.main import create_app
+from tests.app_factory import create_app
 from app.models.assets import PackageVersionInfo
 from app.scanners.node_scanner import parse_npm_package
 from app.scanners.python_scanner import parse_pip_package
@@ -88,6 +88,51 @@ def test_protected_node_package_returns_conflict_on_action(tmp_path: Path) -> No
     assert response.json()['detail'] == '保留给 agent cli'
 
 
+def test_agent_managed_node_package_can_update_and_load_versions_but_not_delete(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'categories' / 'node.yaml').write_text('id: node\nlabel: Node\norder: 30\nenabled: true\n', encoding='utf-8')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    rules = tmp_path / 'rules'
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / 'node-packages.yaml').write_text(
+        'packages:\n'
+        '  - name: "@anthropic-ai/claude-code"\n'
+        '    managed_by: agent\n'
+        '    allowed_actions: [update_latest, deploy_version]\n'
+        '    blocked_reason: 保留给 Agent 专项维护\n',
+        encoding='utf-8',
+    )
+    (rules / 'python-packages.yaml').write_text('packages: []\n', encoding='utf-8')
+    asset = parse_npm_package('@anthropic-ai/claude-code@2.1.112')
+    store = InMemoryTaskStore()
+    client = TestClient(create_app(config_root=tmp_path, node_scanner=lambda: [asset], task_store=store))
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    from app.api import assets as assets_api
+
+    monkeypatch.setattr(
+        assets_api.NodePackageAdapter,
+        'get_version_info',
+        lambda self: PackageVersionInfo(
+            current_version='2.1.112',
+            latest_version='2.1.143',
+            versions=['2.1.143', '2.1.112'],
+            source_status='ok',
+        ),
+    )
+
+    versions = client.get(f'/api/assets/{asset.object_id}/versions')
+    update = client.post(f'/api/assets/{asset.object_id}/actions/update-latest')
+    delete = client.post(f'/api/assets/{asset.object_id}/actions/delete')
+
+    assert versions.status_code == 200
+    assert versions.json()['latest_version'] == '2.1.143'
+    assert update.status_code == 202
+    assert update.json()['plan']['commands'] == [['npm', 'install', '-g', '@anthropic-ai/claude-code@latest']]
+    assert delete.status_code == 400
+    assert 'delete' in delete.json()['detail']
+
+
 def test_non_whitelisted_python_package_detail_is_read_only(tmp_path: Path) -> None:
     (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
     (tmp_path / 'categories' / 'python.yaml').write_text('id: python\nlabel: Python\norder: 40\nenabled: true\n', encoding='utf-8')
@@ -139,7 +184,7 @@ def test_docker_versions_route_returns_strategy_runtime_and_recipe_services(tmp_
     monkeypatch.setattr(
         DockerVersionService,
         'get_git_tag_version_info',
-        lambda self, repo_dir, *, runner=None, fetch=False: PackageVersionInfo(
+        lambda self, repo_dir, *, runner=None, fetch=False, remote=False: PackageVersionInfo(
             current_version='v14.2.6',
             latest_version='v14.2.7',
             versions=['v14.2.7', 'v14.2.6'],
@@ -207,7 +252,7 @@ def test_docker_versions_route_reuses_snapshot_git_tag_result(tmp_path: Path, mo
 
     call_counter = {'count': 0}
 
-    def _stub_get_git_tags(self, repo_dir, *, runner=None, fetch=False) -> PackageVersionInfo:
+    def _stub_get_git_tags(self, repo_dir, *, runner=None, fetch=False, remote=False) -> PackageVersionInfo:
         call_counter['count'] += 1
         return PackageVersionInfo(
             current_version='v14.2.6',
@@ -279,6 +324,54 @@ def test_registry_docker_versions_route_fetches_on_demand_when_list_snapshot_is_
     assert call_counter['count'] == 1
 
 
+
+def test_runtime_discovered_docker_versions_route_fetches_on_demand(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'categories' / 'docker.yaml').write_text('id: docker\nlabel: Docker\norder: 10\nenabled: true\n', encoding='utf-8')
+    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    project_dir = tmp_path / 'freemail-proxy'
+    project_dir.mkdir()
+    (project_dir / 'docker-compose.yml').write_text('services:\n  web:\n    image: nginx:alpine\n', encoding='utf-8')
+
+    from app.scanners.docker_scanner import parse_docker_ps_lines
+    from app.services.docker_versions import DockerVersionService
+
+    calls: list[tuple[str, str | None]] = []
+
+    def _stub_registry_lookup(self, image_repository: str, current_version: str | None = None, *, fetcher=None):
+        calls.append((image_repository, current_version))
+        return PackageVersionInfo(
+            current_version=current_version,
+            latest_version='1.27.0',
+            versions=['1.27.0', 'alpine'],
+            source_status='ok',
+        )
+
+    monkeypatch.setattr(DockerVersionService, 'get_registry_tag_version_info', _stub_registry_lookup)
+    containers = parse_docker_ps_lines(
+        [
+            '{"ID":"1","Image":"nginx:alpine",'
+            f'"Labels":"com.docker.compose.project=freemail-proxy,com.docker.compose.project.working_dir={project_dir},com.docker.compose.service=web",'
+            '"Names":"freemail-proxy","State":"running","Status":"Up 1 hour","Ports":"8421/tcp"}'
+        ]
+    )
+    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=InMemoryTaskStore()))
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    category = client.get('/categories/docker')
+    from app.services.assets import discovered_docker_object_id
+    object_id = discovered_docker_object_id(project_dir, 'freemail-proxy')
+    response = client.get(f'/api/assets/{object_id}/versions')
+
+    assert category.status_code == 200
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['current_version'] == 'alpine'
+    assert payload['latest_version'] == '1.27.0'
+    assert payload['versions'] == ['1.27.0', 'alpine']
+    assert payload['version_source'] == 'registry_tags'
+    assert calls == [('nginx', 'alpine')]
+
 def test_reload_registry_rebuilds_recipe_and_asset_services_for_new_openai_cpa(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
     (tmp_path / 'categories' / 'docker.yaml').write_text('id: docker\nlabel: Docker\norder: 10\n', encoding='utf-8')
@@ -287,10 +380,10 @@ def test_reload_registry_rebuilds_recipe_and_asset_services_for_new_openai_cpa(t
     from app.scanners.docker_scanner import parse_docker_ps_lines
     from app.services.docker_versions import DockerVersionService
 
-    git_tag_calls: list[tuple[str, bool]] = []
+    git_tag_calls: list[tuple[str, bool, bool]] = []
 
-    def _stub_get_git_tags(self, repo_dir, *, runner=None, fetch=False) -> PackageVersionInfo:
-        git_tag_calls.append((repo_dir, fetch))
+    def _stub_get_git_tags(self, repo_dir, *, runner=None, fetch=False, remote=False) -> PackageVersionInfo:
+        git_tag_calls.append((repo_dir, fetch, remote))
         return PackageVersionInfo(
             current_version='v14.2.6',
             latest_version='v14.2.7',
@@ -344,26 +437,32 @@ def test_reload_registry_rebuilds_recipe_and_asset_services_for_new_openai_cpa(t
     assert action_response.status_code == 202
     action_plan = action_response.json()['plan']
     assert action_plan['working_dir'] == '/srv/openai-cpa'
-    assert action_plan['commands'][:2] == [
-        ['git', '-C', '/srv/openai-cpa', 'fetch', '--tags', '--force', 'origin'],
-        ['git', '-C', '/srv/openai-cpa', 'checkout', 'v14.2.7'],
-    ]
-    assert action_plan['commands'][2] == [
+    assert action_plan['commands'][0][-1] == 'check'
+    assert ['git', '-C', '/srv/openai-cpa', 'checkout', 'v14.2.7'] in action_plan['commands']
+    assert next(c for c in action_plan['commands'] if c[:2] == ['docker', 'build']) == [
         'docker',
         'build',
         '-t',
         'local/wenfxl-codex-manager:v14.2.7-overlay',
+        '--label',
+        'org.opencontainers.image.version=14.2.7',
+        '--label',
+        'org.opencontainers.image.source=https://github.com/wenfxl/openai-cpa',
         '-f',
         'Dockerfile',
         '.',
     ]
-    assert action_plan['commands'][3] == [
+    assert next(c for c in action_plan['commands'] if 'compose' in c and 'up' in c) == [
         'env',
         'WSL_OPS_IMAGE=local/wenfxl-codex-manager:v14.2.7-overlay',
         'docker',
         'compose',
+        '--project-directory',
+        '/srv/openai-cpa',
+        '-p',
+        'openai-cpa',
         '-f',
-        'docker-compose.yml',
+        '/srv/openai-cpa/docker-compose.yml',
         '-f',
         str((tmp_path / 'recipes' / 'docker' / 'overrides' / 'openai-cpa.compose.override.yaml').resolve()),
         'up',
@@ -371,4 +470,4 @@ def test_reload_registry_rebuilds_recipe_and_asset_services_for_new_openai_cpa(t
         '--no-build',
         'codex-web',
     ]
-    assert ('/srv/openai-cpa', False) in git_tag_calls
+    assert ('/srv/openai-cpa', False, True) in git_tag_calls

@@ -6,9 +6,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.adapters.base import ActionPlan
 from app.adapters.docker_adapter import DockerComposeAdapter, detect_image_repository_from_compose, parse_image_repository
+from app.adapters.host_port_adapter import HostPortAdapter
 from app.adapters.node_adapter import NodePackageAdapter
+from app.adapters.project_adapter import ProjectAdapter
 from app.adapters.python_adapter import PythonPackageAdapter
 from app.adapters.systemd_adapter import SystemdUnitAdapter
+from app.adapters.system_adapter import SystemInfrastructureAdapter
 from app.core.security import require_authenticated_request
 from app.models.assets import AssetSnapshot, PackageVersionInfo, RuntimeVersionInfo
 from app.models.registry import ObjectDefinition
@@ -84,6 +87,21 @@ def get_asset_versions(object_id: str, request: Request) -> AssetVersionsRespons
 @router.post('/{object_id}/actions/update-latest', status_code=202, response_model=AssetActionResponse)
 def queue_update_latest(object_id: str, request: Request):
     return enqueue_asset_action(request, object_id, action='update_latest')
+
+
+@router.post('/{object_id}/actions/start', status_code=202, response_model=AssetActionResponse)
+def queue_start(object_id: str, request: Request):
+    return enqueue_asset_action(request, object_id, action='start')
+
+
+@router.post('/{object_id}/actions/stop', status_code=202, response_model=AssetActionResponse)
+def queue_stop(object_id: str, request: Request):
+    return enqueue_asset_action(request, object_id, action='stop')
+
+
+@router.post('/{object_id}/actions/restart', status_code=202, response_model=AssetActionResponse)
+def queue_restart(object_id: str, request: Request):
+    return enqueue_asset_action(request, object_id, action='restart')
 
 
 @router.post('/{object_id}/actions/deploy-version', status_code=202, response_model=AssetActionResponse)
@@ -193,6 +211,14 @@ def _runtime_from_asset_metadata(asset: AssetSnapshot) -> RuntimeVersionInfo | N
     )
 
 
+def _project_current_version(asset: AssetSnapshot) -> str | None:
+    for key in ('git_branch', 'head_sha'):
+        value = asset.metadata.get(key)
+        if isinstance(value, str) and value:
+            return value[:12] if key == 'head_sha' else value
+    return None
+
+
 async def _extract_requested_version(request: Request) -> str | None:
     content_type = request.headers.get('content-type', '')
     if content_type.startswith('application/json'):
@@ -207,9 +233,15 @@ async def _extract_requested_version(request: Request) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def enqueue_asset_action(request: Request, object_id: str, *, action: str, version: str | None = None):
-    asset = _get_asset(request, object_id)
-    if action not in asset.supports_actions and asset.actionable:
+def enqueue_asset_action(request: Request, object_id: str, *, action: str, version: str | None = None,
+                         asset: AssetSnapshot | None = None, render_flash: bool = True):
+    require_authenticated_request(request)
+    asset = asset if asset is not None else _get_asset(request, object_id)
+    if asset.object_id != object_id:
+        raise HTTPException(status_code=409, detail='asset selection changed; refresh and retry')
+    if action not in asset.supports_actions:
+        if not asset.actionable and asset.category in {'node', 'python', 'agent_cli'}:
+            _ensure_asset_actionable(asset)
         raise HTTPException(status_code=400, detail=f'action {action} is not supported by {object_id}')
     adapter = _build_adapter(request, object_id, asset)
     try:
@@ -218,7 +250,7 @@ def enqueue_asset_action(request: Request, object_id: str, *, action: str, versi
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     task = request.app.state.task_queue.enqueue(object_id, action, requested_version=version, plan=plan)
-    if request.headers.get('hx-request') == 'true':
+    if render_flash and request.headers.get('hx-request') == 'true':
         return _render_task_flash(task, action, version)
     return AssetActionResponse(task=task, plan=plan)
 
@@ -255,6 +287,45 @@ def _build_adapter(request: Request, object_id: str, asset: AssetSnapshot) -> Ac
             package_name=asset.name,
             current_version=asset.current_version,
             full_delete_paths=list(asset.metadata.get('full_delete_paths', [])),
+        )
+    if asset.category == 'system':
+        return SystemInfrastructureAdapter(name=asset.name, current_version=asset.current_version)
+    if asset.category == 'host':
+        return HostPortAdapter(
+            port=str(asset.metadata.get('port') or ''),
+            owner_type=asset.metadata.get('owner_type') if isinstance(asset.metadata.get('owner_type'), str) else None,
+            target_asset_id=asset.metadata.get('target_asset_id')
+            if isinstance(asset.metadata.get('target_asset_id'), str)
+            else None,
+            target_unit_name=asset.metadata.get('target_unit_name')
+            if isinstance(asset.metadata.get('target_unit_name'), str)
+            else None,
+            target_container_name=asset.metadata.get('target_container_name')
+            if isinstance(asset.metadata.get('target_container_name'), str)
+            else None,
+            pid=asset.metadata.get('pid') if isinstance(asset.metadata.get('pid'), int) else None,
+            process_name=asset.metadata.get('process_name') if isinstance(asset.metadata.get('process_name'), str) else None,
+        )
+    if asset.category == 'project':
+        project_dir = asset.metadata.get('path')
+        if not isinstance(project_dir, str) or not project_dir:
+            raise HTTPException(status_code=400, detail='project path is required for project actions')
+        cf = asset.metadata.get('capabilities', {}).get('cf_tunnel', {}) if isinstance(asset.metadata.get('capabilities'), dict) else {}
+        return ProjectAdapter(
+            project_dir=project_dir,
+            current_version=asset.current_version or _project_current_version(asset),
+            git_remote_url=asset.metadata.get('git_remote_url') if isinstance(asset.metadata.get('git_remote_url'), str) else None,
+            service_unit=asset.metadata.get('service_unit') if isinstance(asset.metadata.get('service_unit'), str) else None,
+            service_units=[item for item in asset.metadata.get('service_units', []) if isinstance(item, str)]
+            if isinstance(asset.metadata.get('service_units'), list)
+            else None,
+            service_scope=asset.metadata.get('service_scope')
+            if isinstance(asset.metadata.get('service_scope'), str)
+            else 'system',
+            cftunnel_unit=asset.metadata.get('cftunnel_unit') if isinstance(asset.metadata.get('cftunnel_unit'), str) else None,
+            cftunnel_script=cf.get('script_path') if isinstance(cf, dict) and isinstance(cf.get('script_path'), str) else None,
+            config_root=str(request.app.state.config_root),
+            asset_snapshot_json=asset_to_notification_json(asset),
         )
     obj = _get_registry_object(request, object_id, required=False)
     if asset.category == 'docker' and obj is None:
@@ -297,6 +368,13 @@ def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetS
     managed_services = recipe.managed_services if recipe is not None else obj.config.get('managed_services', [])
     ignored_services = recipe.ignored_services if recipe is not None else obj.config.get('ignored_services', [])
 
+    source_links = asset.metadata.get('source_links') if isinstance(asset.metadata.get('source_links'), dict) else {}
+    source_url = (
+        primary_container.labels.get('org.opencontainers.image.source')
+        if primary_container is not None
+        else None
+    ) or (source_links.get('github') if isinstance(source_links.get('github'), str) else None)
+
     return DockerComposeAdapter(
         project_dir=obj.config['project_dir'],
         compose_file=obj.config['compose_file'],
@@ -304,11 +382,14 @@ def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetS
         compose_service=compose_service,
         image_repository=image_repository,
         current_version=asset.current_version,
+        source_url=source_url,
         lifecycle_strategy=obj.config.get('lifecycle_strategy', 'compose_pull'),
         override_file=recipe.override_file if recipe is not None else None,
         recipe_repo_dir=recipe.repo_dir if recipe is not None else None,
         local_image_repository=recipe.local_image_repository if recipe is not None else None,
         local_image_tag_template=recipe.local_image_tag_template if recipe is not None else None,
+        build_worktree_dir=recipe.build_worktree_dir if recipe is not None else None,
+        docker_build_args=recipe.docker_build_args if recipe is not None else None,
         healthcheck_url=recipe.healthcheck.url if recipe is not None and recipe.healthcheck is not None else None,
         runtime=runtime,
         managed_services=managed_services,
@@ -316,6 +397,7 @@ def _build_docker_adapter(request: Request, obj: ObjectDefinition, asset: AssetS
         version_service=docker_version_service,
         config_root=str(request.app.state.config_root),
         asset_snapshot_json=asset_to_notification_json(asset),
+        runtime_context=_docker_runtime_context(asset, primary_container, obj.config),
     )
 
 
@@ -333,6 +415,12 @@ def _build_discovered_docker_adapter(request: Request, asset: AssetSnapshot) -> 
         image_repository = parse_image_repository(primary_container.image if primary_container else None)
     docker_version_service = getattr(request.app.state, 'docker_version_service', None)
     runtime = docker_version_service.build_runtime_version_info(primary_container) if docker_version_service else None
+    source_links = asset.metadata.get('source_links') if isinstance(asset.metadata.get('source_links'), dict) else {}
+    source_url = (
+        primary_container.labels.get('org.opencontainers.image.source')
+        if primary_container is not None
+        else None
+    ) or (source_links.get('github') if isinstance(source_links.get('github'), str) else None)
     return DockerComposeAdapter(
         project_dir=project_dir,
         compose_file=compose_file,
@@ -340,11 +428,13 @@ def _build_discovered_docker_adapter(request: Request, asset: AssetSnapshot) -> 
         compose_service=compose_service,
         image_repository=image_repository,
         current_version=asset.current_version,
+        source_url=source_url,
         lifecycle_strategy=str(asset.metadata.get('lifecycle_strategy') or 'compose_pull'),
         runtime=runtime,
         version_service=docker_version_service,
         config_root=str(request.app.state.config_root),
         asset_snapshot_json=asset_to_notification_json(asset),
+        runtime_context=_docker_runtime_context(asset, primary_container, asset.metadata),
     )
 
 
@@ -356,3 +446,16 @@ def _get_registry_object(request: Request, object_id: str, *, required: bool = T
     if required:
         raise HTTPException(status_code=404, detail='asset not found')
     return None
+
+
+def _docker_runtime_context(asset, primary, config):
+    labels = primary.labels if primary else {}
+    files = config.get('compose_files') or [part for part in labels.get('com.docker.compose.project.config_files', '').split(',') if part]
+    env_files = config.get('env_files') or [part for part in labels.get('com.docker.compose.project.environment_file', '').split(',') if part]
+    project = config.get('compose_project') or (primary.compose_project if primary else None)
+    return {
+        'project': project,
+        'compose_files': files or [config.get('compose_file') or 'docker-compose.yml'],
+        'env_files': env_files,
+        'containers': [{'id': c.id, 'name': c.name} for c in asset.containers if not project or c.compose_project == project],
+    }

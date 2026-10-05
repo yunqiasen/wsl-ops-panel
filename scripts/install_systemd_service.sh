@@ -29,6 +29,12 @@ After=network.target docker.service
 Type=simple
 User=div
 Environment=PATH=$SERVICE_PATH
+Environment=HTTP_PROXY=${HTTP_PROXY:-}
+Environment=HTTPS_PROXY=${HTTPS_PROXY:-}
+Environment=NO_PROXY=${NO_PROXY:-}
+Environment=http_proxy=${http_proxy:-${HTTP_PROXY:-}}
+Environment=https_proxy=${https_proxy:-${HTTPS_PROXY:-}}
+Environment=no_proxy=${no_proxy:-${NO_PROXY:-}}
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$UVICORN_BIN app.main:app --host 0.0.0.0 --port 8328
 Restart=on-failure

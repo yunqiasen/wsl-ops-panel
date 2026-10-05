@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from app.services.agent_paths import resolve_agent_paths
 
 from app.services.state_store import PanelStateStore
 from app.services.agent_clients import get_agent_client
@@ -15,6 +17,7 @@ class AgentPromptStore:
         self.data_root = Path(data_root)
         self.path = self.data_root / PROMPT_STORE_FILENAME
         self._state = PanelStateStore(self.data_root)
+        self.state = self._state
         self._migrate_legacy_json_once()
 
     def list_prompts(self) -> dict[str, dict[str, Any]]:
@@ -22,16 +25,235 @@ class AgentPromptStore:
 
     def save_prompts(self, prompts: dict[str, dict[str, Any]]) -> None:
         for prompt_id, prompt in prompts.items():
-            self._state.upsert_prompt(prompt_id, str(prompt.get('name') or prompt_id), str(prompt.get('content') or ''))
+            self._state.upsert_prompt(
+                prompt_id,
+                str(prompt.get("name") or prompt_id),
+                str(prompt.get("content") or ""),
+                description=(
+                    str(prompt["description"])
+                    if prompt.get("description") is not None
+                    else None
+                ),
+            )
 
-    def upsert_prompt(self, prompt_id: str, name: str, content: str) -> dict[str, Any]:
-        return self._state.upsert_prompt(prompt_id, name, content)
+    def upsert_prompt(
+        self,
+        prompt_id: str,
+        name: str,
+        content: str,
+        *,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        return self._state.upsert_prompt(
+            prompt_id, name, content, description=description
+        )
 
     def get_prompt(self, prompt_id: str) -> dict[str, Any] | None:
         return self.list_prompts().get(prompt_id)
 
     def delete_prompt(self, prompt_id: str) -> bool:
         return self._state.delete_prompt(prompt_id)
+
+    def upsert_variant(
+        self,
+        prompt_id: str,
+        client_id: str,
+        platform: str,
+        content: str,
+        *,
+        source: str = "manual",
+    ) -> dict[str, Any]:
+        if self.get_prompt(prompt_id) is None:
+            raise FileNotFoundError(f"Prompt 资源不存在: {prompt_id}")
+        return self._state.upsert_prompt_variant(
+            prompt_id, client_id, platform, content, source=source
+        )
+
+    def list_variants(
+        self,
+        prompt_id: str | None = None,
+        client_id: str | None = None,
+        platform: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._state.list_prompt_variants(prompt_id, client_id, platform)
+
+    def resolve_content(
+        self, prompt_id: str, client_id: str, platform: str = "linux"
+    ) -> str:
+        prompt = self.get_prompt(prompt_id)
+        if prompt is None:
+            raise FileNotFoundError(f"Prompt 资源不存在: {prompt_id}")
+        variants = self.list_variants(prompt_id, client_id, platform)
+        if not variants and platform != "any":
+            variants = self.list_variants(prompt_id, client_id, "any")
+        if variants:
+            return str(variants[0]["content"])
+        return str(prompt.get("content") or "")
+
+    def import_current(
+        self,
+        home: Path | str,
+        client_id: str,
+        *,
+        prompt_id: str | None = None,
+        name: str | None = None,
+        platform: str = "linux",
+        environ: Mapping[str, str] | None = None,
+        overrides: Mapping[str, Path | str] | None = None,
+    ) -> dict[str, Any]:
+        manager = AgentPromptFileManager(
+            home,
+            self.data_root / "prompt-files",
+            environ=environ,
+            overrides=overrides,
+        )
+        observed = manager.import_current(client_id)
+        if not observed.get("exists"):
+            raise FileNotFoundError(f"{client_id} 当前 Prompt 文件不存在")
+        resource_id = (prompt_id or f"{client_id}-current").strip()
+        if not resource_id:
+            raise ValueError("prompt_id is required")
+        content = str(observed.get("content") or "")
+        saved = self.upsert_prompt(resource_id, name or f"{client_id} 当前提示词", content)
+        self.upsert_variant(
+            resource_id, client_id, platform, content, source="import"
+        )
+        self._state.set_prompt_assignment(
+            "__local__",
+            client_id,
+            resource_id,
+            variant_client_id=client_id,
+            variant_platform=platform,
+        )
+        self._state.clear_prompt_observations("__local__", client_id)
+        self._state.upsert_prompt_observation(
+            "__local__",
+            client_id,
+            resource_id,
+            present=True,
+            content_hash=str(observed.get("content_hash") or _content_hash(content)),
+            status="installed",
+        )
+        return saved
+
+    def refresh_client_observation(
+        self,
+        home: Path | str,
+        client_id: str,
+        *,
+        platform: str = "linux",
+        environ: Mapping[str, str] | None = None,
+        overrides: Mapping[str, Path | str] | None = None,
+    ) -> dict[str, Any] | None:
+        assignments = [
+            item
+            for item in self._state.list_prompt_assignments("__local__", client_id)
+            if item.get("desired_enabled", True)
+        ]
+        self._state.clear_prompt_observations("__local__", client_id)
+        if not assignments:
+            return None
+        prompt_id = str(assignments[0]["prompt_id"])
+        manager = AgentPromptFileManager(
+            home,
+            self.data_root / "prompt-files",
+            environ=environ,
+            overrides=overrides,
+        )
+        try:
+            observed = manager.import_current(client_id)
+            expected = self.resolve_content(prompt_id, client_id, platform)
+            present = bool(observed.get("exists"))
+            content_hash = (
+                str(observed.get("content_hash"))
+                if observed.get("content_hash")
+                else None
+            )
+            status = (
+                "missing"
+                if not present
+                else "installed"
+                if content_hash == _content_hash(expected)
+                else "drifted"
+            )
+            error = None
+        except (OSError, ValueError, FileNotFoundError) as exc:
+            present = False
+            content_hash = None
+            status = "error"
+            error = str(exc)
+        self._state.upsert_prompt_observation(
+            "__local__",
+            client_id,
+            prompt_id,
+            present=present,
+            content_hash=content_hash,
+            status=status,
+            error=error,
+        )
+        return {
+            "prompt_id": prompt_id,
+            "present": present,
+            "content_hash": content_hash,
+            "status": status,
+            "error": error,
+        }
+
+    def install_local(
+        self,
+        home: Path | str,
+        client_id: str,
+        prompt_id: str,
+        *,
+        platform: str = "linux",
+        environ: Mapping[str, str] | None = None,
+        overrides: Mapping[str, Path | str] | None = None,
+    ) -> dict[str, Any]:
+        content = self.resolve_content(prompt_id, client_id, platform)
+        manager = AgentPromptFileManager(
+            home,
+            self.data_root / "prompt-files",
+            environ=environ,
+            overrides=overrides,
+        )
+        result = manager.apply(client_id, content)
+        self._state.set_prompt_assignment(
+            "__local__",
+            client_id,
+            prompt_id,
+            variant_client_id=client_id,
+            variant_platform=platform,
+        )
+        self._state.clear_prompt_observations("__local__", client_id)
+        self._state.upsert_prompt_observation(
+            "__local__",
+            client_id,
+            prompt_id,
+            present=True,
+            content_hash=_content_hash(content),
+            status="installed",
+        )
+        result["prompt_id"] = prompt_id
+        return result
+
+    def restore_local(
+        self,
+        home: Path | str,
+        client_id: str,
+        *,
+        environ: Mapping[str, str] | None = None,
+        overrides: Mapping[str, Path | str] | None = None,
+    ) -> dict[str, Any]:
+        manager = AgentPromptFileManager(
+            home,
+            self.data_root / "prompt-files",
+            environ=environ,
+            overrides=overrides,
+        )
+        result = manager.restore(client_id)
+        self._state.remove_prompt_assignment("__local__", client_id)
+        self._state.clear_prompt_observations("__local__", client_id)
+        return result
 
     def _migrate_legacy_json_once(self) -> None:
         if not self.path.exists() or self._state.list_prompts():
@@ -71,8 +293,17 @@ class PromptFileConflictError(RuntimeError):
 
 
 class AgentPromptFileManager:
-    def __init__(self, home: Path | str, state_root: Path | str) -> None:
+    def __init__(
+        self,
+        home: Path | str,
+        state_root: Path | str,
+        *,
+        environ: Mapping[str, str] | None = None,
+        overrides: Mapping[str, Path | str] | None = None,
+    ) -> None:
         self.home = Path(home)
+        self.environ = environ
+        self.overrides = overrides
         self.state_root = Path(state_root)
         self.state_root.mkdir(parents=True, exist_ok=True)
         self.state_root.chmod(0o700)
@@ -194,9 +425,15 @@ class AgentPromptFileManager:
             or "prompts" not in client.write_support
         ):
             raise ValueError(f"{client_id} 暂不支持 Prompt 写入")
-        if client.prompt_file.startswith("~/"):
-            return self.home / client.prompt_file[2:]
-        return Path(client.prompt_file)
+        target = resolve_agent_paths(
+            client_id,
+            self.home,
+            environ=self.environ,
+            overrides=self.overrides,
+        ).prompt
+        if target is None:
+            raise ValueError(f"{client_id} 暂不支持 Prompt 写入")
+        return target
 
     def _state_path(self, client_id: str) -> Path:
         return self.state_root / f"{client_id}.json"

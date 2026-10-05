@@ -693,11 +693,15 @@
         const packageAction = packageActionForBulk(action);
         const canRemotePackage = ['node', 'python'].includes(categoryId) && packageAction && remoteNodeIds.length > 0;
         const messages = [];
+        const backendSkipped = [];
+        let totalQueued = 0;
 
         if (!remoteTargetPanel || localSelected) {
           const payload = await postJson(`/api/bulk/actions/${action}`, { asset_ids: supportedAssetIds, version_map: versionMap });
           if (!payload) return;
           messages.push(`本机 ${payload.queued_count} 个`);
+          totalQueued += payload.queued_count || 0;
+          backendSkipped.push(...(payload.skipped || []));
         }
 
         if (canRemotePackage) {
@@ -717,6 +721,8 @@
           });
           if (!payload) return;
           messages.push(`远程 ${payload.queued_count} 个`);
+          totalQueued += payload.queued_count || 0;
+          backendSkipped.push(...(payload.skipped || []));
         }
 
         if (remoteTargetPanel && !localSelected && !canRemotePackage) {
@@ -724,7 +730,9 @@
         }
 
         const skipped = unsupported.length ? `，已跳过不支持的 ${unsupported.length} 个：${unsupported.join(', ')}` : '';
-        setFlash(result, `已入队：${messages.join(' + ')}${skipped}`, { success: true });
+        const backendReasons = backendSkipped.map((item) => `${item.asset_id}: ${item.reason}`).join('；');
+        const detail = backendReasons ? `；跳过：${backendReasons}` : '';
+        setFlash(result, `${totalQueued ? '已入队（执行结果见任务页）' : '未入队'}：${messages.join(' + ')}${skipped}${detail}`, { success: totalQueued > 0 && !backendSkipped.length });
       } catch (error) {
         setFlash(result, `请求失败：${error.message}`);
       } finally {
@@ -1460,6 +1468,325 @@
     return requestedClient || currentClient || null;
   }
 
+  // MCP 本地库只保存“定义”，安装状态来自真实客户端扫描结果。
+  // 这样保存一个条目不会偷偷把它标记成已安装。
+  function buildMcpSavePayload({ serverId, name, spec, description, homepage, docs, tags } = {}) {
+    const payload = {
+      server_id: String(serverId || '').trim(),
+      name: String(name || serverId || '').trim(),
+      spec: spec && typeof spec === 'object' ? spec : {},
+      apps: {},
+    };
+    if (description !== undefined && description !== null) payload.description = String(description);
+    if (homepage) payload.homepage = String(homepage);
+    if (docs) payload.docs = String(docs);
+    if (Array.isArray(tags) && tags.length) payload.tags = tags.map(String);
+    return payload;
+  }
+
+  function moveAgentResourceId(resourceIds, resourceId, direction) {
+    const ids = Array.isArray(resourceIds) ? resourceIds.map(String) : [];
+    const id = String(resourceId || '');
+    const index = ids.indexOf(id);
+    const offset = direction === 'up' ? -1 : direction === 'down' ? 1 : 0;
+    const nextIndex = index + offset;
+    if (!offset || index < 0 || nextIndex < 0 || nextIndex >= ids.length) return ids;
+    [ids[index], ids[nextIndex]] = [ids[nextIndex], ids[index]];
+    return ids;
+  }
+
+  function buildAgentResourceOrderPayload(resourceType, resourceIds, clientId = '') {
+    const payload = {
+      resource_type: String(resourceType || '').trim(),
+      resource_ids: (Array.isArray(resourceIds) ? resourceIds : [])
+        .map((resourceId) => String(resourceId || '').trim())
+        .filter(Boolean),
+    };
+    if (payload.resource_type === 'provider') payload.client_id = String(clientId || '').trim();
+    return payload;
+  }
+
+  // Provider 路由字段统一由一个纯函数组装，尤其保留 false 值和完整端点开关。
+  function buildAgentProviderRouting({
+    baseUrl,
+    apiFormat = 'openai_chat',
+    authMode = 'bearer',
+    model = '',
+    modelMap = {},
+    headers = {},
+    apiKey = '',
+    fullUrl = false,
+    useOutboundProxy = true,
+  } = {}) {
+    const routing = {
+      base_url: String(baseUrl || '').trim(),
+      api_format: apiFormat || 'openai_chat',
+      auth_mode: authMode || 'bearer',
+      model: String(model || '').trim() || null,
+      model_map: modelMap && typeof modelMap === 'object' ? modelMap : {},
+      headers: headers && typeof headers === 'object' ? headers : {},
+      full_url: Boolean(fullUrl),
+      use_outbound_proxy: Boolean(useOutboundProxy),
+    };
+    if (apiKey !== undefined && apiKey !== null && String(apiKey).trim()) {
+      routing.api_key = String(apiKey).trim();
+    }
+    return routing;
+  }
+
+  function buildAgentProviderPayload({
+    appId,
+    providerId,
+    name,
+    description,
+    websiteUrl,
+    form = {},
+    meta = {},
+  } = {}) {
+    return {
+      app_id: String(appId || '').trim(),
+      provider_id: String(providerId || '').trim(),
+      name: String(name || providerId || '').trim(),
+      notes: description === undefined || description === null ? null : String(description).trim(),
+      website_url: websiteUrl === undefined || websiteUrl === null ? null : String(websiteUrl).trim(),
+      form: form && typeof form === 'object' ? form : {},
+      meta: meta && typeof meta === 'object' ? meta : {},
+    };
+  }
+
+  function getAgentProviderPrimaryAction({
+    mode = 'exclusive',
+    isCurrent = false,
+    liveState = 'saved',
+    takeover = false,
+    readOnly = false,
+  } = {}) {
+    if (readOnly) return { action: 'activate', label: '只读', disabled: true };
+    if (liveState === 'unknown') return { action: 'activate', label: '状态未知', disabled: true };
+    if (mode === 'additive') {
+      if (liveState === 'added') return { action: 'remove-live', label: '移除', disabled: false };
+      return { action: 'activate', label: '添加', disabled: false };
+    }
+    if (isCurrent) return { action: 'activate', label: takeover ? '当前路由' : '当前', disabled: true };
+    return { action: 'activate', label: takeover ? '切换路由' : '启用', disabled: false };
+  }
+
+  function getAgentRouterPolicy(clientButton) {
+    const dataset = clientButton?.dataset || {};
+    const asBoolean = (value, fallback = false) => {
+      if (value === undefined || value === null || value === '') return fallback;
+      return value === true || String(value).toLowerCase() === 'true';
+    };
+    const asInteger = (value, fallback) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+    };
+    return {
+      configured: asBoolean(dataset.agentRouterConfigured),
+      autoFailover: asBoolean(dataset.agentRouterAutoFailover),
+      maxRetries: asInteger(dataset.agentRouterMaxRetries, 0),
+      failureThreshold: asInteger(dataset.agentRouterFailureThreshold, 3),
+      cooldownSeconds: asInteger(dataset.agentRouterCooldownSeconds, 60),
+    };
+  }
+
+  function buildAgentRouterPolicyPayload({
+    autoFailover = false,
+    maxRetries = 0,
+    failureThreshold = 3,
+    cooldownSeconds = 60,
+  } = {}) {
+    const asInteger = (value, fallback) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : fallback;
+    };
+    return {
+      auto_failover: Boolean(autoFailover),
+      max_retries: asInteger(maxRetries, 0),
+      failure_threshold: Math.max(1, asInteger(failureThreshold, 3)),
+      cooldown_seconds: asInteger(cooldownSeconds, 60),
+    };
+  }
+
+  function applyAgentRouterProfileDataset(clientButton, providerId, profile = {}) {
+    if (!clientButton) return;
+    clientButton.dataset.agentRouterProvider = String(providerId || '');
+    clientButton.dataset.agentRouterConfigured = 'true';
+    clientButton.dataset.agentRouterAutoFailover = String(Boolean(profile.auto_failover));
+    clientButton.dataset.agentRouterMaxRetries = String(profile.max_retries ?? 0);
+    clientButton.dataset.agentRouterFailureThreshold = String(profile.failure_threshold ?? 3);
+    clientButton.dataset.agentRouterCooldownSeconds = String(profile.cooldown_seconds ?? 60);
+  }
+
+  function getAgentProviderOwnershipState(clientButton) {
+    const takeover = String(clientButton?.dataset?.agentRouterTakeover || '').toLowerCase() === 'true';
+    return {
+      takeover,
+      disabled: takeover,
+      title: takeover ? 'Router 接管中，先关闭当前客户端接管' : '',
+    };
+  }
+
+  function applyAgentRouterTakeoverDataset(clientButton, enabled) {
+    if (!clientButton) return;
+    clientButton.dataset.agentRouterTakeover = String(Boolean(enabled));
+  }
+
+  function getAgentClientStatus(clientButton) {
+    const dataset = clientButton?.dataset || {};
+    const count = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    return {
+      featureCount: count(dataset.agentFeatureCount),
+      providerCount: count(dataset.agentProviderCount),
+      skillCount: count(dataset.agentSkillCount),
+      mcpPath: dataset.agentMcpPath || '无 MCP 配置',
+    };
+  }
+
+  function getAgentResourceClientState(resource = {}, clientId = '', nodeId = '__local__') {
+    const assignments = Array.isArray(resource.assignments) ? resource.assignments : [];
+    const observations = Array.isArray(resource.observations)
+      ? resource.observations
+      : Object.entries(resource.observations || {}).map(([key, value]) => ({ client_id: key, ...(value || {}) }));
+    const variants = Array.isArray(resource.variants) ? resource.variants : [];
+    const assignment = assignments.find((item) => (
+      String(item?.node_id || '__local__') === nodeId
+      && String(item?.client_id || '') === clientId
+      && item?.desired_enabled !== false
+    ));
+    const observation = observations.find((item) => (
+      String(item?.node_id || '__local__') === nodeId
+      && String(item?.client_id || '') === clientId
+    ));
+    const assigned = Boolean(assignment);
+    const present = Boolean(observation?.present);
+    const rawStatus = String(observation?.status || '').trim().toLowerCase();
+    let status = 'uninstalled';
+    if (rawStatus === 'error' || observation?.error) status = 'error';
+    else if (['drift', 'drifted', 'outdated', 'hash_mismatch'].includes(rawStatus)) status = 'drifted';
+    else if (present && ['installed', 'present', 'ok', 'verified'].includes(rawStatus || 'installed')) status = 'installed';
+    else if (assigned || ['missing', 'absent'].includes(rawStatus)) status = 'missing';
+    else if (present) status = 'installed';
+
+    const statusMeta = {
+      installed: { label: '已安装', tone: 'good' },
+      drifted: { label: '漂移', tone: 'warn' },
+      missing: { label: '缺失', tone: 'danger' },
+      error: { label: '错误', tone: 'danger' },
+      uninstalled: { label: '未安装', tone: 'muted' },
+    }[status];
+    const variant = variants.find((item) => (
+      String(item?.client_id || '') === clientId && String(item?.platform || '') === 'linux'
+    )) || variants.find((item) => (
+      String(item?.client_id || '') === clientId && String(item?.platform || '') === 'any'
+    )) || variants.find((item) => String(item?.client_id || '') === clientId);
+    const variantClientId = variant ? clientId : 'base';
+    const variantPlatform = variant ? String(variant.platform || 'any') : 'any';
+    return {
+      assigned,
+      present,
+      status,
+      statusLabel: statusMeta.label,
+      tone: statusMeta.tone,
+      variantClientId,
+      variantPlatform,
+      variantLabel: variant ? `${variantClientId} / ${variantPlatform}` : '基础定义',
+    };
+  }
+
+  function describeAgentReconcileResult(payload = {}) {
+    if (payload?.changed === false || (!Array.isArray(payload?.operations) || payload.operations.length === 0)) {
+      const warnings = Array.isArray(payload?.warnings) ? payload.warnings.filter(Boolean) : [];
+      if (warnings.length) return { message: warnings[0], success: false };
+      return { message: '已与数据库一致', success: true };
+    }
+    const operations = Array.isArray(payload.operations) ? payload.operations : [];
+    const operationCount = operations.length;
+    const failures = Array.isArray(payload.failures) ? payload.failures.length : 0;
+    if (failures || payload.verified === false) {
+      return { message: `资源操作有 ${failures || operationCount || 1} 项未通过回读`, success: false };
+    }
+    const actionCounts = operations.reduce((counts, operation) => {
+      const action = ['install', 'update', 'uninstall'].includes(operation?.action) ? operation.action : 'install';
+      counts[action] += 1;
+      return counts;
+    }, { install: 0, update: 0, uninstall: 0 });
+    const actionEntries = [
+      ['install', '安装'],
+      ['update', '按数据库更新'],
+      ['uninstall', '卸载'],
+    ].filter(([action]) => actionCounts[action] > 0);
+    if (actionEntries.length === 1) {
+      const [action, label] = actionEntries[0];
+      return { message: `已${label} ${actionCounts[action]} 项`, success: true };
+    }
+    const details = actionEntries.map(([action, label]) => `${label} ${actionCounts[action]}`).join('，');
+    return { message: `已完成 ${operationCount} 项：${details}`, success: true };
+  }
+
+  function getAgentDiscoveryForClient(discovery = {}, resourceType = '', clientId = '') {
+    const rows = Array.isArray(discovery?.[resourceType]) ? discovery[resourceType] : [];
+    return rows.filter((item) => {
+      if (resourceType !== 'mcp') return String(item?.client_id || '') === clientId;
+      if (item?.observations?.[clientId]?.present) return true;
+      return Boolean(item?.observations_by_target?.__local__?.[clientId]?.present);
+    });
+  }
+
+  function getAgentInstalledSkillCount(library = {}, clientId = '') {
+    const installedIds = new Set();
+    (Array.isArray(library?.skills) ? library.skills : []).forEach((resource) => {
+      if (!getAgentResourceClientState(resource, clientId).present) return;
+      const id = String(resource?.id || '').trim();
+      if (id) installedIds.add(id);
+    });
+    getAgentDiscoveryForClient(library?.discovery || {}, 'skills', clientId).forEach((resource) => {
+      const id = String(resource?.id || resource?.name || '').trim();
+      if (id) installedIds.add(id);
+    });
+    return installedIds.size;
+  }
+
+  function buildAgentProfilePayload({
+    name = '',
+    description = '',
+    clientId = '',
+    existingItems = [],
+    selections = {},
+    routerConfig = {},
+  } = {}) {
+    const items = (Array.isArray(existingItems) ? existingItems : [])
+      .filter((item) => String(item?.client_id || '') !== clientId)
+      .map((item, index) => ({
+        client_id: String(item.client_id || ''),
+        resource_type: String(item.resource_type || ''),
+        resource_id: String(item.resource_id || ''),
+        config: item.config && typeof item.config === 'object' ? { ...item.config } : {},
+        sort_index: Number.isFinite(Number(item.sort_index)) ? Number(item.sort_index) : index,
+      }));
+    const orderedTypes = ['provider', 'mcp', 'skill', 'prompt', 'router'];
+    orderedTypes.forEach((resourceType) => {
+      const selected = Array.isArray(selections[resourceType]) ? selections[resourceType] : [];
+      selected.filter(Boolean).forEach((resourceId) => {
+        items.push({
+          client_id: String(clientId || ''),
+          resource_type: resourceType,
+          resource_id: String(resourceId),
+          config: resourceType === 'router' ? { ...(routerConfig || {}) } : {},
+          sort_index: items.length,
+        });
+      });
+    });
+    return {
+      name: String(name || '').trim(),
+      description: String(description || '').trim() || null,
+      items,
+    };
+  }
+
   function initAgentWorkbench() {
     const panel = document.querySelector('[data-agent-workbench]');
     if (!panel) return;
@@ -1502,6 +1829,116 @@
       button.classList.toggle('is-active', Boolean(active));
       button.classList.toggle('is-on', Boolean(active));
     };
+    const providerOwnershipControls = [
+      panel.querySelector('[data-agent-provider-import]'),
+    ].filter(Boolean);
+    const syncProviderPrimaryActions = () => {
+      const clientId = activeClient();
+      const takeover = getAgentProviderOwnershipState(clientById(clientId)).takeover;
+      panel.querySelectorAll(`[data-agent-provider-card][data-provider-app="${CSS.escape(clientId)}"]`).forEach((card) => {
+        const button = card.querySelector('[data-agent-provider-activate]');
+        if (!button) return;
+        const isCurrent = card.classList.contains('is-current') || card.dataset.providerLiveState === 'current';
+        const readOnly = card.dataset.providerReadOnly === 'true';
+        const primary = getAgentProviderPrimaryAction({
+          mode: card.dataset.providerMode,
+          isCurrent,
+          liveState: card.dataset.providerLiveState,
+          takeover,
+          readOnly,
+        });
+        button.textContent = primary.label;
+        button.disabled = primary.disabled;
+        if (readOnly) button.title = card.dataset.providerReadOnlyReason || '原生只读 Provider 由客户端维护';
+        else if (card.dataset.providerLiveState === 'unknown') button.title = '现场配置读取失败';
+        else if (isCurrent) button.title = takeover ? '当前 Router 上游已启用' : '当前 Provider 已启用';
+        else button.removeAttribute('title');
+      });
+    };
+    const syncProviderOwnershipControls = () => {
+      const state = getAgentProviderOwnershipState(clientById(activeClient()));
+      providerOwnershipControls.forEach((control) => {
+        control.disabled = state.disabled;
+        control.dataset.agentTakeoverDisabled = String(state.disabled);
+        if (state.title) control.setAttribute('title', state.title);
+        else control.removeAttribute('title');
+      });
+      syncProviderPrimaryActions();
+    };
+
+    const routerPolicyControls = {
+      autoFailover: panel.querySelector('[data-agent-router-policy-auto-failover]'),
+      maxRetries: panel.querySelector('[data-agent-router-policy-max-retries]'),
+      failureThreshold: panel.querySelector('[data-agent-router-policy-failure-threshold]'),
+      cooldownSeconds: panel.querySelector('[data-agent-router-policy-cooldown-seconds]'),
+      save: panel.querySelector('[data-agent-router-policy-save]'),
+      state: panel.querySelector('[data-agent-router-policy-state]'),
+    };
+    const syncRouterPolicyControls = () => {
+      const policy = getAgentRouterPolicy(clientById(activeClient()));
+      if (routerPolicyControls.autoFailover) routerPolicyControls.autoFailover.checked = policy.autoFailover;
+      if (routerPolicyControls.maxRetries) routerPolicyControls.maxRetries.value = String(policy.maxRetries);
+      if (routerPolicyControls.failureThreshold) routerPolicyControls.failureThreshold.value = String(policy.failureThreshold);
+      if (routerPolicyControls.cooldownSeconds) routerPolicyControls.cooldownSeconds.value = String(policy.cooldownSeconds);
+      if (routerPolicyControls.state) {
+        routerPolicyControls.state.textContent = policy.configured ? '已绑定 Provider' : '先在 Providers 中点“当前”';
+        routerPolicyControls.state.classList.toggle('is-good', policy.configured);
+      }
+      [routerPolicyControls.autoFailover, routerPolicyControls.maxRetries, routerPolicyControls.failureThreshold, routerPolicyControls.cooldownSeconds]
+        .filter(Boolean)
+        .forEach((control) => { control.disabled = !policy.configured; });
+      if (routerPolicyControls.save) routerPolicyControls.save.disabled = !policy.configured;
+    };
+
+    const failoverQueueControls = {
+      root: panel.querySelector('[data-agent-failover-queue]'),
+      list: panel.querySelector('[data-agent-failover-queue-list]'),
+      addSelect: panel.querySelector('[data-agent-failover-queue-add]'),
+      addButton: panel.querySelector('[data-agent-failover-queue-add][type="button"]'),
+      save: panel.querySelector('[data-agent-failover-queue-save]'),
+      state: panel.querySelector('[data-agent-failover-queue-state]'),
+    };
+    let failoverQueueState = { providerIds: [], available: [], names: {} };
+    const renderFailoverQueue = () => {
+      const controls = failoverQueueControls;
+      if (!controls.list) return;
+      const names = failoverQueueState.names || {};
+      controls.list.innerHTML = failoverQueueState.providerIds.length
+        ? failoverQueueState.providerIds.map((providerId, index) => `
+            <span class="agent-queue-chip">
+              <b>${index + 1}</b><span>${escapeHtml(names[providerId] || providerId)}</span>
+              <button type="button" class="agent-queue-chip-action" data-agent-queue-action="up" data-agent-queue-index="${index}" ${index === 0 ? 'disabled' : ''} aria-label="上移">↑</button>
+              <button type="button" class="agent-queue-chip-action" data-agent-queue-action="down" data-agent-queue-index="${index}" ${index === failoverQueueState.providerIds.length - 1 ? 'disabled' : ''} aria-label="下移">↓</button>
+              <button type="button" class="agent-queue-chip-action" data-agent-queue-action="remove" data-agent-queue-index="${index}" aria-label="移除">×</button>
+            </span>`).join('')
+        : '<span class="agent-muted">尚未指定队列。开启策略时会把当前 Provider 自动放入 P1。</span>';
+      if (controls.addSelect) {
+        const available = (failoverQueueState.available || []).filter((item) => !failoverQueueState.providerIds.includes(item.provider_id));
+        controls.addSelect.innerHTML = '<option value="">加入 Provider…</option>' + available.map((item) => `<option value="${escapeHtml(item.provider_id)}">${escapeHtml(item.name || item.provider_id)}</option>`).join('');
+        controls.addSelect.disabled = !getAgentRouterPolicy(clientById(activeClient())).configured || !available.length;
+      }
+      if (controls.addButton) controls.addButton.disabled = controls.addSelect?.disabled || !controls.addSelect?.value;
+      if (controls.save) controls.save.disabled = !getAgentRouterPolicy(clientById(activeClient())).configured;
+      if (controls.state) {
+        controls.state.textContent = failoverQueueState.providerIds.length ? `${failoverQueueState.providerIds.length} 个 Provider` : '队列为空';
+        controls.state.classList.toggle('is-good', Boolean(failoverQueueState.providerIds.length));
+        controls.state.classList.toggle('is-muted', !failoverQueueState.providerIds.length);
+      }
+    };
+    const loadFailoverQueue = async (clientId) => {
+      if (!failoverQueueControls.root || !clientId) return;
+      try {
+        const body = await requestJson(`/api/agent/router/apps/${encodeURIComponent(clientId)}/failover-queue`, { method: 'GET' });
+        const names = {};
+        (body?.items || []).forEach((item) => { names[item.provider_id] = item.name; });
+        (body?.available || []).forEach((item) => { names[item.provider_id] = item.name; });
+        failoverQueueState = { providerIds: Array.isArray(body?.provider_ids) ? body.provider_ids : [], available: Array.isArray(body?.available) ? body.available : [], names };
+        renderFailoverQueue();
+      } catch (error) {
+        failoverQueueState = { providerIds: [], available: [], names: {} };
+        if (failoverQueueControls.state) { failoverQueueControls.state.textContent = '加载失败'; failoverQueueControls.state.classList.remove('is-good'); }
+      }
+    };
 
     const tabButtons = Array.from(panel.querySelectorAll('[data-agent-tab-control]'));
     const tabPanels = Array.from(panel.querySelectorAll('[data-agent-tab]'));
@@ -1533,37 +1970,334 @@
       if (!current || current.hidden) activateTab('providers');
     };
 
-    const updateMcpRows = () => {
-      const appId = activeClient();
-      panel.querySelectorAll('[data-agent-mcp-card]').forEach((row) => {
-        let server = null;
-        const script = row.querySelector('[data-agent-mcp-json]');
-        try { server = JSON.parse(script?.textContent || '{}'); } catch { server = {}; }
-        const observation = server?.observations?.[appId] || {};
-        const installed = Boolean(observation.present && observation.status === 'installed');
-        row.hidden = false;
-        row.dataset.agentMcpObserved = String(installed);
-        const status = row.querySelector('[data-agent-mcp-status]');
-        if (status) {
-          status.textContent = installed ? '已安装' : '未安装 / 未扫描';
-          status.classList.toggle('is-good', installed);
-          status.classList.toggle('is-muted', !installed);
-        }
-        const uninstall = row.querySelector('[data-agent-mcp-uninstall-one]');
-        if (uninstall) uninstall.disabled = !installed;
+    const emptyLibrary = () => ({ mcp: [], skills: [], prompts: [], providers: [], profiles: [], router: {}, discovery: { mcp: [], skills: [], prompts: [] } });
+    let libraryState = emptyLibrary();
+    try {
+      const bootstrap = panel.querySelector('[data-agent-library-bootstrap]')?.textContent || '{}';
+      libraryState = { ...emptyLibrary(), ...JSON.parse(bootstrap) };
+      libraryState.discovery = { ...emptyLibrary().discovery, ...(libraryState.discovery || {}) };
+    } catch {
+      libraryState = emptyLibrary();
+    }
+    const libraryKey = (resourceType) => ({ mcp: 'mcp', skill: 'skills', prompt: 'prompts' }[resourceType] || resourceType);
+    const resourceTypeForKey = (key) => ({ mcp: 'mcp', skills: 'skill', prompts: 'prompt' }[key] || key);
+    const resourceById = (resourceType, resourceId) => (
+      (libraryState[libraryKey(resourceType)] || []).find((item) => String(item.id) === String(resourceId)) || null
+    );
+    const orderListFor = (resourceType) => panel.querySelector(`[data-agent-order-list="${resourceType}"]`);
+    const orderCardsFor = (resourceType, clientId = activeClient()) => {
+      const list = orderListFor(resourceType);
+      if (!list) return [];
+      return Array.from(list.querySelectorAll('[data-agent-order-card]')).filter((card) => (
+        card.dataset.resourceType === resourceType
+        && (resourceType !== 'provider' || card.dataset.providerApp === clientId)
+      ));
+    };
+    const orderIdsFor = (resourceType, clientId = activeClient()) => (
+      orderCardsFor(resourceType, clientId).map((card) => card.dataset.resourceId).filter(Boolean)
+    );
+    const syncOrderControls = (resourceType, clientId = activeClient()) => {
+      const cards = orderCardsFor(resourceType, clientId);
+      cards.forEach((card, index) => {
+        const up = card.querySelector('[data-agent-resource-move="up"]');
+        const down = card.querySelector('[data-agent-resource-move="down"]');
+        if (up) up.disabled = index === 0;
+        if (down) down.disabled = index === cards.length - 1;
       });
+    };
+    const applyResourceOrderToDom = (resourceType, resourceIds, clientId = activeClient()) => {
+      const list = orderListFor(resourceType);
+      if (!list) return;
+      const cards = new Map(
+        orderCardsFor(resourceType, clientId).map((card) => [card.dataset.resourceId, card]),
+      );
+      resourceIds.forEach((resourceId) => {
+        const card = cards.get(String(resourceId));
+        if (card) list.append(card);
+      });
+      syncOrderControls(resourceType, clientId);
+    };
+    const applyResourceOrderToState = (resourceType, resourceIds, clientId = activeClient()) => {
+      const ids = resourceIds.map(String);
+      if (resourceType === 'provider') {
+        const selected = (libraryState.providers || []).filter((item) => String(item.app_id) === clientId);
+        const byId = new Map(selected.map((item) => [String(item.id), item]));
+        const other = (libraryState.providers || []).filter((item) => String(item.app_id) !== clientId);
+        libraryState.providers = [...other, ...ids.map((id) => byId.get(id)).filter(Boolean)];
+        return;
+      }
+      const key = libraryKey(resourceType);
+      const byId = new Map((libraryState[key] || []).map((item) => [String(item.id), item]));
+      libraryState[key] = ids.map((id) => byId.get(id)).filter(Boolean);
+    };
+    const syncProviderOrderFromLibrary = () => {
+      const list = orderListFor('provider');
+      if (!list) return;
+      (libraryState.providers || []).forEach((provider) => {
+        const card = Array.from(list.querySelectorAll('[data-agent-provider-card]')).find((item) => (
+          item.dataset.providerApp === String(provider.app_id)
+          && item.dataset.resourceId === String(provider.id)
+        ));
+        if (card) list.append(card);
+      });
+    };
+    const stateToneClass = (tone) => ({ good: 'is-good', warn: 'is-warn', danger: 'is-danger', muted: 'is-muted' }[tone] || 'is-muted');
+    const resourceSource = (resourceType, resource) => {
+      if (resourceType === 'skill') return resource.source_kind || resource.source || 'database';
+      if (resourceType === 'prompt') return resource.variants?.length ? 'database + variants' : 'database';
+      return resource.source || 'manual';
+    };
+    const resourceMark = (resourceType) => ({ mcp: 'M', skill: 'S', prompt: 'P' }[resourceType] || 'R');
+    const renderOrderControls = (resourceType, resource, index, total) => {
+      const name = escapeHtml(resource.name || resource.id || resourceType);
+      const typeLabel = ({ provider: 'Provider', mcp: 'MCP', skill: 'Skill', prompt: 'Prompt', profile: 'Profile' }[resourceType] || '资源');
+      return `<div class="agent-order-controls" aria-label="${typeLabel} 排序">
+        <span class="agent-drag-handle" data-agent-drag-handle tabindex="0" role="img" aria-label="拖动 ${name} 排序" title="拖动排序">⠿</span>
+        <button type="button" data-agent-resource-move="up" aria-label="上移 ${name}"${index <= 0 ? ' disabled' : ''}>↑</button>
+        <button type="button" data-agent-resource-move="down" aria-label="下移 ${name}"${index >= total - 1 ? ' disabled' : ''}>↓</button>
+      </div>`;
+    };
+    const renderResourceCard = (resourceType, resource, index, total) => {
+      const state = getAgentResourceClientState(resource, activeClient());
+      const id = String(resource.id || '');
+      const name = String(resource.name || id);
+      const encodedId = escapeHtml(id);
+      const source = escapeHtml(resourceSource(resourceType, resource));
+      const legacyCard = resourceType === 'mcp'
+        ? ` data-agent-mcp-card data-agent-mcp-card-id="${encodedId}" data-agent-mcp-managed="true"`
+        : '';
+      const legacyEdit = resourceType === 'mcp' ? ` data-agent-mcp-edit="${encodedId}"` : '';
+      const legacyInstall = resourceType === 'mcp' ? ` data-agent-mcp-install-one="${encodedId}"` : '';
+      const legacyUninstall = resourceType === 'mcp' ? ` data-agent-mcp-uninstall-one="${encodedId}"` : '';
+      const legacyDelete = resourceType === 'mcp'
+        ? ` data-agent-mcp-delete="${encodedId}"`
+        : resourceType === 'prompt' ? ` data-agent-prompt-delete="${encodedId}"` : '';
+      const uninstallDisabled = !state.assigned && !state.present ? ' disabled' : '';
+      const syncDisabled = !state.assigned ? ' disabled' : '';
+      const description = resource.description
+        ? `<small class="agent-resource-description" title="${escapeHtml(resource.description)}">${escapeHtml(resource.description)}</small>`
+        : '';
+      return `
+        <article class="agent-resource-card" data-agent-resource-card data-agent-order-card data-resource-type="${resourceType}" data-resource-id="${encodedId}" draggable="true"${legacyCard}>
+          ${renderOrderControls(resourceType, resource, index, total)}
+          <div class="agent-resource-identity">
+            <span class="agent-resource-mark is-${resourceType}">${resourceMark(resourceType)}</span>
+            <div><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small title="${encodedId} · ${source}">${encodedId} · ${source}</small>${description}</div>
+          </div>
+          <div class="agent-resource-state" aria-label="当前客户端资源状态">
+            <span class="agent-state-pill is-library">库中</span>
+            <span class="agent-state-pill ${state.assigned ? 'is-assigned' : 'is-muted'}">${state.assigned ? '已分配' : '未分配'}</span>
+            <span class="agent-state-pill ${stateToneClass(state.tone)}">回读：${state.statusLabel}</span>
+            <span class="agent-state-pill is-variant" title="客户端变体">${escapeHtml(state.variantLabel)}</span>
+          </div>
+          <div class="agent-resource-actions">
+            <button class="button button--small button--quiet" type="button" data-agent-resource-edit data-resource-type="${resourceType}" data-resource-id="${encodedId}"${legacyEdit}>编辑</button>
+            <button class="button button--small button--primary" type="button" data-agent-resource-install data-resource-type="${resourceType}" data-resource-id="${encodedId}"${legacyInstall}>安装/更新</button>
+            <button class="button button--small button--quiet" type="button" data-agent-resource-uninstall data-resource-type="${resourceType}" data-resource-id="${encodedId}"${legacyUninstall}${uninstallDisabled}>卸载</button>
+            <button class="button button--small button--quiet" type="button" data-agent-resource-sync data-resource-type="${resourceType}" data-resource-id="${encodedId}"${syncDisabled}>按库同步</button>
+            <button class="button button--small button--danger" type="button" data-agent-resource-delete data-resource-type="${resourceType}" data-resource-id="${encodedId}"${legacyDelete}>从库删除</button>
+          </div>
+          ${resourceType === 'mcp' ? `<span hidden data-agent-mcp-json="${encodedId}"></span>` : ''}
+        </article>`;
+    };
+    const renderResourceLists = () => {
+      ['mcp', 'skills', 'prompts'].forEach((key) => {
+        const resources = Array.isArray(libraryState[key]) ? libraryState[key] : [];
+        const resourceType = resourceTypeForKey(key);
+        const list = panel.querySelector(`[data-agent-resource-list="${key}"]`);
+        const count = panel.querySelector(`[data-agent-library-count="${key}"]`);
+        if (count) count.textContent = String(resources.length);
+        if (!list) return;
+        list.innerHTML = resources.length
+          ? resources.map((resource, index) => renderResourceCard(resourceType, resource, index, resources.length)).join('')
+          : `<div class="agent-empty-card">数据库中还没有 ${key === 'mcp' ? 'MCP' : key === 'skills' ? 'Skill' : 'Prompt'} 资源。</div>`;
+      });
+    };
+    const renderDiscoveryLists = () => {
+      ['mcp', 'skills', 'prompts'].forEach((key) => {
+        const rows = getAgentDiscoveryForClient(libraryState.discovery, key, activeClient());
+        const list = panel.querySelector(`[data-agent-discovery-list="${key}"]`);
+        const count = panel.querySelector(`[data-agent-discovery-count="${key}"]`);
+        if (count) count.textContent = String(rows.length);
+        if (!list) return;
+        const rendered = rows.map((item) => {
+          const resourceType = resourceTypeForKey(key);
+          const id = escapeHtml(item.id || item.name || '');
+          const name = escapeHtml(item.name || item.id || '未命名');
+          const source = escapeHtml(item.path || item.source || 'observed');
+          return `<article class="agent-discovery-row" data-agent-discovery-item data-resource-type="${resourceType}" data-resource-id="${id}"><div><strong>${name}</strong><small title="${source}">${id} · ${source}</small></div><button class="button button--small button--primary" type="button" data-agent-discovery-import data-resource-type="${resourceType}" data-resource-id="${id}">导入到库</button></article>`;
+        });
+        if (key === 'prompts' && !rendered.length) {
+          rendered.push('<button class="agent-discovery-row agent-discovery-row--action" type="button" data-agent-discovery-import data-resource-type="prompt"><span><strong>导入当前 Prompt 文件</strong><small>使用右侧 ID 与名称；留空则自动命名</small></span><span class="button button--small button--primary">导入到库</span></button>');
+        }
+        list.innerHTML = rendered.length ? rendered.join('') : '<div class="agent-empty-inline">当前客户端没有未纳管现场项。</div>';
+      });
+    };
+
+    const profileFields = {
+      id: panel.querySelector('[data-agent-profile-id]'),
+      name: panel.querySelector('[data-agent-profile-name]'),
+      description: panel.querySelector('[data-agent-profile-description]'),
+      picker: panel.querySelector('[data-agent-profile-resource-picker]'),
+    };
+    let profileDraft = { profileId: '', existingItems: [], selections: { provider: [], mcp: [], skill: [], prompt: [], router: [] } };
+    const emptyProfileSelections = () => ({ provider: [], mcp: [], skill: [], prompt: [], router: [] });
+    const profileSelectionsForClient = (items, clientId) => {
+      const selections = emptyProfileSelections();
+      (Array.isArray(items) ? items : []).forEach((item) => {
+        if (String(item.client_id || '') !== clientId || !selections[item.resource_type]) return;
+        selections[item.resource_type].push(String(item.resource_id || ''));
+      });
+      return selections;
+    };
+    const routerProfileConfig = () => {
+      const clientId = activeClient();
+      const existing = profileDraft.existingItems.find((item) => item.client_id === clientId && item.resource_type === 'router');
+      if (existing?.config && Object.keys(existing.config).length) return { ...existing.config };
+      const router = libraryState.router || {};
+      const config = {};
+      const providerId = router.provider_ids?.[clientId];
+      if (providerId) config.provider_id = providerId;
+      config.takeover = Boolean(router.takeover?.[clientId]);
+      const queue = router.failover_queues?.[clientId];
+      if (Array.isArray(queue) && queue.length) config.failover_queue = [...queue];
+      const policy = router.providers?.[clientId];
+      if (policy) {
+        config.policy = {
+          auto_failover: Boolean(policy.auto_failover),
+          max_retries: Number(policy.max_retries || 0),
+          failure_threshold: Number(policy.failure_threshold || 3),
+          cooldown_seconds: Number(policy.cooldown_seconds || 60),
+        };
+      }
+      return config;
+    };
+    const profileOptionGroups = () => {
+      const clientId = activeClient();
+      const capabilities = activeCapabilities();
+      return [
+        { type: 'provider', label: 'Provider', singular: true, items: (libraryState.providers || []).filter((item) => item.app_id === clientId) },
+        { type: 'mcp', label: 'MCP', singular: false, items: capabilities.has('mcp') ? (libraryState.mcp || []) : [] },
+        { type: 'skill', label: 'Skills', singular: false, items: capabilities.has('skills') ? (libraryState.skills || []) : [] },
+        { type: 'prompt', label: 'Prompt', singular: true, items: capabilities.has('prompts') ? (libraryState.prompts || []) : [] },
+        { type: 'router', label: 'Router', singular: true, items: capabilities.has('route') ? [{ id: 'default', name: '当前路由策略' }] : [] },
+      ];
+    };
+    const renderProfilePicker = () => {
+      if (!profileFields.picker) return;
+      if (profileDraft.clientId !== activeClient()) {
+        profileDraft.clientId = activeClient();
+        profileDraft.selections = profileSelectionsForClient(profileDraft.existingItems, activeClient());
+      }
+      const groups = profileOptionGroups();
+      profileFields.picker.innerHTML = groups.map((group) => {
+        const selected = new Set(profileDraft.selections[group.type] || []);
+        const items = group.items.map((item) => {
+          const id = String(item.id || '');
+          const active = selected.has(id);
+          return `<button type="button" class="agent-profile-resource ${active ? 'is-active' : ''}" data-agent-profile-resource data-resource-type="${group.type}" data-resource-id="${escapeHtml(id)}" data-resource-singular="${String(group.singular)}" aria-pressed="${String(active)}"><span>${escapeHtml(item.name || id)}</span><small>${escapeHtml(id)}</small></button>`;
+        }).join('');
+        return `<section class="agent-profile-resource-group"><header><strong>${group.label}</strong><span>${group.items.length}</span></header><div>${items || '<span class="agent-muted">当前客户端没有可选资源</span>'}</div></section>`;
+      }).join('');
+      const glyph = panel.querySelector('[data-agent-profile-client-glyph]');
+      if (glyph) { glyph.textContent = clientName(activeClient()).slice(0, 1); glyph.className = `agent-client-glyph agent-client-glyph--${activeClient()}`; }
+      const name = panel.querySelector('[data-agent-profile-client-name]');
+      if (name) name.textContent = clientName(activeClient());
+    };
+    const renderProfiles = () => {
+      const profiles = Array.isArray(libraryState.profiles) ? libraryState.profiles : [];
+      const list = panel.querySelector('[data-agent-profile-list]');
+      const count = panel.querySelector('[data-agent-profile-count]');
+      if (count) count.textContent = String(profiles.length);
+      if (list) {
+        list.innerHTML = profiles.length ? profiles.map((profile, index) => {
+          const currentCount = (profile.items || []).filter((item) => item.client_id === activeClient()).length;
+          return `<article class="agent-profile-card" data-agent-profile-card="${escapeHtml(profile.id)}" data-agent-order-card data-resource-type="profile" data-resource-id="${escapeHtml(profile.id)}" draggable="true">${renderOrderControls('profile', profile, index, profiles.length)}<div class="agent-profile-copy"><strong>${escapeHtml(profile.name || profile.id)}</strong><small>${escapeHtml(profile.id)} · 当前客户端 ${currentCount} 项 / 全部 ${(profile.items || []).length} 项</small>${profile.description ? `<p>${escapeHtml(profile.description)}</p>` : ''}</div><div class="agent-resource-actions"><button class="button button--small button--quiet" type="button" data-agent-profile-edit="${escapeHtml(profile.id)}">编辑</button><button class="button button--small button--primary" type="button" data-agent-profile-apply="${escapeHtml(profile.id)}">应用到当前客户端</button><button class="button button--small button--danger" type="button" data-agent-profile-delete="${escapeHtml(profile.id)}">删除</button></div></article>`;
+        }).join('') : '<div class="agent-empty-card">还没有 Profile。右侧选择当前客户端资源并保存。</div>';
+      }
+      renderProfilePicker();
+    };
+    const renderAgentLibraryView = () => {
+      renderResourceLists();
+      renderDiscoveryLists();
+      renderProfiles();
+      syncProviderOrderFromLibrary();
+      ['provider', 'mcp', 'skill', 'prompt', 'profile'].forEach((resourceType) => syncOrderControls(resourceType));
+      buttons.forEach((button) => {
+        const clientId = button.value;
+        button.dataset.agentSkillCount = String(getAgentInstalledSkillCount(libraryState, clientId));
+        button.dataset.agentProviderCount = String((libraryState.providers || []).filter((provider) => provider.app_id === clientId).length);
+      });
+      const status = getAgentClientStatus(clientById(activeClient()));
+      const skillCount = panel.querySelector('[data-agent-active-skill-count]');
+      if (skillCount) skillCount.textContent = String(status.skillCount);
+      const providerCount = panel.querySelector('[data-agent-active-provider-count]');
+      if (providerCount) providerCount.textContent = String(status.providerCount);
+    };
+    const loadAgentLibrary = async ({ quiet = false } = {}) => {
+      try {
+        const body = await requestJson('/api/agent/library', { method: 'GET' });
+        if (!body) return null;
+        libraryState = { ...emptyLibrary(), ...body, discovery: { ...emptyLibrary().discovery, ...(body.discovery || {}) } };
+        renderAgentLibraryView();
+        return body;
+      } catch (error) {
+        if (!quiet) flash(`资源库刷新失败：${error.message}`);
+        return null;
+      }
+    };
+    const persistResourceOrder = async (resourceType, resourceIds, trigger = null) => {
+      const list = orderListFor(resourceType);
+      if (trigger) setPending(trigger, true);
+      list?.classList.add('is-saving-order');
+      try {
+        await putJson(
+          '/api/agent/resources/order',
+          buildAgentResourceOrderPayload(resourceType, resourceIds, activeClient()),
+        );
+        flash('列表顺序已保存', { success: true });
+        return true;
+      } catch (error) {
+        await loadAgentLibrary({ quiet: true });
+        flash(`排序保存失败，已恢复数据库顺序：${error.message}`);
+        return false;
+      } finally {
+        list?.classList.remove('is-saving-order');
+        if (trigger) setPending(trigger, false);
+      }
     };
     const syncClientView = () => {
       const appId = activeClient();
       panel.dataset.agentActiveClient = appId;
       buttons.forEach((button) => setButtonState(button, button.value === appId));
       panel.querySelectorAll('[data-agent-active-name]').forEach((node) => { node.textContent = clientName(appId); });
+      const activeGlyph = panel.querySelector('[data-agent-active-glyph]');
+      if (activeGlyph) {
+        activeGlyph.textContent = clientName(appId).slice(0, 1);
+        activeGlyph.className = `agent-client-glyph agent-client-glyph--${appId}`;
+      }
+      const activeSource = panel.querySelector('[data-agent-active-source]');
+      if (activeSource) activeSource.textContent = clientById(appId)?.dataset.agentDetectionSource || 'config';
+      const status = getAgentClientStatus(clientById(appId));
+      const featureCount = panel.querySelector('[data-agent-active-feature-count]');
+      if (featureCount) featureCount.textContent = String(status.featureCount);
+      const providerCount = panel.querySelector('[data-agent-active-provider-count]');
+      if (providerCount) providerCount.textContent = String(status.providerCount);
+      const skillCount = panel.querySelector('[data-agent-active-skill-count]');
+      if (skillCount) skillCount.textContent = String(status.skillCount);
+      const mcpPath = panel.querySelector('[data-agent-active-mcp-path]');
+      if (mcpPath) mcpPath.textContent = status.mcpPath;
       const routeTarget = panel.querySelector('[data-agent-router-current-provider]');
       if (routeTarget) routeTarget.textContent = clientById(appId)?.dataset.agentRouterProvider || '未选择';
+      syncProviderOwnershipControls();
       panel.querySelectorAll('[data-provider-app]').forEach((card) => { card.hidden = card.dataset.providerApp !== appId; });
+      panel.querySelectorAll('[data-agent-provider-fields]').forEach((fields) => { fields.hidden = fields.dataset.agentProviderFields !== appId; });
       panel.querySelectorAll('[data-agent-skill-client]').forEach((card) => { card.hidden = card.dataset.agentSkillClient !== appId; });
       syncTabs();
-      updateMcpRows();
+      renderAgentLibraryView();
+      syncRouterPolicyControls();
+      void loadFailoverQueue(appId);
+      renderFailoverQueue();
       const appInput = panel.querySelector('[data-agent-provider-app]');
       if (appInput) appInput.value = appId;
     };
@@ -1584,10 +2318,12 @@
     syncClientView();
     activateTab(hashTab || 'providers');
 
-    // Provider editor: the generic routing profile is shared by all clients;
-    // native settings remain an opaque round-trip field.
+    // Provider editor: native client fields are the database source document.
+    const providerEditor = panel.querySelector('[data-agent-provider-editor]');
     const providerId = panel.querySelector('[data-agent-provider-id]');
     const providerName = panel.querySelector('[data-agent-provider-name]');
+    const providerDescription = panel.querySelector('[data-agent-provider-description]');
+    const providerWebsite = panel.querySelector('[data-agent-provider-website]');
     const providerBase = panel.querySelector('[data-agent-provider-base-url]');
     const providerFormat = panel.querySelector('[data-agent-provider-format]');
     const providerAuth = panel.querySelector('[data-agent-provider-auth]');
@@ -1596,34 +2332,100 @@
     const providerMap = panel.querySelector('[data-agent-provider-model-map]');
     const providerHeaders = panel.querySelector('[data-agent-provider-headers]');
     const providerSettings = panel.querySelector('[data-agent-provider-settings]');
-    const providerCurrent = panel.querySelector('[data-agent-provider-current-check]');
-    const clearProvider = () => {
-      [providerId, providerName, providerBase, providerModel, providerKey, providerMap, providerHeaders, providerSettings].forEach((input) => { if (input) input.value = ''; });
-      if (providerFormat) providerFormat.value = 'openai_chat';
-      if (providerAuth) providerAuth.value = 'bearer';
-      if (providerCurrent) providerCurrent.checked = false;
+    const providerFullUrl = panel.querySelector('[data-agent-provider-full-url]');
+    const providerOutboundProxy = panel.querySelector('[data-agent-provider-outbound-proxy]');
+    const providerSave = panel.querySelector('[data-agent-provider-save]');
+    const providerReadonly = panel.querySelector('[data-agent-provider-readonly]');
+    const providerDefaults = {
+      claude: { format: 'anthropic', auth: 'x-api-key' },
+      codex: { format: 'openai_responses', auth: 'bearer' },
+      gemini: { format: 'gemini', auth: 'query' },
+      grokbuild: { format: 'openai_responses', auth: 'bearer' },
+      opencode: { format: 'openai_chat', auth: 'bearer' },
+      openclaw: { format: 'openai_chat', auth: 'bearer' },
+      hermes: { format: 'openai_chat', auth: 'bearer' },
     };
     const providerKeyParts = (value) => {
       const parts = String(value || '').split('::');
       return { appId: parts.shift() || '', providerId: parts.join('::') };
     };
+    const providerFieldsFor = (appId) => panel.querySelector(`[data-agent-provider-fields="${CSS.escape(String(appId || ''))}"]`);
+    const providerField = (appId, selector) => providerFieldsFor(appId)?.querySelector(selector) || null;
+    const setProviderEditorEditable = (editable, reason = '') => {
+      if (!providerEditor) return;
+      providerEditor.dataset.agentProviderEditable = String(Boolean(editable));
+      providerEditor.querySelectorAll('input, select, textarea').forEach((control) => {
+        if (control === providerSettings) {
+          control.readOnly = true;
+          return;
+        }
+        if (control.matches('select, input[type="checkbox"]')) control.disabled = !editable;
+        else control.readOnly = !editable;
+      });
+      if (providerSave) providerSave.disabled = !editable;
+      if (providerReadonly) {
+        providerReadonly.hidden = Boolean(editable);
+        providerReadonly.textContent = editable ? '' : (reason || '此 Provider 由客户端维护，仅供查看和复制。');
+      }
+    };
+    const clearProvider = () => {
+      if (!providerEditor) return;
+      setProviderEditorEditable(true);
+      providerEditor.dataset.agentProviderApp = activeClient();
+      providerEditor.querySelectorAll('input:not([type="checkbox"]), textarea').forEach((input) => { input.value = ''; });
+      providerEditor.querySelectorAll('[data-agent-provider-fields]').forEach((fields) => { fields.hidden = fields.dataset.agentProviderFields !== activeClient(); });
+      const defaults = providerDefaults[activeClient()] || providerDefaults.opencode;
+      if (providerId) providerId.readOnly = false;
+      if (providerFormat) providerFormat.value = defaults.format;
+      if (providerAuth) providerAuth.value = defaults.auth;
+      if (providerFullUrl) providerFullUrl.checked = false;
+      if (providerOutboundProxy) providerOutboundProxy.checked = true;
+      if (providerSettings) providerSettings.readOnly = true;
+    };
+    const providerJson = (input, fallback, label) => {
+      const raw = input?.value?.trim();
+      if (!raw) return fallback;
+      try { return JSON.parse(raw); }
+      catch (error) { throw new Error(`${label} JSON 无效：${error.message}`); }
+    };
     const fillProvider = (provider) => {
       if (!provider) return;
-      panel.dataset.agentActiveClient = provider.app_id || activeClient();
+      const appId = provider.app_id || activeClient();
+      panel.dataset.agentActiveClient = appId;
       syncClientView();
-      const settings = provider.settings_config || {};
-      const routing = settings.routing || {};
-      if (providerId) providerId.value = provider.id || '';
+      clearProvider();
+      const form = provider.form || {};
+      const meta = provider.meta || {};
+      const summary = provider.summary || {};
+      if (providerEditor) providerEditor.dataset.agentProviderApp = appId;
+      if (providerId) { providerId.value = provider.id || ''; providerId.readOnly = true; }
       if (providerName) providerName.value = provider.name || '';
-      if (providerBase) providerBase.value = routing.base_url || '';
-      if (providerFormat) providerFormat.value = routing.api_format || 'openai_chat';
-      if (providerAuth) providerAuth.value = routing.auth_mode || 'bearer';
-      if (providerModel) providerModel.value = routing.model || '';
-      if (providerKey) providerKey.value = routing.api_key || '';
-      if (providerMap) providerMap.value = JSON.stringify(routing.model_map || {}, null, 2);
-      if (providerHeaders) providerHeaders.value = JSON.stringify(routing.headers || {}, null, 2);
-      if (providerSettings) providerSettings.value = JSON.stringify(settings, null, 2);
-      if (providerCurrent) providerCurrent.checked = Boolean(provider.is_current);
+      if (providerDescription) providerDescription.value = provider.notes || '';
+      if (providerWebsite) providerWebsite.value = provider.website_url || '';
+      if (providerBase) providerBase.value = form.base_url || summary.base_url || '';
+      if (providerFormat) providerFormat.value = form.api_format || summary.api_format || providerDefaults[appId]?.format || 'openai_chat';
+      if (providerAuth) providerAuth.value = form.auth_mode || summary.auth_mode || providerDefaults[appId]?.auth || 'bearer';
+      if (providerModel) providerModel.value = form.model || summary.model || '';
+      if (providerKey) providerKey.value = form.api_key || '';
+      if (providerMap) providerMap.value = JSON.stringify(meta.model_map || form.model_map || {}, null, 2);
+      if (providerHeaders) providerHeaders.value = JSON.stringify(form.headers || {}, null, 2);
+      if (providerSettings) providerSettings.value = JSON.stringify(provider.settings_config || {}, null, 2);
+      if (providerFullUrl) providerFullUrl.checked = Boolean(meta.full_url ?? form.full_url);
+      if (providerOutboundProxy) providerOutboundProxy.checked = (meta.use_outbound_proxy ?? form.use_outbound_proxy) !== false;
+      const scoped = providerFieldsFor(appId);
+      const assign = (selector, value) => { const field = scoped?.querySelector(selector); if (field) field.value = value ?? ''; };
+      assign('[data-agent-provider-haiku-model]', form.haiku_model);
+      assign('[data-agent-provider-sonnet-model]', form.sonnet_model);
+      assign('[data-agent-provider-opus-model]', form.opus_model);
+      assign('[data-agent-provider-key-name]', form.provider_key);
+      assign('[data-agent-provider-profile]', form.profile);
+      assign('[data-agent-provider-env-key]', form.env_key);
+      assign('[data-agent-provider-context-window]', form.context_window);
+      assign('[data-agent-provider-npm]', form.npm);
+      const models = scoped?.querySelector('[data-agent-provider-models]');
+      if (models) models.value = JSON.stringify(form.models ?? (appId === 'openclaw' ? [] : {}), null, 2);
+      setProviderEditorEditable(summary.editable !== false, summary.read_only_reason || '此 Provider 由客户端维护，仅供查看和复制。');
+      if (providerId) providerId.readOnly = true;
     };
     const loadProvider = async (key) => {
       const { appId, providerId: id } = providerKeyParts(key);
@@ -1633,77 +2435,179 @@
     const providerPayload = () => {
       const appId = activeClient();
       const id = providerId?.value?.trim() || '';
-      if (!appId || !id || !providerBase?.value?.trim()) throw new Error('先填写 Provider ID 和 Base URL');
-      const settings = (() => {
-        try { return JSON.parse(providerSettings?.value?.trim() || '{}'); } catch { return { type: appId }; }
-      })();
-      const routing = {
-        base_url: providerBase.value.trim(),
-        api_format: providerFormat?.value || 'openai_chat',
-        auth_mode: providerAuth?.value || 'bearer',
-        model: providerModel?.value?.trim() || null,
-        model_map: jsonValue('[data-agent-provider-model-map]', {}),
-        headers: jsonValue('[data-agent-provider-headers]', {}),
+      if (!appId || !id) throw new Error('先填写 Provider ID');
+      const form = {
+        base_url: providerBase?.value?.trim() || '',
+        api_key: providerKey?.value || '',
+        model: providerModel?.value?.trim() || '',
+        api_format: providerFormat?.value || providerDefaults[appId]?.format || 'openai_chat',
+        auth_mode: providerAuth?.value || providerDefaults[appId]?.auth || 'bearer',
+        headers: providerJson(providerHeaders, {}, 'Headers'),
       };
-      if (providerKey?.value?.trim()) routing.api_key = providerKey.value.trim();
-      return { app_id: appId, provider_id: id, name: providerName?.value?.trim() || id, settings_config: settings, routing, is_current: Boolean(providerCurrent?.checked) };
+      const scoped = providerFieldsFor(appId);
+      const value = (selector) => scoped?.querySelector(selector)?.value?.trim() || '';
+      if (appId === 'claude') {
+        form.haiku_model = value('[data-agent-provider-haiku-model]');
+        form.sonnet_model = value('[data-agent-provider-sonnet-model]');
+        form.opus_model = value('[data-agent-provider-opus-model]');
+      } else if (appId === 'codex') {
+        form.provider_key = value('[data-agent-provider-key-name]') || id;
+      } else if (appId === 'grokbuild') {
+        form.profile = value('[data-agent-provider-profile]') || id;
+        form.env_key = value('[data-agent-provider-env-key]');
+        form.context_window = value('[data-agent-provider-context-window]');
+      } else if (appId === 'opencode') {
+        form.npm = value('[data-agent-provider-npm]');
+        form.models = providerJson(providerField(appId, '[data-agent-provider-models]'), {}, '模型字典');
+      } else if (appId === 'openclaw') {
+        form.models = providerJson(providerField(appId, '[data-agent-provider-models]'), [], '模型列表');
+      } else if (appId === 'hermes') {
+        form.env_key = value('[data-agent-provider-env-key]');
+        form.models = providerJson(providerField(appId, '[data-agent-provider-models]'), {}, '模型字典');
+      }
+      return buildAgentProviderPayload({
+        appId,
+        providerId: id,
+        name: providerName?.value?.trim() || id,
+        description: providerDescription?.value ?? '',
+        websiteUrl: providerWebsite?.value?.trim() || '',
+        form,
+        meta: {
+          model_map: providerJson(providerMap, {}, '模型映射'),
+          full_url: Boolean(providerFullUrl?.checked),
+          use_outbound_proxy: providerOutboundProxy?.checked !== false,
+        },
+      });
     };
+    if (providerEditor && !providerEditor.dataset.agentProviderApp) providerEditor.dataset.agentProviderApp = activeClient();
+    buttons.forEach((button) => button.addEventListener('click', () => {
+      if (providerEditor?.dataset.agentProviderApp !== button.value) clearProvider();
+    }));
     panel.querySelector('[data-agent-provider-new]')?.addEventListener('click', () => { clearProvider(); providerId?.focus(); });
     panel.querySelector('[data-agent-provider-clear]')?.addEventListener('click', clearProvider);
     panel.querySelector('[data-agent-provider-import]')?.addEventListener('click', async (event) => {
-      const button = event.currentTarget; setPending(button, true);
-      try { const body = await post('/api/agent/providers/import-local', { apps: [activeClient()] }); flash(`已导入 ${body?.imported_count || 0} 个 Provider`, { success: true }); reloadSoon(); }
-      catch (error) { flash(`导入失败：${error.message}`); } finally { setPending(button, false); }
+      const trigger = event.currentTarget;
+      try {
+        setPending(trigger, true);
+        const body = await post('/api/agent/providers/import-local', { apps: [activeClient()] });
+        flash(`已从客户端配置导入 ${body?.imported_count || 0} 个 Provider`, { success: true });
+        reloadSoon();
+      } catch (error) { flash(`导入失败：${error.message}`); }
+      finally { setPending(trigger, false); }
     });
     panel.querySelectorAll('[data-agent-provider-edit]').forEach((button) => button.addEventListener('click', async (event) => {
-      setPending(event.currentTarget, true);
-      try { fillProvider(await loadProvider(event.currentTarget.dataset.agentProviderEdit)); flash('Provider 已载入', { success: true }); }
-      catch (error) { flash(`读取失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    }));
-    panel.querySelector('[data-agent-provider-save]')?.addEventListener('click', async (event) => {
-      const button = event.currentTarget;
+      const trigger = event.currentTarget;
       try {
-        setPending(button, true);
+        setPending(trigger, true);
+        fillProvider(await loadProvider(trigger.dataset.agentProviderEdit));
+        flash('Provider 详情已载入', { success: true });
+      } catch (error) { flash(`读取失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    }));
+    providerSave?.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      try {
+        setPending(trigger, true);
         await post('/api/agent/providers', providerPayload());
-        flash('Provider 已保存；凭证只进入私有 Secret Store', { success: true }); reloadSoon();
-      } catch (error) { flash(`保存失败：${error.message}`); } finally { setPending(button, false); }
-    });
-    panel.querySelector('[data-agent-provider-apply]')?.addEventListener('click', async (event) => {
-      const selected = panel.querySelector('[data-agent-provider-select][aria-pressed="true"]')?.value;
-      const key = selected || `${activeClient()}::${providerId?.value || ''}`;
-      const { appId, providerId: id } = providerKeyParts(key);
-      if (!appId || !id) { flash('先选择一个 Provider'); return; }
-      try { setPending(event.currentTarget, true); const body = await post('/api/agent/providers/apply', { app_id: appId, provider_id: id, node_ids: ['__local__'], write_secrets: false }); flash(`直连配置任务已入队：${body.queued_count || 0}`, { success: true }); reloadSoon(); }
-      catch (error) { flash(`应用失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    });
-    panel.querySelectorAll('[data-agent-provider-test]').forEach((button) => button.addEventListener('click', async (event) => {
-      const { appId, providerId: id } = providerKeyParts(event.currentTarget.dataset.agentProviderTest);
-      try { setPending(event.currentTarget, true); const body = await requestJson(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}/test`, { method: 'POST' }); flash(body.ok ? `连通：HTTP ${body.status_code} · ${body.latency_ms}ms` : '端点未通过连通性测试', { success: Boolean(body.ok) }); }
-      catch (error) { flash(`测试失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    }));
-    panel.querySelectorAll('[data-agent-provider-current]').forEach((button) => button.addEventListener('click', async (event) => {
-      const { appId, providerId: id } = providerKeyParts(event.currentTarget.dataset.agentProviderCurrent);
-      try {
-        setPending(event.currentTarget, true);
-        await putJson(`/api/agent/router/apps/${encodeURIComponent(appId)}/provider`, { provider_id: id });
-        const clientButton = clientById(appId);
-        if (clientButton) clientButton.dataset.agentRouterProvider = id;
-        syncClientView();
-        flash('已设为当前 Provider，并写入本地 Router 私有配置', { success: true });
+        flash('Provider 已保存到数据库', { success: true });
         reloadSoon();
-      } catch (error) { flash(`设置失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
+      } catch (error) { flash(`保存失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    });
+    panel.querySelectorAll('[data-agent-provider-activate]').forEach((button) => button.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const { appId, providerId: id } = providerKeyParts(trigger.dataset.agentProviderActivate);
+      try {
+        setPending(trigger, true);
+        const body = await post(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}/activate`, { write_secrets: true });
+        const message = body?.mode === 'router' ? 'Router 上游已热切换' : body?.mode === 'additive' ? 'Provider 添加任务已入队' : 'Provider 启用任务已入队';
+        flash(message, { success: true });
+        reloadSoon();
+      } catch (error) { flash(`操作失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    }));
+    panel.querySelectorAll('[data-agent-provider-remove-live]').forEach((button) => button.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const { appId, providerId: id } = providerKeyParts(trigger.dataset.agentProviderRemoveLive);
+      try {
+        setPending(trigger, true);
+        await requestJson(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}/remove-live`, { method: 'POST' });
+        flash('Provider 移除任务已入队，数据库记录保留', { success: true });
+        reloadSoon();
+      } catch (error) { flash(`移除失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    }));
+    panel.querySelectorAll('[data-agent-provider-duplicate]').forEach((button) => button.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const { appId, providerId: id } = providerKeyParts(trigger.dataset.agentProviderDuplicate);
+      try {
+        setPending(trigger, true);
+        const copy = await post(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}/duplicate`, {});
+        flash(`已复制为 ${copy?.name || copy?.id || '新 Provider'}`, { success: true });
+        reloadSoon();
+      } catch (error) { flash(`复制失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    }));
+    panel.querySelectorAll('[data-agent-provider-test]').forEach((button) => button.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const { appId, providerId: id } = providerKeyParts(trigger.dataset.agentProviderTest);
+      try {
+        setPending(trigger, true);
+        const body = await requestJson(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}/test`, { method: 'POST' });
+        flash(body.ok ? `端点可达：HTTP ${body.status_code} · ${body.latency_ms}ms` : '端点连接失败', { success: Boolean(body.ok) });
+      } catch (error) { flash(`检测失败：${error.message}`); }
+      finally { setPending(trigger, false); }
     }));
     panel.querySelectorAll('[data-agent-provider-delete]').forEach((button) => button.addEventListener('click', async (event) => {
-      if (!window.confirm(`删除本地 Provider：${event.currentTarget.dataset.agentProviderDelete}？`)) return;
-      const { appId, providerId: id } = providerKeyParts(event.currentTarget.dataset.agentProviderDelete);
-      try { setPending(event.currentTarget, true); await requestJson(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }); flash('Provider 定义已删除', { success: true }); reloadSoon(); }
-      catch (error) { flash(`删除失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
+      const trigger = event.currentTarget;
+      if (!window.confirm(`从数据库删除 Provider：${trigger.dataset.agentProviderDelete}？`)) return;
+      const { appId, providerId: id } = providerKeyParts(trigger.dataset.agentProviderDelete);
+      try {
+        setPending(trigger, true);
+        await requestJson(`/api/agent/providers/${encodeURIComponent(appId)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        flash('Provider 已从数据库删除', { success: true });
+        reloadSoon();
+      } catch (error) { flash(`删除失败：${error.message}`); }
+      finally { setPending(trigger, false); }
     }));
     panel.querySelectorAll('[data-agent-provider-select]').forEach((button) => button.addEventListener('click', () => {
       panel.querySelectorAll('[data-agent-provider-select]').forEach((item) => setButtonState(item, item === button));
       const card = button.closest('[data-agent-provider-card]');
       if (card) panel.querySelector(`[data-agent-provider-edit="${CSS.escape(`${card.dataset.providerApp}::${card.dataset.providerId}`)}"]`)?.click();
     }));
+
+    failoverQueueControls.list?.addEventListener('click', (event) => {
+      const action = event.target.closest('[data-agent-queue-action]');
+      if (!action) return;
+      const index = Number(action.dataset.agentQueueIndex);
+      if (!Number.isInteger(index) || index < 0 || index >= failoverQueueState.providerIds.length) return;
+      const ids = [...failoverQueueState.providerIds];
+      if (action.dataset.agentQueueAction === 'up' && index > 0) [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]];
+      if (action.dataset.agentQueueAction === 'down' && index < ids.length - 1) [ids[index], ids[index + 1]] = [ids[index + 1], ids[index]];
+      if (action.dataset.agentQueueAction === 'remove') ids.splice(index, 1);
+      failoverQueueState.providerIds = ids;
+      renderFailoverQueue();
+    });
+    failoverQueueControls.addSelect?.addEventListener('change', () => renderFailoverQueue());
+    failoverQueueControls.addButton?.addEventListener('click', () => {
+      const providerId = failoverQueueControls.addSelect?.value;
+      if (!providerId || failoverQueueState.providerIds.includes(providerId)) return;
+      failoverQueueState.providerIds.push(providerId);
+      renderFailoverQueue();
+    });
+    failoverQueueControls.save?.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const clientId = activeClient();
+      const policy = getAgentRouterPolicy(clientById(clientId));
+      if (!policy.configured) { flash('先在 Providers 中选择“当前” Provider'); return; }
+      try {
+        setPending(trigger, true);
+        const body = await putJson(`/api/agent/router/apps/${encodeURIComponent(clientId)}/failover-queue`, { provider_ids: failoverQueueState.providerIds });
+        failoverQueueState.providerIds = Array.isArray(body?.provider_ids) ? body.provider_ids : failoverQueueState.providerIds;
+        renderFailoverQueue();
+        flash('故障转移队列已保存，顺序已生效', { success: true });
+      } catch (error) { flash(`队列保存失败：${error.message}`); } finally { setPending(trigger, false); }
+    });
 
     // Router control plane.
     const routerHealth = panel.querySelector('[data-agent-router-health]');
@@ -1721,125 +2625,501 @@
     };
     panel.querySelector('[data-agent-router-refresh]')?.addEventListener('click', refreshRouter);
     panel.querySelectorAll('[data-agent-router-action]').forEach((button) => button.addEventListener('click', async (event) => {
-      const action = event.currentTarget.dataset.agentRouterAction;
-      try { setPending(event.currentTarget, true); const body = await requestJson(`/api/agent/router/${action}`, { method: action === 'stop' ? 'POST' : 'POST', body: JSON.stringify({ restore_clients: action === 'stop' }) }); flash(`Router ${action} 请求已提交`, { success: true }); renderRouterStatus(body); refreshRouter(); }
-      catch (error) { flash(`Router 操作失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
+      const trigger = event.currentTarget;
+      const action = trigger.dataset.agentRouterAction;
+      try { setPending(trigger, true); const body = await requestJson(`/api/agent/router/${action}`, { method: action === 'stop' ? 'POST' : 'POST', body: JSON.stringify({ restore_clients: action === 'stop' }) }); flash(`Router ${action} 请求已提交`, { success: true }); renderRouterStatus(body); refreshRouter(); }
+      catch (error) { flash(`Router 操作失败：${error.message}`); } finally { setPending(trigger, false); }
     }));
     panel.querySelector('[data-agent-router-save]')?.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
       const address = panel.querySelector('[data-agent-router-address-input]')?.value?.trim();
       const port = Number(panel.querySelector('[data-agent-router-port]')?.value || 7888);
       const proxy = panel.querySelector('[data-agent-router-proxy]')?.value?.trim() || null;
-      try { setPending(event.currentTarget, true); await putJson('/api/agent/router/config', { listen_address: address, listen_port: port, show_home_switch: Boolean(panel.querySelector('[data-agent-router-home-switch]')?.checked), outbound_proxy: proxy }); flash('Router 运行配置已保存', { success: true }); }
-      catch (error) { flash(`保存失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
+      try {
+        setPending(trigger, true);
+        await putJson('/api/agent/router/config', { listen_address: address, listen_port: port, show_home_switch: Boolean(panel.querySelector('[data-agent-router-home-switch]')?.checked), outbound_proxy: proxy });
+        const policy = getAgentRouterPolicy(clientById(activeClient()));
+        if (policy.configured) {
+          const values = await putJson(`/api/agent/router/apps/${encodeURIComponent(activeClient())}/policy`, buildAgentRouterPolicyPayload({
+            autoFailover: routerPolicyControls.autoFailover?.checked,
+            maxRetries: routerPolicyControls.maxRetries?.value,
+            failureThreshold: routerPolicyControls.failureThreshold?.value,
+            cooldownSeconds: routerPolicyControls.cooldownSeconds?.value,
+          }));
+          const button = clientById(activeClient());
+          applyAgentRouterProfileDataset(button, button?.dataset.agentRouterProvider, values?.provider || {});
+          syncRouterPolicyControls();
+        }
+        flash(policy.configured ? 'Router 运行配置与当前客户端路由策略已保存' : 'Router 运行配置已保存；先选择当前 Provider 才能启用故障转移策略', { success: true });
+      }
+      catch (error) { flash(`保存失败：${error.message}`); } finally { setPending(trigger, false); }
+    });
+    routerPolicyControls.save?.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const clientId = activeClient();
+      const policy = getAgentRouterPolicy(clientById(clientId));
+      if (!policy.configured) { flash('先在 Providers 中选择“当前” Provider'); return; }
+      try {
+        setPending(trigger, true);
+        const body = await putJson(`/api/agent/router/apps/${encodeURIComponent(clientId)}/policy`, buildAgentRouterPolicyPayload({
+          autoFailover: routerPolicyControls.autoFailover?.checked,
+          maxRetries: routerPolicyControls.maxRetries?.value,
+          failureThreshold: routerPolicyControls.failureThreshold?.value,
+          cooldownSeconds: routerPolicyControls.cooldownSeconds?.value,
+        }));
+        const button = clientById(clientId);
+        applyAgentRouterProfileDataset(button, button?.dataset.agentRouterProvider, body?.provider || {});
+        syncRouterPolicyControls();
+        flash('当前客户端的故障转移策略已保存', { success: true });
+      } catch (error) { flash(`策略保存失败：${error.message}`); } finally { setPending(trigger, false); }
     });
     panel.querySelectorAll('[data-agent-route-takeover]').forEach((button) => button.addEventListener('click', async (event) => {
-      const target = event.currentTarget; const enabled = target.getAttribute('aria-pressed') !== 'true';
-      try { setPending(target, true); await putJson(`/api/agent/router/apps/${encodeURIComponent(target.dataset.agentRouteTakeover)}/takeover`, { enabled }); setButtonState(target, enabled); const label = target.querySelector('[data-agent-takeover-label]'); if (label) label.textContent = enabled ? '已接管' : '未接管'; flash(enabled ? '客户端已接管本地 Router' : '客户端已恢复原配置', { success: true }); }
+      const target = event.currentTarget;
+      const clientId = target.dataset.agentRouteTakeover;
+      const enabled = target.getAttribute('aria-pressed') !== 'true';
+      try {
+        setPending(target, true);
+        const body = await putJson(`/api/agent/router/apps/${encodeURIComponent(clientId)}/takeover`, { enabled });
+        const actual = body?.takeover?.[clientId] ?? enabled;
+        setButtonState(target, actual);
+        applyAgentRouterTakeoverDataset(clientById(clientId), actual);
+        syncProviderOwnershipControls();
+        const label = target.querySelector('[data-agent-takeover-label]');
+        if (label) label.textContent = actual ? '已接管' : '未接管';
+        flash(actual ? '客户端已接管本地 Router' : '客户端已恢复原配置', { success: true });
+      }
       catch (error) { flash(`接管操作失败：${error.message}`); } finally { setPending(target, false); }
     }));
     refreshRouter();
 
-    // MCP: selection is a button state, never a device/client matrix.
-    const mcpSelection = () => selectedButtons('[data-agent-mcp-server]');
-    panel.querySelectorAll('[data-agent-mcp-server]').forEach((button) => button.addEventListener('click', () => setButtonState(button, button.getAttribute('aria-pressed') !== 'true')));
-    const mcpAction = async (endpoint, ids, button) => {
-      if (!ids.length) { flash('先选择 MCP'); return; }
-      try { setPending(button, true); const body = await post(endpoint, localPayload({ mcp_ids: ids })); flash(`MCP 操作完成：${(body.added || body.removed || ids).length || ids.length} 个`, { success: Boolean(body.verified ?? true) }); reloadSoon(); }
-      catch (error) { flash(`MCP 操作失败：${error.message}`); } finally { setPending(button, false); }
-    };
-    panel.querySelector('[data-agent-mcp-install]')?.addEventListener('click', (event) => mcpAction('/api/agent/mcp/local/install', mcpSelection(), event.currentTarget));
-    panel.querySelector('[data-agent-mcp-uninstall]')?.addEventListener('click', (event) => mcpAction('/api/agent/mcp/local/uninstall', mcpSelection(), event.currentTarget));
-    panel.querySelectorAll('[data-agent-mcp-install-one]').forEach((button) => button.addEventListener('click', (event) => mcpAction('/api/agent/mcp/local/install', [event.currentTarget.dataset.agentMcpInstallOne], event.currentTarget)));
-    panel.querySelectorAll('[data-agent-mcp-uninstall-one]').forEach((button) => button.addEventListener('click', (event) => mcpAction('/api/agent/mcp/local/uninstall', [event.currentTarget.dataset.agentMcpUninstallOne], event.currentTarget)));
-    panel.querySelector('[data-agent-mcp-import]')?.addEventListener('click', async (event) => {
-      try { setPending(event.currentTarget, true); const body = await post('/api/agent/mcp/scan', { node_ids: ['__local__'], apps: [activeClient()] }); const count = body.targets?.reduce((sum, item) => sum + (item.mcp_ids?.length || 0), 0) || 0; flash(`已扫描 ${clientName(activeClient())}：发现 ${count} 个 MCP`, { success: true }); reloadSoon(700); }
-      catch (error) { flash(`扫描失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    });
-    panel.querySelector('[data-agent-mcp-format]')?.addEventListener('click', () => { const field = panel.querySelector('[data-agent-mcp-spec]'); try { field.value = JSON.stringify(JSON.parse(field.value || '{}'), null, 2); flash('JSON 已格式化', { success: true }); } catch (error) { flash(`JSON 无效：${error.message}`); } });
-    panel.querySelectorAll('[data-agent-mcp-edit]').forEach((button) => button.addEventListener('click', () => {
-      const script = panel.querySelector(`[data-agent-mcp-json="${CSS.escape(button.dataset.agentMcpEdit)}"]`); let server; try { server = JSON.parse(script?.textContent || '{}'); } catch { server = {}; }
-      panel.querySelector('[data-agent-mcp-id]').value = server.id || ''; panel.querySelector('[data-agent-mcp-name]').value = server.name || server.id || ''; panel.querySelector('[data-agent-mcp-spec]').value = JSON.stringify(server.spec || {}, null, 2);
-    }));
-    panel.querySelector('[data-agent-mcp-save]')?.addEventListener('click', async (event) => {
-      const id = panel.querySelector('[data-agent-mcp-id]')?.value?.trim(); const name = panel.querySelector('[data-agent-mcp-name]')?.value?.trim() || id; let spec;
-      try { spec = JSON.parse(panel.querySelector('[data-agent-mcp-spec]')?.value || '{}'); } catch (error) { flash(`Spec JSON 无效：${error.message}`); return; }
-      if (!id || !Object.keys(spec).length) { flash('先填写 MCP ID 和 Spec'); return; }
-      try { setPending(event.currentTarget, true); await post('/api/agent/mcp/servers', { server_id: id, name, spec, apps: { [activeClient()]: true } }); flash('MCP 已保存到本地库', { success: true }); reloadSoon(); }
-      catch (error) { flash(`保存失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    });
-    panel.querySelectorAll('[data-agent-mcp-delete]').forEach((button) => button.addEventListener('click', async (event) => {
-      if (!window.confirm(`只删除本地库定义：${event.currentTarget.dataset.agentMcpDelete}？`)) return;
-      try { setPending(event.currentTarget, true); await requestJson(`/api/agent/mcp/servers/${encodeURIComponent(event.currentTarget.dataset.agentMcpDelete)}`, { method: 'DELETE' }); flash('本地库定义已删除，客户端配置未改动', { success: true }); reloadSoon(); }
-      catch (error) { flash(`删除失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    }));
-
-    // Skills and prompts always carry exactly one local client target.
-    const skillName = panel.querySelector('[data-agent-skill-name]');
-    const skillSource = panel.querySelector('[data-agent-skill-source]');
-    const skillMode = panel.querySelector('[data-agent-skill-mode]');
-    const runSkill = async (endpoint, button, needsSource) => {
-      if (!skillName?.value?.trim() || (needsSource && !skillSource?.value?.trim())) { flash('先填写 Skill 名称和来源'); return; }
-      const payload = localPayload({
-        skill_name: skillName.value.trim(),
-        ...(needsSource ? { source: skillSource.value.trim(), mode: skillMode?.value || 'copy' } : {}),
+    const resourceIdField = (resourceType) => panel.querySelector(`[data-agent-${resourceType}-id]`);
+    const clearResourceEditor = (resourceType) => {
+      const selectors = {
+        mcp: ['[data-agent-mcp-id]', '[data-agent-mcp-name]', '[data-agent-mcp-description]', '[data-agent-mcp-spec]'],
+        skill: ['[data-agent-skill-id]', '[data-agent-skill-name]', '[data-agent-skill-description]', '[data-agent-skill-source]', '[data-agent-skill-version]'],
+        prompt: ['[data-agent-prompt-id]', '[data-agent-prompt-name]', '[data-agent-prompt-description]', '[data-agent-prompt-content]'],
+      }[resourceType] || [];
+      selectors.forEach((selector) => {
+        const field = panel.querySelector(selector);
+        if (field) field.value = '';
       });
-      try {
-        setPending(button, true);
-        const body = await post(endpoint, payload);
-        const changed = [...(body.added || []), ...(body.updated || []), ...(body.removed || [])];
-        flash(`Skill 操作完成：${changed.join('、') || skillName.value.trim()}`, { success: Boolean(body.verified) });
-        reloadSoon();
-      } catch (error) { flash(`Skill 操作失败：${error.message}`); } finally { setPending(button, false); }
+      const id = resourceIdField(resourceType);
+      if (id) { id.readOnly = false; id.focus(); }
+      panel.querySelector(`[data-agent-resource-editor="${resourceType}"]`)?.scrollIntoView({ block: 'nearest' });
     };
-    panel.querySelectorAll('[data-agent-skill-install]').forEach((button) => button.addEventListener('click', (event) => runSkill('/api/agent/skills/local/install', event.currentTarget, true)));
-    panel.querySelectorAll('[data-agent-skill-update]').forEach((button) => button.addEventListener('click', (event) => runSkill('/api/agent/skills/local/update', event.currentTarget, false)));
-    panel.querySelectorAll('[data-agent-skill-delete]').forEach((button) => button.addEventListener('click', (event) => {
-      if (!skillName?.value?.trim() || !window.confirm(`卸载 Skill 并移入备份：${skillName.value.trim()}？`)) return;
-      runSkill('/api/agent/skills/local/uninstall', event.currentTarget, false);
-    }));
-    panel.querySelectorAll('[data-agent-skill-pick]').forEach((button) => button.addEventListener('click', (event) => { skillName.value = event.currentTarget.dataset.agentSkillPick || ''; panel.dataset.agentActiveClient = event.currentTarget.dataset.agentSkillAppPick || activeClient(); syncClientView(); }));
-
-    panel.querySelector('[data-agent-prompt-save]')?.addEventListener('click', async (event) => {
-      const id = panel.querySelector('[data-agent-prompt-id]')?.value?.trim(); const name = panel.querySelector('[data-agent-prompt-name]')?.value?.trim() || id; const content = panel.querySelector('[data-agent-prompt-content]')?.value || '';
-      if (!id || !content.trim()) { flash('先填写 Prompt ID 和内容'); return; }
-      try { setPending(event.currentTarget, true); await post('/api/agent/prompts', { prompt_id: id, name, content }); flash('Prompt 模板已保存', { success: true }); reloadSoon(); }
-      catch (error) { flash(`保存失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    });
-    panel.querySelector('[data-agent-prompt-import-current]')?.addEventListener('click', async (event) => {
-      try {
-        setPending(event.currentTarget, true);
-        const body = await post('/api/agent/prompts/import-current', localPayload());
-        const content = panel.querySelector('[data-agent-prompt-content]');
+    const fillResourceEditor = (resourceType, resourceId) => {
+      const resource = resourceById(resourceType, resourceId);
+      if (!resource) { flash('数据库资源不存在'); return; }
+      if (resourceType === 'mcp') {
+        const id = panel.querySelector('[data-agent-mcp-id]');
+        const name = panel.querySelector('[data-agent-mcp-name]');
+        const description = panel.querySelector('[data-agent-mcp-description]');
+        const spec = panel.querySelector('[data-agent-mcp-spec]');
+        if (id) id.value = resource.id || '';
+        if (id) id.readOnly = true;
+        if (name) name.value = resource.name || resource.id || '';
+        if (description) description.value = resource.description || '';
+        if (spec) spec.value = JSON.stringify(resource.spec || {}, null, 2);
+      } else if (resourceType === 'skill') {
+        const id = panel.querySelector('[data-agent-skill-id]');
+        const name = panel.querySelector('[data-agent-skill-name]');
+        const source = panel.querySelector('[data-agent-skill-source]');
+        const version = panel.querySelector('[data-agent-skill-version]');
+        const description = panel.querySelector('[data-agent-skill-description]');
+        if (id) id.value = resource.id || '';
+        if (id) id.readOnly = true;
+        if (name) name.value = resource.name || resource.id || '';
+        if (source) source.value = resource.source || '';
+        if (version) version.value = resource.version || '';
+        if (description) description.value = resource.description || '';
+      } else if (resourceType === 'prompt') {
         const id = panel.querySelector('[data-agent-prompt-id]');
         const name = panel.querySelector('[data-agent-prompt-name]');
-        if (content) content.value = body.content || '';
-        if (id && !id.value) id.value = `${activeClient()}-current`;
-        if (name && !name.value) name.value = `${clientName(activeClient())} 当前内容`;
-        flash(body.exists ? '已读取当前 Prompt 文件' : '当前客户端还没有 Prompt 文件', { success: true });
-      } catch (error) { flash(`导入失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    });
-    panel.querySelectorAll('[data-agent-prompt-apply]').forEach((button) => button.addEventListener('click', async (event) => {
+        const description = panel.querySelector('[data-agent-prompt-description]');
+        const content = panel.querySelector('[data-agent-prompt-content]');
+        if (id) id.value = resource.id || '';
+        if (id) id.readOnly = true;
+        if (name) name.value = resource.name || resource.id || '';
+        if (description) description.value = resource.description || '';
+        if (content) content.value = resource.content || '';
+      }
+      panel.querySelector(`[data-agent-resource-editor="${resourceType}"]`)?.scrollIntoView({ block: 'nearest' });
+    };
+    const runResourceAction = async (button, action, resourceType, resourceId) => {
+      if (!activeClient()) { flash('当前没有可操作客户端'); return; }
       try {
-        setPending(event.currentTarget, true);
-        const body = await post('/api/agent/prompts/local/apply', localPayload({ prompt_id: event.currentTarget.dataset.agentPromptApply }));
-        flash('Prompt 已写入并通过回读校验', { success: Boolean(body.verified) });
-        reloadSoon();
-      } catch (error) { flash(`应用失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    }));
-    panel.querySelector('[data-agent-prompt-restore]')?.addEventListener('click', async (event) => {
-      if (!window.confirm(`恢复 ${clientName(activeClient())} 接管前的 Prompt 内容？`)) return;
+        setPending(button, true);
+        const body = await requestJson('/api/agent/resources/reconcile', {
+          method: 'POST',
+          body: JSON.stringify({
+            action,
+            resource_type: resourceType,
+            resource_ids: [resourceId],
+            client_id: activeClient(),
+            node_id: '__local__',
+          }),
+        });
+        const summary = describeAgentReconcileResult(body || {});
+        flash(summary.message, { success: summary.success });
+        await loadAgentLibrary({ quiet: true });
+      } catch (error) {
+        flash(`资源操作失败：${error.message}`);
+      } finally {
+        setPending(button, false);
+      }
+    };
+    const deleteLibraryResource = async (button, resourceType, resourceId) => {
+      if (!window.confirm(`从数据库删除 ${resourceId}？已分配到本地客户端的副本会先卸载。`)) return;
       try {
-        setPending(event.currentTarget, true);
-        const body = await post('/api/agent/prompts/local/restore', localPayload());
-        flash('Prompt 原文件已恢复', { success: Boolean(body.verified) });
-        reloadSoon();
-      } catch (error) { flash(`恢复失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
+        setPending(button, true);
+        await requestJson(`/api/agent/resources/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}`, { method: 'DELETE' });
+        flash('资源已卸载并从数据库删除', { success: true });
+        await loadAgentLibrary({ quiet: true });
+      } catch (error) {
+        flash(`从库删除失败：${error.message}`);
+      } finally {
+        setPending(button, false);
+      }
+    };
+    const importDiscoveryItem = async (button, resourceType, resourceId) => {
+      try {
+        setPending(button, true);
+        if (resourceType === 'mcp') {
+          const body = await requestJson('/api/agent/mcp/import-current', {
+            method: 'POST',
+            body: JSON.stringify({ ...localPayload(), mcp_ids: resourceId ? [resourceId] : [] }),
+          });
+          flash(`已从当前客户端导入 ${body?.imported_count || 0} 个 MCP`, { success: true });
+        } else if (resourceType === 'skill') {
+          const item = getAgentDiscoveryForClient(libraryState.discovery, 'skills', activeClient()).find((row) => String(row.id) === String(resourceId));
+          if (!item) throw new Error('发现项已变化，请刷新库存');
+          await requestJson('/api/agent/skills/import-current', {
+            method: 'POST',
+            body: JSON.stringify({ client_id: activeClient(), skill_name: item.name || item.id, skill_id: item.id, name: item.name || item.id }),
+          });
+          flash(`Skill ${item.name || item.id} 已导入数据库`, { success: true });
+        } else if (resourceType === 'prompt') {
+          const id = panel.querySelector('[data-agent-prompt-id]')?.value?.trim() || resourceId || null;
+          const name = panel.querySelector('[data-agent-prompt-name]')?.value?.trim() || null;
+          const saved = await requestJson('/api/agent/prompts/import-current', {
+            method: 'POST',
+            body: JSON.stringify({ client_id: activeClient(), prompt_id: id, name }),
+          });
+          const content = panel.querySelector('[data-agent-prompt-content]');
+          if (content) content.value = saved?.content || '';
+          flash('当前 Prompt 已导入数据库并保存客户端变体', { success: true });
+        }
+        await loadAgentLibrary({ quiet: true });
+      } catch (error) {
+        flash(`导入失败：${error.message}`);
+      } finally {
+        setPending(button, false);
+      }
+    };
+    const clearProfileEditor = () => {
+      profileDraft = { profileId: '', clientId: activeClient(), existingItems: [], selections: emptyProfileSelections() };
+      if (profileFields.id) { profileFields.id.value = ''; profileFields.id.readOnly = false; }
+      if (profileFields.name) profileFields.name.value = '';
+      if (profileFields.description) profileFields.description.value = '';
+      renderProfilePicker();
+    };
+    const editProfile = (profileId) => {
+      const profile = (libraryState.profiles || []).find((item) => String(item.id) === String(profileId));
+      if (!profile) { flash('Profile 不存在'); return; }
+      profileDraft = {
+        profileId: profile.id,
+        clientId: activeClient(),
+        existingItems: (profile.items || []).map((item) => ({ ...item, config: { ...(item.config || {}) } })),
+        selections: profileSelectionsForClient(profile.items || [], activeClient()),
+      };
+      if (profileFields.id) { profileFields.id.value = profile.id || ''; profileFields.id.readOnly = true; }
+      if (profileFields.name) profileFields.name.value = profile.name || profile.id || '';
+      if (profileFields.description) profileFields.description.value = profile.description || '';
+      renderProfilePicker();
+    };
+
+    panel.addEventListener('click', async (event) => {
+      const target = event.target.closest('button');
+      if (!target || !panel.contains(target)) return;
+      const resourceType = target.dataset.resourceType;
+      const resourceId = target.dataset.resourceId;
+      if (target.matches('[data-agent-resource-new]')) {
+        const newType = target.dataset.agentResourceNew;
+        if (newType === 'provider') clearProvider();
+        else if (newType === 'profile') clearProfileEditor();
+        else clearResourceEditor(newType);
+        return;
+      }
+      if (target.matches('[data-agent-resource-move]')) {
+        const card = target.closest('[data-agent-order-card]');
+        const moveType = card?.dataset.resourceType;
+        const moveId = card?.dataset.resourceId;
+        if (!moveType || !moveId) return;
+        const currentIds = orderIdsFor(moveType);
+        const nextIds = moveAgentResourceId(currentIds, moveId, target.dataset.agentResourceMove);
+        if (nextIds.join('\0') === currentIds.join('\0')) return;
+        applyResourceOrderToState(moveType, nextIds);
+        applyResourceOrderToDom(moveType, nextIds);
+        await persistResourceOrder(moveType, nextIds, target);
+        return;
+      }
+      if (target.matches('[data-agent-resource-edit]')) {
+        fillResourceEditor(resourceType, resourceId);
+        return;
+      }
+      if (target.matches('[data-agent-resource-install]')) {
+        await runResourceAction(target, 'install', resourceType, resourceId);
+        return;
+      }
+      if (target.matches('[data-agent-resource-uninstall]')) {
+        await runResourceAction(target, 'uninstall', resourceType, resourceId);
+        return;
+      }
+      if (target.matches('[data-agent-resource-sync]')) {
+        await runResourceAction(target, 'sync', resourceType, resourceId);
+        return;
+      }
+      if (target.matches('[data-agent-resource-delete]')) {
+        await deleteLibraryResource(target, resourceType, resourceId);
+        return;
+      }
+      if (target.matches('[data-agent-discovery-import]')) {
+        await importDiscoveryItem(target, resourceType, resourceId);
+        return;
+      }
+      if (target.matches('[data-agent-discovery-refresh="mcp"]')) {
+        try {
+          setPending(target, true);
+          const body = await requestJson('/api/agent/mcp/scan', {
+            method: 'POST',
+            body: JSON.stringify({ node_ids: ['__local__'], apps: [activeClient()] }),
+          });
+          const count = body?.targets?.reduce((total, item) => total + (item.mcp_ids?.length || 0), 0) || 0;
+          await loadAgentLibrary({ quiet: true });
+          flash(`已回读 ${clientName(activeClient())}：${count} 个 MCP`, { success: true });
+        } catch (error) {
+          flash(`扫描失败：${error.message}`);
+        } finally {
+          setPending(target, false);
+        }
+        return;
+      }
+      if (target.matches('[data-agent-profile-resource]')) {
+        const type = target.dataset.resourceType;
+        const id = target.dataset.resourceId;
+        const current = new Set(profileDraft.selections[type] || []);
+        if (target.getAttribute('aria-pressed') === 'true') current.delete(id);
+        else {
+          if (target.dataset.resourceSingular === 'true') current.clear();
+          current.add(id);
+        }
+        profileDraft.selections[type] = [...current];
+        renderProfilePicker();
+        return;
+      }
+      if (target.matches('[data-agent-profile-new]')) {
+        clearProfileEditor();
+        return;
+      }
+      if (target.matches('[data-agent-profile-edit]')) {
+        editProfile(target.dataset.agentProfileEdit);
+        return;
+      }
+      if (target.matches('[data-agent-profile-apply]')) {
+        try {
+          setPending(target, true);
+          const body = await requestJson(`/api/agent/profiles/${encodeURIComponent(target.dataset.agentProfileApply)}/apply`, {
+            method: 'POST',
+            body: JSON.stringify({ node_id: '__local__', client_id: activeClient() }),
+          });
+          const summary = describeAgentReconcileResult(body || {});
+          flash(summary.message, { success: summary.success });
+          await loadAgentLibrary({ quiet: true });
+        } catch (error) {
+          flash(`Profile 应用失败：${error.message}`);
+        } finally {
+          setPending(target, false);
+        }
+        return;
+      }
+      if (target.matches('[data-agent-profile-delete]')) {
+        const profileId = target.dataset.agentProfileDelete;
+        if (!window.confirm(`删除 Profile ${profileId}？资源库和客户端配置保持不变。`)) return;
+        try {
+          setPending(target, true);
+          await requestJson(`/api/agent/profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' });
+          if (profileDraft.profileId === profileId) clearProfileEditor();
+          await loadAgentLibrary({ quiet: true });
+          flash('Profile 已删除', { success: true });
+        } catch (error) {
+          flash(`Profile 删除失败：${error.message}`);
+        } finally {
+          setPending(target, false);
+        }
+      }
     });
-    panel.querySelectorAll('[data-agent-prompt-delete]').forEach((button) => button.addEventListener('click', async (event) => {
-      if (!window.confirm(`删除 Prompt 模板：${event.currentTarget.dataset.agentPromptDelete}？`)) return;
-      try { setPending(event.currentTarget, true); await requestJson(`/api/agent/prompts/${encodeURIComponent(event.currentTarget.dataset.agentPromptDelete)}`, { method: 'DELETE' }); flash('Prompt 模板已删除', { success: true }); reloadSoon(); }
-      catch (error) { flash(`删除失败：${error.message}`); } finally { setPending(event.currentTarget, false); }
-    }));
+
+    let armedDragCard = null;
+    let draggingCard = null;
+    panel.addEventListener('pointerdown', (event) => {
+      const handle = event.target.closest('[data-agent-drag-handle]');
+      armedDragCard = handle?.closest('[data-agent-order-card]') || null;
+    });
+    panel.addEventListener('pointerup', () => { armedDragCard = null; });
+    panel.addEventListener('dragstart', (event) => {
+      const card = event.target.closest('[data-agent-order-card]');
+      if (!card || armedDragCard !== card) {
+        event.preventDefault();
+        return;
+      }
+      draggingCard = card;
+      card.classList.add('is-dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', card.dataset.resourceId || '');
+      }
+    });
+    panel.addEventListener('dragover', (event) => {
+      if (!draggingCard) return;
+      const targetCard = event.target.closest('[data-agent-order-card]');
+      if (!targetCard || targetCard === draggingCard) return;
+      if (targetCard.dataset.resourceType !== draggingCard.dataset.resourceType) return;
+      if (draggingCard.dataset.resourceType === 'provider' && targetCard.dataset.providerApp !== draggingCard.dataset.providerApp) return;
+      event.preventDefault();
+      panel.querySelectorAll('[data-agent-order-card].is-drop-before, [data-agent-order-card].is-drop-after').forEach((card) => card.classList.remove('is-drop-before', 'is-drop-after'));
+      const after = event.clientY >= targetCard.getBoundingClientRect().top + targetCard.getBoundingClientRect().height / 2;
+      targetCard.classList.add(after ? 'is-drop-after' : 'is-drop-before');
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    });
+    panel.addEventListener('drop', async (event) => {
+      if (!draggingCard) return;
+      const targetCard = event.target.closest('[data-agent-order-card]');
+      if (!targetCard || targetCard === draggingCard) return;
+      const resourceType = draggingCard.dataset.resourceType;
+      if (targetCard.dataset.resourceType !== resourceType) return;
+      if (resourceType === 'provider' && targetCard.dataset.providerApp !== draggingCard.dataset.providerApp) return;
+      event.preventDefault();
+      const currentIds = orderIdsFor(resourceType);
+      const draggedId = draggingCard.dataset.resourceId;
+      const targetId = targetCard.dataset.resourceId;
+      const nextIds = currentIds.filter((resourceId) => resourceId !== draggedId);
+      const targetIndex = nextIds.indexOf(targetId);
+      const after = event.clientY >= targetCard.getBoundingClientRect().top + targetCard.getBoundingClientRect().height / 2;
+      nextIds.splice(targetIndex + (after ? 1 : 0), 0, draggedId);
+      applyResourceOrderToState(resourceType, nextIds);
+      applyResourceOrderToDom(resourceType, nextIds);
+      await persistResourceOrder(resourceType, nextIds);
+    });
+    panel.addEventListener('dragend', () => {
+      panel.querySelectorAll('[data-agent-order-card].is-dragging, [data-agent-order-card].is-drop-before, [data-agent-order-card].is-drop-after').forEach((card) => card.classList.remove('is-dragging', 'is-drop-before', 'is-drop-after'));
+      draggingCard = null;
+      armedDragCard = null;
+    });
+
+    panel.querySelector('[data-agent-mcp-format]')?.addEventListener('click', () => {
+      const field = panel.querySelector('[data-agent-mcp-spec]');
+      try { field.value = JSON.stringify(JSON.parse(field.value || '{}'), null, 2); flash('JSON 已格式化', { success: true }); }
+      catch (error) { flash(`JSON 无效：${error.message}`); }
+    });
+    panel.querySelector('[data-agent-mcp-save]')?.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const id = panel.querySelector('[data-agent-mcp-id]')?.value?.trim();
+      const name = panel.querySelector('[data-agent-mcp-name]')?.value?.trim() || id;
+      let spec;
+      try { spec = JSON.parse(panel.querySelector('[data-agent-mcp-spec]')?.value || '{}'); }
+      catch (error) { flash(`Spec JSON 无效：${error.message}`); return; }
+      if (!id || !Object.keys(spec).length) { flash('先填写 MCP ID 和 Spec'); return; }
+      try {
+        setPending(trigger, true);
+        await requestJson('/api/agent/mcp/servers', {
+          method: 'POST',
+          body: JSON.stringify(buildMcpSavePayload({
+            serverId: id,
+            name,
+            description: panel.querySelector('[data-agent-mcp-description]')?.value?.trim() || '',
+            spec,
+          })),
+        });
+        const idField = resourceIdField('mcp');
+        if (idField) idField.readOnly = true;
+        await loadAgentLibrary({ quiet: true });
+        flash('MCP 已保存到数据库；客户端配置未改动', { success: true });
+      } catch (error) { flash(`保存失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    });
+    panel.querySelector('[data-agent-skill-import-source]')?.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const id = panel.querySelector('[data-agent-skill-id]')?.value?.trim();
+      const name = panel.querySelector('[data-agent-skill-name]')?.value?.trim() || id;
+      const source = panel.querySelector('[data-agent-skill-source]')?.value?.trim();
+      if (!id || !source) { flash('先填写 Skill ID 和来源'); return; }
+      try {
+        setPending(trigger, true);
+        await requestJson('/api/agent/skills/import-source', {
+          method: 'POST',
+          body: JSON.stringify({
+            skill_id: id,
+            name,
+            source,
+            version: panel.querySelector('[data-agent-skill-version]')?.value?.trim() || null,
+            description: panel.querySelector('[data-agent-skill-description]')?.value?.trim() || null,
+          }),
+        });
+        const idField = resourceIdField('skill');
+        if (idField) idField.readOnly = true;
+        await loadAgentLibrary({ quiet: true });
+        flash('Skill 已导入统一 SSOT；客户端配置未改动', { success: true });
+      } catch (error) { flash(`Skill 入库失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    });
+    panel.querySelector('[data-agent-prompt-save]')?.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const id = panel.querySelector('[data-agent-prompt-id]')?.value?.trim();
+      const name = panel.querySelector('[data-agent-prompt-name]')?.value?.trim() || id;
+      const description = panel.querySelector('[data-agent-prompt-description]')?.value?.trim() || null;
+      const content = panel.querySelector('[data-agent-prompt-content]')?.value || '';
+      if (!id || !content.trim()) { flash('先填写 Prompt ID 和内容'); return; }
+      try {
+        setPending(trigger, true);
+        await requestJson('/api/agent/prompts', { method: 'POST', body: JSON.stringify({ prompt_id: id, name, description, content }) });
+        const idField = resourceIdField('prompt');
+        if (idField) idField.readOnly = true;
+        await loadAgentLibrary({ quiet: true });
+        flash('Prompt 已保存到数据库；客户端文件未改动', { success: true });
+      } catch (error) { flash(`保存失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    });
+    panel.querySelector('[data-agent-profile-save]')?.addEventListener('click', async (event) => {
+      const trigger = event.currentTarget;
+      const profileId = profileFields.id?.value?.trim();
+      const name = profileFields.name?.value?.trim();
+      if (!profileId || !name) { flash('先填写 Profile ID 和名称'); return; }
+      const payload = buildAgentProfilePayload({
+        name,
+        description: profileFields.description?.value || '',
+        clientId: activeClient(),
+        existingItems: profileDraft.existingItems,
+        selections: profileDraft.selections,
+        routerConfig: routerProfileConfig(),
+      });
+      try {
+        setPending(trigger, true);
+        const saved = await putJson(`/api/agent/profiles/${encodeURIComponent(profileId)}`, payload);
+        profileDraft = {
+          profileId: saved.id,
+          clientId: activeClient(),
+          existingItems: saved.items || [],
+          selections: profileSelectionsForClient(saved.items || [], activeClient()),
+        };
+        if (profileFields.id) profileFields.id.readOnly = true;
+        await loadAgentLibrary({ quiet: true });
+        flash('Profile 已保存到数据库', { success: true });
+      } catch (error) { flash(`Profile 保存失败：${error.message}`); }
+      finally { setPending(trigger, false); }
+    });
+    clearProfileEditor();
+    renderAgentLibraryView();
+    void loadAgentLibrary({ quiet: true });
   }
 
   function initNotificationPanel() {
@@ -2976,7 +4256,7 @@
   }
 
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { getMcpMatrixCellState, getUnmanagedMcpIds, getVisibleAgentTargetSummary, nextAgentClient, initAssetSearch, matchesAssetFilter, nextRuntimeFilter };
+    module.exports = { getMcpMatrixCellState, getUnmanagedMcpIds, getVisibleAgentTargetSummary, getAgentClientStatus, getAgentResourceClientState, describeAgentReconcileResult, getAgentDiscoveryForClient, getAgentInstalledSkillCount, buildAgentProfilePayload, nextAgentClient, buildMcpSavePayload, moveAgentResourceId, buildAgentResourceOrderPayload, buildAgentProviderRouting, buildAgentProviderPayload, getAgentProviderPrimaryAction, getAgentRouterPolicy, buildAgentRouterPolicyPayload, applyAgentRouterProfileDataset, getAgentProviderOwnershipState, applyAgentRouterTakeoverDataset, initAssetSearch, matchesAssetFilter, nextRuntimeFilter };
   }
 
   if (typeof document !== 'undefined') {

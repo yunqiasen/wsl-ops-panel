@@ -1,33 +1,111 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-hero">
+<section class="page-hero task-hero">
   <div>
     <p class="eyebrow">Queue</p>
     <h1>任务中心</h1>
-    <p>更新、回退、删除等动作都会在这里留痕。</p>
+    <p>这里看任务是否成功、卡在哪一步、报错摘要。完整实时输出在系统日志里。</p>
   </div>
+  <a class="ghost-button" href="{{ request.url_for('terminals_page') }}">打开系统日志</a>
 </section>
 
-<section class="panel">
-  <div class="section-heading">
-    <div>
-      <h2>任务记录</h2>
-      <p>最新任务排在最上面。</p>
+<section class="task-stats task-stats--compact">
+  <article class="stat-card"><span>全部</span><strong>{{ task_stats.total }}</strong></article>
+  <article class="stat-card"><span>排队</span><strong>{{ task_stats.queued }}</strong></article>
+  <article class="stat-card"><span>运行中</span><strong>{{ task_stats.running }}</strong></article>
+  <article class="stat-card"><span>成功</span><strong>{{ task_stats.succeeded }}</strong></article>
+  <article class="stat-card"><span>失败</span><strong>{{ task_stats.failed }}</strong></article>
+  <article class="stat-card"><span>中断</span><strong>{{ task_stats.interrupted }}</strong></article>
+</section>
+
+<section class="task-feed task-feed--readable">
+  {% for item in task_items %}
+  {% set task = item.task %}
+  <article class="task-card task-card--{{ task.status }} task-readable-card">
+    <header class="task-readable-head">
+      <div class="task-status-mark task-status-mark--{{ item.status_tone }}">{{ item.status_label }}</div>
+      <div class="task-readable-title">
+        <strong>{{ item.object_label }}</strong>
+        <small>{{ item.action_label }} · {{ item.device_label }} · {{ task.id[:8] }}</small>
+      </div>
+      <div class="task-readable-meta">
+        <span>版本：{{ task.requested_version or 'latest' }}</span>
+        <span>用时：{{ item.duration }}</span>
+      </div>
+    </header>
+
+    <div class="task-readable-body">
+      <section class="task-flow-panel">
+        <h2>执行流程</h2>
+        {% if item.plan_steps %}
+        <ol class="task-flow-list">
+          {% for step in item.plan_steps %}
+          <li>{{ step }}</li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <div class="task-empty-note">暂无执行计划</div>
+        {% endif %}
+      </section>
+
+      <section class="task-result-panel task-result-panel--{{ item.status_tone }}">
+        <h2>系统判读</h2>
+        <div class="task-verdict task-verdict--{{ item.status_tone }}">
+          <strong>{{ item.status_label }} · {{ item.target_label }}</strong>
+          <p>{{ item.diagnosis }}</p>
+          {% if item.suggestion %}<p class="task-verdict-suggestion">建议：{{ item.suggestion }}</p>{% endif %}
+        </div>
+        <div class="task-result-grid task-result-grid--compact">
+          <div><small>设备</small><strong>{{ item.device_label }}</strong></div>
+          <div><small>类型</small><strong>{{ item.category_label }}</strong></div>
+          <div><small>用时</small><strong>{{ item.duration }}</strong></div>
+        </div>
+      </section>
+
+      <section class="task-log-summary">
+        <div class="task-log-summary-card">
+          <h2>输出摘要 <span>{{ item.stdout_line_count }} 行</span></h2>
+          {% if item.stdout_summary %}
+          <ul>
+            {% for line in item.stdout_summary %}<li>{{ line }}</li>{% endfor %}
+          </ul>
+          {% else %}
+          <p>暂无 stdout 输出</p>
+          {% endif %}
+        </div>
+        <div class="task-log-summary-card {{ 'is-error' if item.stderr_summary else '' }}">
+          <h2>报错摘要 <span>{{ item.stderr_line_count }} 行</span></h2>
+          {% if item.stderr_summary %}
+          <ul>
+            {% for line in item.stderr_summary %}<li>{{ line }}</li>{% endfor %}
+          </ul>
+          {% else %}
+          <p>暂无 stderr 报错</p>
+          {% endif %}
+        </div>
+      </section>
+
+      <details class="task-raw-details">
+        <summary>查看原始日志 / 执行计划</summary>
+        <div class="task-log-grid task-log-grid--raw">
+          <section>
+            <h3>执行计划 JSON</h3>
+            <pre class="log-box task-log-box">{{ item.plan or '暂无执行计划' }}</pre>
+          </section>
+          <section>
+            <h3>stdout</h3>
+            <pre class="log-box task-log-box">{{ item.stdout or '暂无 stdout' }}</pre>
+          </section>
+          <section>
+            <h3>stderr / 报错</h3>
+            <pre class="log-box task-log-box {{ 'is-error' if item.stderr else '' }}">{{ item.stderr or '暂无 stderr' }}</pre>
+          </section>
+        </div>
+      </details>
     </div>
-  </div>
-  <div class="table-list">
-    {% for task in tasks %}
-    <article class="list-row stacked">
-      <span>
-        <strong>{{ task.object_id }}</strong>
-        <small>{{ task.action }} · {{ task.id }}</small>
-      </span>
-      <span class="status-pill status-{{ 'ok' if task.status == 'success' else 'muted' }}">{{ task.status }}</span>
-      <span class="muted">版本：{{ task.requested_version or 'none' }}</span>
-    </article>
-    {% else %}
-    <div class="empty-state">暂无任务</div>
-    {% endfor %}
-  </div>
+  </article>
+  {% else %}
+  <div class="empty-state">暂无任务</div>
+  {% endfor %}
 </section>
 {% endblock %}

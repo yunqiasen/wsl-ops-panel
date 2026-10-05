@@ -57,10 +57,11 @@ CATEGORY_ACTIONS: dict[str, list[str]] = {
     'systemd': ['start', 'stop', 'restart', 'autostart_enable', 'autostart_disable', 'delete'],
     'node': ['update_latest', 'deploy_version', 'delete', 'full_delete'],
     'python': ['update_latest', 'deploy_version', 'delete', 'full_delete'],
-    'host': [],
-    'system': [],
+    'host': ['start', 'stop'],
+    'system': ['update_latest', 'deploy_version'],
     'agent_cli': ['update_latest', 'deploy_version', 'delete', 'full_delete'],
     'agent': [],
+    'remote': [],
 }
 
 CAPABILITY_KEYS = ('versioning', 'runtime_control', 'autostart', 'cf_tunnel', 'wechat_notify', 'delete_control', 'repo_metadata')
@@ -68,6 +69,14 @@ CAPABILITY_KEYS = ('versioning', 'runtime_control', 'autostart', 'cf_tunnel', 'w
 
 def get_category_actions(category_id: str) -> list[ActionDef]:
     return [ACTION_DEFINITIONS[action].copy() for action in CATEGORY_ACTIONS.get(category_id, [])]
+
+
+def get_actions_for_assets(category_id: str, assets: list[AssetSnapshot]) -> list[ActionDef]:
+    category_actions = CATEGORY_ACTIONS.get(category_id, [])
+    supported_actions: set[str] = set()
+    for asset in assets:
+        supported_actions.update(asset.supports_actions)
+    return [ACTION_DEFINITIONS[action].copy() for action in category_actions if action in supported_actions]
 
 
 def enrich_asset_capabilities(asset: AssetSnapshot) -> AssetSnapshot:
@@ -85,23 +94,37 @@ def enrich_asset_capabilities(asset: AssetSnapshot) -> AssetSnapshot:
 def _infer_actions(asset: AssetSnapshot, category_actions: list[str]) -> list[str]:
     if asset.category in {'node', 'python', 'agent_cli'}:
         return [action for action in category_actions if action in set(asset.supports_actions)]
-    if asset.category == 'system':
+    if asset.category == 'remote':
         return []
+    if asset.category == 'system':
+        return [action for action in category_actions if action in set(asset.supports_actions)]
     if asset.category == 'host':
+        owner_type = asset.metadata.get('owner_type')
+        target_unit_name = asset.metadata.get('target_unit_name')
+        target_container_name = asset.metadata.get('target_container_name')
+        pid = asset.metadata.get('pid')
+        if owner_type == 'docker' and isinstance(target_container_name, str) and target_container_name:
+            return [action for action in category_actions if action in {'start', 'stop'}]
+        if owner_type == 'systemd' and isinstance(target_unit_name, str) and target_unit_name:
+            return [action for action in category_actions if action in {'start', 'stop'}]
+        if owner_type == 'process' and isinstance(pid, int):
+            return [action for action in category_actions if action == 'stop']
         return []
     if asset.category == 'systemd':
         return category_actions
     if asset.category == 'docker':
         actions = [action for action in category_actions if action not in {'cf_create', 'cf_refresh', 'cf_disable', 'notify_send'}]
+        actions.extend(_supported_cf_actions(asset))
         if _has_web_surface(asset):
-            actions.extend(['cf_create', 'cf_refresh', 'cf_disable', 'notify_send'])
+            actions.append('notify_send')
         return actions
     if asset.category == 'project':
         actions = [action for action in category_actions if action in {'update_latest', 'deploy_version', 'delete', 'full_delete'}]
         if _has_runtime_hint(asset):
             actions.extend(['start', 'stop', 'restart', 'autostart_enable', 'autostart_disable'])
+        actions.extend(_supported_cf_actions(asset))
         if _has_web_surface(asset):
-            actions.extend(['cf_create', 'cf_refresh', 'cf_disable', 'notify_send'])
+            actions.append('notify_send')
         return actions
     return [action for action in category_actions if action in set(asset.supports_actions)]
 
@@ -169,11 +192,11 @@ def _build_capabilities(
 
 
 def _has_runtime_hint(asset: AssetSnapshot) -> bool:
+    web_ui = asset.metadata.get('web_ui')
     return bool(
         asset.metadata.get('service_unit')
         or asset.metadata.get('start_command')
-        or asset.metadata.get('package_scripts')
-        or asset.metadata.get('web_ui')
+        or (isinstance(web_ui, dict) and web_ui.get('enabled') is True)
     )
 
 
@@ -192,6 +215,21 @@ def _has_web_surface(asset: AssetSnapshot) -> bool:
         if isinstance(cf_tunnel, dict) and cf_tunnel.get('enabled'):
             return True
     return False
+
+
+def _supported_cf_actions(asset: AssetSnapshot) -> list[str]:
+    capabilities = asset.metadata.get('capabilities')
+    if not isinstance(capabilities, dict):
+        return []
+    cf_tunnel = capabilities.get('cf_tunnel')
+    if not isinstance(cf_tunnel, dict):
+        return []
+    supported = cf_tunnel.get('supported_actions')
+    if isinstance(supported, list):
+        return [action for action in ('cf_create', 'cf_refresh', 'cf_disable') if action in supported]
+    if cf_tunnel.get('enabled') is True:
+        return ['cf_create', 'cf_refresh', 'cf_disable']
+    return []
 
 
 def _ordered_unique(actions: list[str], category_actions: list[str]) -> list[str]:

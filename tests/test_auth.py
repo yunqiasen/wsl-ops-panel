@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app.main import create_app
+from tests.app_factory import create_app
 
 
 def test_login_sets_session_cookie() -> None:

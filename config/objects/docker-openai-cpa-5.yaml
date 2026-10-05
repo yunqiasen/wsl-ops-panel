@@ -1,0 +1,17 @@
+id: docker__资源
+category: docker
+type: docker_compose
+name: OpenAI-cpa-5
+description: OpenAI-cpa-5 实例：第五套注册系统与 Codex Manager Web 控制台，通过独立 compose 文件运行，当前对应 8132 入口。
+enabled: true
+config:
+  project_dir: "/home/div/1_Project_dir/regmail-2api/资源"
+  compose_file: "docker-compose.8132.yml"
+  primary_container: "openai_cpa_5_mod"
+  compose_service: "openai-cpa-5-mod"
+  endpoints:
+    - label: "Web 控制台"
+      host_port: "8132"
+      container_port: "8000"
+      path: "/"
+      primary: true

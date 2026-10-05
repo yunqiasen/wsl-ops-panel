@@ -2,4 +2,4 @@ id: systemd
 label: systemd
 order: 20
 description: systemd services and units
-enabled: true
+enabled: false

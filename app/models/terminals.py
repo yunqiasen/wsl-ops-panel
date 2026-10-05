@@ -10,6 +10,7 @@ class DebugTerminalSession(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     id: str
+    title: str | None = None
     shell: str
     cwd: str
     status: DebugTerminalStatus
@@ -27,3 +28,19 @@ class DebugTerminalCreateRequest(BaseModel):
 
     shell: str | None = None
     cwd: str | None = None
+    title: str | None = None
+
+
+class DebugTerminalUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    title: str
+
+
+class TerminalUploadResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    filename: str
+    path: str
+    size: int
+    message: str

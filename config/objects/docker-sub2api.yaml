@@ -2,8 +2,16 @@ id: sub2api
 category: docker
 type: docker_compose
 name: sub2api
+description: Sub2API：订阅到 API 的网关服务，提供后台、健康检查和 OpenAI 兼容接口。
 enabled: true
 config:
   project_dir: "/home/div/1_Project_dir/AI/sub2api"
   compose_file: "docker-compose.yml"
+  primary_container: "sub2api"
   compose_service: "sub2api"
+  lifecycle_strategy: "compose_local_build_git_tag"
+  version_source: "git_tags"
+  recipe_id: "sub2api"
+  managed_services: ["sub2api"]
+  ignored_services: ["postgres", "redis"]
+  healthcheck_url: "http://127.0.0.1:8420/health"

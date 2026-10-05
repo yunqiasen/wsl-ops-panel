@@ -6,7 +6,9 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from app.services.agent_paths import resolve_agent_paths
 
 import yaml
 
@@ -14,40 +16,64 @@ CLIENT_PATHS = {
     "codex": ".codex/config.toml",
     "claude": ".claude.json",
     "gemini": ".gemini/settings.json",
+    "grokbuild": ".grok/config.toml",
     "opencode": ".config/opencode/opencode.json",
-    "openclaw": ".openclaw/openclaw.json",
     "hermes": ".hermes/config.yaml",
 }
 
 
-def scan_mcp_home(home: Path, client_id: str) -> dict[str, dict[str, Any]]:
-    path = home / CLIENT_PATHS[client_id]
+def scan_mcp_home(
+    home: Path,
+    client_id: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Path | str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    path = resolve_agent_paths(
+        client_id, home, environ=environ, overrides=overrides
+    ).mcp
+    if path is None:
+        raise ValueError(f"{client_id} does not expose an MCP configuration")
     if not path.exists():
         return {}
-    if client_id == "codex":
+    if client_id in {"codex", "grokbuild"}:
         payload = tomllib.loads(
-            path.read_text(encoding="utf-8", errors="replace") or ""
+            path.read_text(encoding="utf-8", errors="strict") or ""
         )
         table = payload.get("mcp_servers", {})
     elif client_id == "hermes":
         payload = (
-            yaml.safe_load(path.read_text(encoding="utf-8", errors="replace") or "")
+            yaml.safe_load(path.read_text(encoding="utf-8", errors="strict") or "")
             or {}
         )
-        table = payload.get("mcp_servers", {}) if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            raise ValueError('MCP configuration root must be an object')
+        table = payload.get("mcp_servers", {})
     else:
-        try:
-            payload = json.loads(
-                path.read_text(encoding="utf-8", errors="replace") or "{}"
-            )
-        except json.JSONDecodeError:
-            return {}
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+        if not isinstance(payload, dict):
+            raise ValueError('MCP configuration root must be an object')
+        for key in ('mcpServers', 'mcp_servers', 'mcp', 'servers'):
+            if key in payload and not isinstance(payload[key], dict):
+                raise ValueError('MCP configuration table must be an object')
         table = _json_mcp_table(payload)
-    if not isinstance(table, dict):
-        return {}
+    if not isinstance(table, dict) or any(not isinstance(value, dict) for value in table.values()):
+        raise ValueError('MCP configuration entries must be objects')
+    if client_id == "codex":
+        return {
+            str(key): _codex_to_canonical(value)
+            for key, value in table.items()
+            if isinstance(value, dict)
+        }
     if client_id == "opencode":
         return {
             key: _opencode_to_canonical(value)
+            for key, value in table.items()
+            if isinstance(value, dict)
+        }
+    if client_id == "grokbuild":
+        return {
+            str(key): _grokbuild_to_canonical(value)
             for key, value in table.items()
             if isinstance(value, dict)
         }
@@ -62,17 +88,59 @@ def scan_mcp_home(home: Path, client_id: str) -> dict[str, dict[str, Any]]:
     }
 
 
+def _scan_with_context(
+    home: Path,
+    client_id: str,
+    environ: Mapping[str, str] | None,
+    overrides: Mapping[str, Path | str] | None,
+) -> dict[str, dict[str, Any]]:
+    # Keep compatibility with callers/tests that replace the legacy two-arg
+    # scanner while still forwarding explicit profile context when supplied.
+    if environ is None and overrides is None:
+        return scan_mcp_home(home, client_id)
+    return scan_mcp_home(
+        home, client_id, environ=environ, overrides=overrides
+    )
+
+
 def apply_mcp_to_home(
-    home: Path, client_id: str, selected: dict[str, dict[str, Any]]
+    home: Path,
+    client_id: str,
+    selected: dict[str, dict[str, Any]],
+    *,
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Path | str] | None = None,
 ) -> Path:
-    path = home / CLIENT_PATHS[client_id]
-    existing = scan_mcp_home(home, client_id)
+    path = resolve_agent_paths(
+        client_id, home, environ=environ, overrides=overrides
+    ).mcp
+    if path is None:
+        raise ValueError(f"{client_id} does not expose an MCP configuration")
+    existing = _scan_with_context(home, client_id, environ, overrides)
     merged = {**existing, **selected}
     if client_id == "codex":
         old = (
             path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
         )
-        rendered = _render_codex(old, merged)
+        rendered = _render_codex(
+            old,
+            {
+                key: _canonical_to_codex(value)
+                for key, value in merged.items()
+            },
+        )
+        tomllib.loads(rendered)
+    elif client_id == "grokbuild":
+        old = (
+            path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        )
+        rendered = _render_codex(
+            old,
+            {
+                key: _canonical_to_grokbuild(value)
+                for key, value in merged.items()
+            },
+        )
         tomllib.loads(rendered)
     elif client_id == "hermes":
         payload: dict[str, Any] = {}
@@ -84,9 +152,14 @@ def apply_mcp_to_home(
             if not isinstance(loaded, dict):
                 raise ValueError("Hermes config must be a mapping")
             payload = loaded
-        payload["mcp_servers"] = {
-            key: _canonical_to_hermes(value) for key, value in merged.items()
-        }
+        native = payload.get("mcp_servers", {})
+        native = dict(native) if isinstance(native, dict) else {}
+        for key, value in selected.items():
+            current = native.get(key)
+            native[key] = _merge_hermes_native(
+                current if isinstance(current, dict) else {}, value
+            )
+        payload["mcp_servers"] = native
         rendered = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
         yaml.safe_load(rendered)
     else:
@@ -101,21 +174,55 @@ def apply_mcp_to_home(
         rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         json.loads(rendered)
     _backup_and_atomic_write(path, rendered)
-    verified = scan_mcp_home(home, client_id)
-    if not set(selected).issubset(verified):
-        raise RuntimeError(f"{client_id} MCP readback verification failed")
+    verified = _scan_with_context(home, client_id, environ, overrides)
+    mismatched = sorted(
+        server_id
+        for server_id, spec in selected.items()
+        if verified.get(server_id) != project_mcp_spec(client_id, spec)
+    )
+    if mismatched:
+        raise RuntimeError(
+            f"{client_id} MCP readback verification failed: {', '.join(mismatched)}"
+        )
     return path
 
 
-def remove_mcp_from_home(home: Path, client_id: str, server_ids: set[str]) -> Path:
-    path = home / CLIENT_PATHS[client_id]
+def remove_mcp_from_home(
+    home: Path,
+    client_id: str,
+    server_ids: set[str],
+    *,
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Path | str] | None = None,
+) -> Path:
+    path = resolve_agent_paths(
+        client_id, home, environ=environ, overrides=overrides
+    ).mcp
+    if path is None:
+        raise ValueError(f"{client_id} does not expose an MCP configuration")
     if not path.exists():
         return path
-    existing = scan_mcp_home(home, client_id)
+    existing = _scan_with_context(home, client_id, environ, overrides)
     kept = {key: value for key, value in existing.items() if key not in server_ids}
     if client_id == "codex":
         old = path.read_text(encoding="utf-8", errors="replace")
-        rendered = _render_codex(old, kept)
+        rendered = _render_codex(
+            old,
+            {
+                key: _canonical_to_codex(value)
+                for key, value in kept.items()
+            },
+        )
+        tomllib.loads(rendered)
+    elif client_id == "grokbuild":
+        old = path.read_text(encoding="utf-8", errors="replace")
+        rendered = _render_codex(
+            old,
+            {
+                key: _canonical_to_grokbuild(value)
+                for key, value in kept.items()
+            },
+        )
         tomllib.loads(rendered)
     elif client_id == "hermes":
         payload = (
@@ -124,8 +231,10 @@ def remove_mcp_from_home(home: Path, client_id: str, server_ids: set[str]) -> Pa
         )
         if not isinstance(payload, dict):
             raise ValueError("Hermes config must be a mapping")
+        native = payload.get("mcp_servers", {})
+        native = dict(native) if isinstance(native, dict) else {}
         payload["mcp_servers"] = {
-            key: _canonical_to_hermes(value) for key, value in kept.items()
+            key: value for key, value in native.items() if key not in server_ids
         }
         rendered = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
         validated = yaml.safe_load(rendered)
@@ -142,7 +251,7 @@ def remove_mcp_from_home(home: Path, client_id: str, server_ids: set[str]) -> Pa
         rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         json.loads(rendered)
     _backup_and_atomic_write(path, rendered)
-    verified = scan_mcp_home(home, client_id)
+    verified = _scan_with_context(home, client_id, environ, overrides)
     remaining = sorted(server_ids.intersection(verified))
     if remaining:
         raise RuntimeError(
@@ -230,6 +339,37 @@ def _toml_value(value: Any) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def _codex_to_canonical(spec: dict[str, Any]) -> dict[str, Any]:
+    result = dict(spec)
+    if "http_headers" in result and "headers" not in result:
+        result["headers"] = result["http_headers"]
+    result.pop("http_headers", None)
+    result.setdefault("type", "stdio")
+    return result
+
+
+def _canonical_to_codex(spec: dict[str, Any]) -> dict[str, Any]:
+    result = dict(spec)
+    if "headers" in result:
+        result["http_headers"] = result.pop("headers")
+    result.setdefault("type", "stdio")
+    return result
+
+
+def project_mcp_spec(
+    client_id: str, spec: dict[str, Any]
+) -> dict[str, Any]:
+    if client_id == "codex":
+        return _codex_to_canonical(_canonical_to_codex(spec))
+    if client_id == "grokbuild":
+        return _grokbuild_to_canonical(_canonical_to_grokbuild(spec))
+    if client_id == "opencode":
+        return _opencode_to_canonical(_canonical_to_opencode(spec))
+    if client_id == "hermes":
+        return _hermes_to_canonical(_canonical_to_hermes(spec))
+    return dict(spec)
+
+
 def _opencode_to_canonical(spec: dict[str, Any]) -> dict[str, Any]:
     if spec.get("type") == "remote":
         return {key: spec[key] for key in ("url", "headers") if key in spec} | {
@@ -247,6 +387,27 @@ def _opencode_to_canonical(spec: dict[str, Any]) -> dict[str, Any]:
         result = {"type": "stdio", "command": command}
     if isinstance(spec.get("environment"), dict):
         result["env"] = spec["environment"]
+    return result
+
+
+def _grokbuild_to_canonical(spec: dict[str, Any]) -> dict[str, Any]:
+    result = dict(spec)
+    if "http_headers" in result and "headers" not in result:
+        result["headers"] = result["http_headers"]
+    result.pop("http_headers", None)
+    transport = result.pop("type", None)
+    if transport not in {"stdio", "http", "sse"}:
+        transport = "http" if result.get("url") else "stdio"
+    return {"type": transport, **result}
+
+
+def _canonical_to_grokbuild(spec: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in spec.items():
+        if key == "type":
+            continue
+        output_key = "headers" if key == "http_headers" else key
+        result[output_key] = value
     return result
 
 
@@ -285,6 +446,29 @@ def _canonical_to_hermes(spec: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in spec and spec[key]:
             result[key] = spec[key]
+    return result
+
+
+def _merge_hermes_native(
+    existing: dict[str, Any], canonical: dict[str, Any]
+) -> dict[str, Any]:
+    core_fields = {
+        "type",
+        "command",
+        "args",
+        "env",
+        "url",
+        "headers",
+        "http_headers",
+    }
+    result = {
+        str(key): value for key, value in existing.items() if key not in core_fields
+    }
+    converted = _canonical_to_hermes(canonical)
+    for key, value in converted.items():
+        if key == "enabled" and key in result:
+            continue
+        result[key] = value
     return result
 
 

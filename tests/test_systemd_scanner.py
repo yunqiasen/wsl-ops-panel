@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.core.security import COOKIE_NAME, issue_session_token
-from app.main import create_app
+from tests.app_factory import create_app
 from app.scanners.systemd_scanner import parse_systemctl_line
 from app.tasks.store import InMemoryTaskStore
 

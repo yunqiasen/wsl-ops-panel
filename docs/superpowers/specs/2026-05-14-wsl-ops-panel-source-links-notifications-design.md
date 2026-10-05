@@ -13,7 +13,7 @@
 
 ## 现状
 
-SearXNG 的目录名是 `/home/div/1_Project_dir/AI/searxng-mcp`，但容器名、镜像、OCI label 和维护手册都指向 SearXNG。面板当前靠 Docker runtime 自动发现，所以沿用了目录名。
+SearXNG 的目录名是 `/home/div/1_Project_dir/Project/searxng-mcp`，但容器名、镜像、OCI label 和维护手册都指向 SearXNG。面板当前靠 Docker runtime 自动发现，所以沿用了目录名。
 
 Docker 容器里已经能拿到 Labels。SearXNG 镜像有 `org.opencontainers.image.source=https://github.com/searxng/searxng`，也有 `org.opencontainers.image.url=https://searxng.org`。这些信息目前没有被统一整理到元数据里。
 
@@ -25,7 +25,7 @@ Docker 容器里已经能拿到 Labels。SearXNG 镜像有 `org.opencontainers.i
 
 新增 `config/objects/docker-searxng.yaml`。
 
-对象 ID 用 `searxng`，名称用 `SearXNG`，真实 `project_dir` 仍指向 `/home/div/1_Project_dir/AI/searxng-mcp`，compose service 和主容器都用 `searxng`。
+对象 ID 用 `searxng`，名称用 `SearXNG`，真实 `project_dir` 仍指向 `/home/div/1_Project_dir/Project/searxng-mcp`，compose service 和主容器都用 `searxng`。
 
 这样 Docker 资产构建时会把这个目录视为已注册项目，不再生成 `docker__searxng-mcp` 自动发现项。
 

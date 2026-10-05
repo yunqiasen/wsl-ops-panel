@@ -3,20 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{{ title }}</title>
-    <link rel="stylesheet" href="/static/app.css" />
+    <title>{{ page_title or title }}</title>
+    <link rel="icon" type="image/png" href="{{ panel_logo_path }}?v={{ asset_version | default('1') }}" />
+    <link rel="stylesheet" href="/static/app.css?v={{ asset_version | default('1') }}" />
     {% block head_extra %}{% endblock %}
     {% block script_extra %}{% endblock %}
-    <script defer src="/static/app.js"></script>
+    <script defer src="/static/app.js?v={{ asset_version | default('1') }}"></script>
   </head>
   <body data-page="{{ active_page or 'page' }}">
     <div class="app-shell">
       <aside class="sidebar" aria-label="主导航">
-        <a class="brand" href="/">
-          <span class="brand-mark">W</span>
+        <a class="brand" href="/" aria-label="{{ panel_title_cn }}">
+          <span class="brand-mark brand-mark--image">
+            <img src="{{ panel_logo_path }}?v={{ asset_version | default('1') }}" alt="{{ panel_title_cn }} Logo" />
+          </span>
           <span class="brand-copy">
-            <strong>WSL Ops</strong>
-            <small>维护更新管理面板</small>
+            <strong>{{ panel_title_cn }}</strong>
+            <small>{{ panel_title_en }}</small>
           </span>
         </a>
         <nav class="nav-stack">

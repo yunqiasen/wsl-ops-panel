@@ -1,10 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-hero">
+{% set package_info = asset.metadata.package_info or {} %}
+{% set hero_description = asset.metadata.description or package_info.description or '' %}
+<section class="page-hero asset-detail-hero">
   <div>
     <p class="eyebrow">Asset Detail</p>
     <h1>{{ asset.name }}</h1>
     <p>ID：{{ asset.object_id }} · 分类：{{ asset.category }} · 状态：{{ asset.status }}</p>
+    {% if hero_description %}
+    <p class="asset-hero-description">{{ hero_description }}</p>
+    {% endif %}
   </div>
   <a class="ghost-button" href="{{ request.url_for('category_page', category_id=asset.category) }}">返回分类</a>
 </section>
@@ -60,6 +65,14 @@
       <div><small>是否可操作</small><strong>{{ '是' if asset.actionable else '否' }}</strong></div>
       <div><small>管理归属</small><strong>{{ asset.managed_by or 'none' }}</strong></div>
       <div><small>阻止原因</small><strong>{{ asset.blocked_reason or 'none' }}</strong></div>
+      <div><small>简介状态</small><strong>{{ package_info.status or 'not_loaded' }}</strong></div>
+    </div>
+    <div class="package-intro">
+      <h3>库简介</h3>
+      <p>{{ package_info.description or package_info.error or '没有获取到简介。' }}</p>
+      {% if package_info.keywords %}
+      <div class="tag-row">{% for keyword in package_info.keywords %}<span class="tag">{{ keyword }}</span>{% endfor %}</div>
+      {% endif %}
     </div>
     {% elif asset.category == 'project' %}
     <div class="info-grid">
@@ -68,17 +81,31 @@
       <div><small>Git 分支</small><strong>{{ asset.metadata.git_branch or 'unknown' }}</strong></div>
       <div><small>HEAD</small><strong>{{ asset.metadata.head_sha or 'unknown' }}</strong></div>
     </div>
+
     {% elif asset.category == 'host' %}
     <div class="info-grid">
       <div><small>监听地址</small><strong>{{ asset.metadata.local_address }}:{{ asset.metadata.port }}</strong></div>
       <div><small>进程</small><strong>{{ asset.metadata.process_name or 'unknown' }}</strong></div>
       <div><small>PID</small><strong>{{ asset.metadata.pid or 'unknown' }}</strong></div>
+      <div><small>识别服务</small><strong>{{ asset.metadata.service_hint or 'unknown' }}</strong></div>
+      <div><small>作用</small><strong>{{ asset.metadata.purpose or 'unknown' }}</strong></div>
+      <div><small>控制类型</small><strong>{{ asset.metadata.port_action or 'unknown' }}</strong></div>
     </div>
     {% elif asset.category == 'system' %}
     <div class="info-grid">
       <div><small>当前版本</small><strong>{{ asset.current_version or 'unknown' }}</strong></div>
+      <div><small>更新能力</small><strong>{{ '可面板更新' if asset.metadata.update_supported else '只读' }}</strong></div>
+      <div><small>说明</small><strong>{{ asset.metadata.update_note or asset.metadata.update_command or 'none' }}</strong></div>
     </div>
     <div class="path-chip large">{{ asset.metadata.raw_output or asset.metadata.error or 'none' }}</div>
+    {% elif asset.category == 'remote' %}
+    <div class="info-grid">
+      <div><small>模块</small><strong>{{ asset.metadata.remote_kind }}</strong></div>
+      <div><small>状态</small><strong>{{ asset.status }}</strong></div>
+      <div><small>入口</small><strong>{{ asset.metadata.entry_url }}</strong></div>
+    </div>
+    <p class="asset-description">{{ asset.metadata.description }}</p>
+    <a class="primary-button" href="{{ asset.metadata.entry_url }}">打开入口</a>
     {% endif %}
   </section>
 
@@ -91,16 +118,36 @@
     </div>
     {% set source_links = asset.metadata.source_links or {} %}
     <div class="info-grid">
-      <div><small>Git Remote</small><strong>{{ asset.metadata.git_remote_url or source_links.github or 'unknown' }}</strong></div>
+      {% set package_info = asset.metadata.package_info or {} %}
+      <div><small>Git Remote</small><strong>{{ asset.metadata.git_remote_url or source_links.github or package_info.repository or 'unknown' }}</strong></div>
       <div><small>Git Branch</small><strong>{{ asset.metadata.git_branch or 'unknown' }}</strong></div>
       <div><small>Docker Image</small><strong>{{ asset.metadata.image_repository or asset.metadata.runtime.image if asset.metadata.runtime else 'unknown' }}</strong></div>
-      <div><small>端口</small><strong>{{ asset.metadata.ports or (asset.metadata.runtime.ports if asset.metadata.runtime else 'unknown') }}</strong></div>
+      <div><small>包主页</small><strong>{{ package_info.package_url or package_info.homepage or 'unknown' }}</strong></div>
+      <div><small>首选访问地址</small><strong>{{ asset.metadata.primary_url or 'unknown' }}</strong></div>
+      <div><small>CF 链接</small><strong>{{ asset.metadata.capabilities.cf_tunnel.current_url if asset.metadata.capabilities and asset.metadata.capabilities.cf_tunnel else 'unknown' }}</strong></div>
+      <div><small>原始 Docker 端口</small><strong>{{ asset.metadata.display_ports or asset.metadata.ports or (asset.metadata.runtime.ports if asset.metadata.runtime else 'unknown') }}</strong></div>
     </div>
-    {% if source_links %}
+    {% if asset.metadata.service_endpoints %}
+    <div class="section-heading compact-heading"><h3>业务端点</h3></div>
+    <div class="endpoint-grid">
+      {% for endpoint in asset.metadata.service_endpoints %}
+      <div class="endpoint-card">
+        <small>{{ '主入口' if endpoint.primary else '端点' }}</small>
+        <strong>{{ endpoint.label }}</strong>
+        <a href="{{ endpoint.tailscale_url }}" target="_blank" rel="noreferrer">{{ endpoint.tailscale_url }}</a>
+        <span>宿主端口 {{ endpoint.host_port }}{% if endpoint.container_port %} → 容器端口 {{ endpoint.container_port }}{% endif %}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if source_links or package_info %}
     <div class="source-link-grid">
       {% for label, url in source_links.items() %}
       <a class="source-link" href="{{ url }}" target="_blank" rel="noreferrer"><small>{{ label }}</small><strong>{{ url }}</strong></a>
       {% endfor %}
+      {% if package_info.package_url %}<a class="source-link" href="{{ package_info.package_url }}" target="_blank" rel="noreferrer"><small>package</small><strong>{{ package_info.package_url }}</strong></a>{% endif %}
+      {% if package_info.homepage %}<a class="source-link" href="{{ package_info.homepage }}" target="_blank" rel="noreferrer"><small>homepage</small><strong>{{ package_info.homepage }}</strong></a>{% endif %}
+      {% if package_info.repository %}<a class="source-link" href="{{ package_info.repository }}" target="_blank" rel="noreferrer"><small>repository</small><strong>{{ package_info.repository }}</strong></a>{% endif %}
     </div>
     {% endif %}
   </section>
@@ -128,11 +175,11 @@
   </section>
 
   {% if 'notify_send' in asset.supports_actions %}
-  <section class="panel notification-panel" data-notification-panel data-notification-endpoint="/api/notifications/{{ asset.object_id }}">
+  <section id="notification" class="panel notification-panel" data-notification-panel data-notification-endpoint="/api/notifications/{{ asset.object_id }}">
     <div class="section-heading">
       <div>
-        <h2>微信通知</h2>
-        <p>编辑这个项目的通知内容，手动发送时会进入任务队列。</p>
+        <h2>微信通知内容编辑</h2>
+        <p>批量发送微信通知会使用这里保存的模板。</p>
       </div>
       <button class="ghost-button" type="button" data-notification-load>刷新预览</button>
     </div>

@@ -1,0 +1,4 @@
+services:
+  sub2api:
+    image: ${WSL_OPS_IMAGE}
+    pull_policy: never

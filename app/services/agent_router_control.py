@@ -65,6 +65,22 @@ class AgentRouterController:
         result["restored_clients"] = restored
         return result
 
+    def active_takeover_clients(self) -> set[str]:
+        """Return clients whose live config is owned by Router takeover.
+
+        The persisted flag is useful during the short enable/disable window;
+        the takeover record is the durable source for the actual live file.
+        Treat either signal as active so a provider import/apply cannot race a
+        partially completed takeover into a stale client configuration.
+        """
+        snapshot = self.store.snapshot()
+        configured = {
+            str(client_id)
+            for client_id, enabled in dict(snapshot.get("takeover") or {}).items()
+            if bool(enabled)
+        }
+        return configured | set(self.takeover.status())
+
     def status(self) -> dict[str, Any]:
         config = self.store.public_snapshot()
         health = self._health_probe()

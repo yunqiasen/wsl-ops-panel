@@ -4,6 +4,9 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
+
+from app.services.agent_paths import resolve_agent_paths
 
 
 @dataclass(frozen=True)
@@ -47,9 +50,11 @@ AGENT_CLIENTS: tuple[AgentClientDefinition, ...] = (
         skill_dir=None,
         config_paths=("~/.config/Claude/claude_desktop_config.json",),
         detection_paths=("~/.config/Claude/claude_desktop_config.json",),
-        features=("providers", "route", "mcp"),
+        # 当前 WSL 适配器只检测 Claude Desktop 配置，不暴露尚未实现的
+        # Provider/Route/MCP 写入按钮。后续有原生回读验证后再逐项开放。
+        features=(),
         write_support=(),
-        route_path="/claude-desktop",
+        route_path=None,
     ),
     AgentClientDefinition(
         id="codex",
@@ -112,13 +117,15 @@ AGENT_CLIENTS: tuple[AgentClientDefinition, ...] = (
         name="OpenClaw",
         package="@qingchencloud/openclaw-zh",
         binary_names=("openclaw",),
-        mcp_path="~/.openclaw/openclaw.json",
+        mcp_path=None,
         prompt_file="~/.openclaw/AGENTS.md",
-        skill_dir="~/.openclaw/skills",
-        config_paths=("~/.openclaw/openclaw.json", "~/.openclaw/AGENTS.md", "~/.openclaw/skills"),
+        skill_dir=None,
+        config_paths=("~/.openclaw/openclaw.json", "~/.openclaw/AGENTS.md"),
         detection_paths=("~/.openclaw/openclaw.json", "~/.openclaw"),
-        features=("providers", "route", "mcp", "skills", "prompts"),
-        write_support=("providers", "route", "mcp", "skills", "prompts"),
+        # 与 CC Switch 当前能力一致：OpenClaw 管 Provider、Route、Prompt；
+        # 统一 MCP/Skills 投影尚未开放。
+        features=("providers", "route", "prompts"),
+        write_support=("providers", "route", "prompts"),
         route_path="/openclaw/v1",
     ),
     AgentClientDefinition(
@@ -145,22 +152,23 @@ def agent_clients_payload(
     home: Path | None = None,
     *,
     which: Callable[[str], str | None] = shutil.which,
+    environ: Mapping[str, str] | None = None,
+    path_overrides: Mapping[str, Path | str] | None = None,
 ) -> list[dict[str, object]]:
     home = home or Path.home()
     rows: list[dict[str, object]] = []
     for client in AGENT_CLIENTS:
-        paths = [_resolve_agent_path(path, home) for path in client.config_paths]
-        detection_paths = [
-            _resolve_agent_path(path, home) for path in client.detection_paths
-        ]
-        config_detected = any(
-            path.exists() for path in detection_paths if path is not None
+        resolved = resolve_agent_paths(
+            client.id, home, environ=environ, overrides=path_overrides
         )
+        paths = list(resolved.config_paths)
+        detection_paths = list(resolved.detection)
+        config_detected = any(path.exists() for path in detection_paths)
         binary = next(
             (
-                resolved
+                binary_path
                 for name in client.binary_names
-                if (resolved := which(name)) is not None
+                if (binary_path := which(name)) is not None
             ),
             None,
         )
@@ -174,16 +182,16 @@ def agent_clients_payload(
                 "package": client.package,
                 "binary_names": list(client.binary_names),
                 "binary_path": binary,
-                "mcp_path": client.mcp_path,
-                "prompt_file": client.prompt_file,
-                "skill_dir": client.skill_dir,
+                "mcp_path": str(resolved.mcp) if resolved.mcp is not None else None,
+                "prompt_file": str(resolved.prompt) if resolved.prompt is not None else None,
+                "skill_dir": str(resolved.skills) if resolved.skills is not None else None,
                 "route_path": client.route_path,
                 "features": features,
                 "capabilities": {feature: True for feature in features},
                 "write_support": list(client.write_support),
                 "detected": detected,
                 "detection_source": detection_source,
-                "paths": [str(path) for path in paths if path is not None],
+                "paths": [str(path) for path in paths],
             }
         )
     return rows

@@ -1,5 +1,5 @@
 id: project
 label: Project
-order: 70
+order: 11
 description: Filesystem projects under /home/div/1_Project_dir
 enabled: true

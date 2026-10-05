@@ -25,5 +25,7 @@ class DockerRecipe(BaseModel):
     ignored_services: list[str] = Field(default_factory=list)
     local_image_repository: str | None = None
     local_image_tag_template: str | None = None
+    build_worktree_dir: str | None = None
+    docker_build_args: dict[str, str] = Field(default_factory=dict)
     healthcheck: DockerRecipeHealthcheck | None = None
     full_delete_paths: list[str] = Field(default_factory=list)

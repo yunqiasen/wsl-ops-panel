@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <div>
+    <p class="eyebrow">Config Draft</p>
+    <h1>{{ module.label }}</h1>
+    <p>{{ module.path }} · {{ module.applies_to }} · {{ module.status }}</p>
+  </div>
+  <a class="ghost-button" href="/categories/remote">返回配置同步中心</a>
+</section>
+
+<section class="config-editor-layout">
+  <aside class="config-editor-meta card-panel">
+    <h2>模块信息</h2>
+    <div class="info-grid single">
+      <span><small>路径</small><strong>{{ module.path }}</strong></span>
+      <span><small>本机路径</small><strong>{{ module.resolved_path }}</strong></span>
+      <span><small>适用系统</small><strong>{{ module.applies_to }}</strong></span>
+      <span><small>大小</small><strong>{{ module.size_label }}</strong></span>
+      <span><small>修改时间</small><strong>{{ module.updated_at }}</strong></span>
+      <span><small>权限</small><strong>{{ '需要 sudo 才能写回原文件' if module.requires_sudo else '用户级配置' }}</strong></span>
+    </div>
+    {% if module.fingerprint %}<p class="path-chip">sha256 {{ module.fingerprint }}</p>{% endif %}
+    {% if has_draft %}<p class="tag tag-ok">已有草稿</p>{% endif %}
+    {% if read_error %}<p class="tag tag-blocked">{{ read_error }}</p>{% endif %}
+    <div class="config-apply-policy">
+      <h3>后续同步策略</h3>
+      <ol>
+        <li>先从目标设备拉取同路径快照。</li>
+        <li>和当前草稿做差异对比。</li>
+        <li>Shell 类优先追加 managed block。</li>
+        <li>npm / Git 类优先走配置命令。</li>
+        <li>整文件覆盖必须先生成备份并二次确认。</li>
+      </ol>
+    </div>
+  </aside>
+
+  <form class="config-editor-form card-panel" method="post" action="/remote/config-modules/{{ module.id }}">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Draft Only</p>
+        <h2>编辑草稿</h2>
+        <p>这里不会覆盖原文件。后续同步时会用草稿做 dry-run 和差异对比。</p>
+      </div>
+      <button class="primary-button" type="submit">保存草稿</button>
+    </div>
+    <textarea class="config-editor-textarea" name="draft_text" spellcheck="false">{{ draft_text }}</textarea>
+  </form>
+</section>
+{% endblock %}

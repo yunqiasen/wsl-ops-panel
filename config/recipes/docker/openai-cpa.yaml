@@ -10,6 +10,14 @@ managed_services: [codex-web]
 ignored_services: [watchtower]
 local_image_repository: local/wenfxl-codex-manager
 local_image_tag_template: "{version}-overlay"
+build_worktree_dir: /home/div/1_Project_dir/AI/wsl-ops-panel/data/build-worktrees/openai-cpa
+docker_build_args:
+  HTTP_PROXY: "{docker_bridge_proxy_url}"
+  HTTPS_PROXY: "{docker_bridge_proxy_url}"
+  http_proxy: "{docker_bridge_proxy_url}"
+  https_proxy: "{docker_bridge_proxy_url}"
+  PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  APT_MIRROR: "http://mirrors.tuna.tsinghua.edu.cn"
 healthcheck:
   url: http://127.0.0.1:8128
   expect_status: 200

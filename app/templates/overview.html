@@ -3,8 +3,8 @@
 <section class="page-hero">
   <div>
     <p class="eyebrow">Workspace</p>
-    <h1>总览</h1>
-    <p>集中查看 WSL 资产、任务队列和维护入口。</p>
+    <h1>首页总览</h1>
+    <p>集中查看 WSL 配置、网络入口、代理监控、端口暴露面和维护入口。</p>
   </div>
   <div class="hero-actions">
     <a class="ghost-button" href="{{ request.url_for('tasks_page') }}">任务中心</a>
@@ -12,22 +12,96 @@
   </div>
 </section>
 
-<section class="dashboard-grid">
+<section class="dashboard-grid overview-health-grid">
   <article class="stat-card">
-    <span>分类</span>
-    <strong>{{ all_categories|length }}</strong>
-    <small>已启用分类</small>
+    <span>WSL 配置</span>
+    <strong>{{ system_overview.identity.hostname }}</strong>
+    <small>{{ system_overview.identity.kernel }} · {{ system_overview.identity.uptime }}</small>
   </article>
   <article class="stat-card">
-    <span>任务</span>
-    <strong>{{ task_count }}</strong>
-    <small>历史任务记录</small>
+    <span>Tailscale 入口</span>
+    <strong>{{ system_overview.network.tailscale_ip }}</strong>
+    <small>{{ system_overview.network.tailscale_label }} · {{ system_overview.network.panel_tailscale_description }}</small>
   </article>
   <article class="stat-card">
-    <span>预览</span>
-    <strong>{{ assets|length if assets else 0 }}</strong>
-    <small>{{ selected_category.label if selected_category else '暂无分类' }}</small>
+    <span>代理监控</span>
+    <strong>{{ '已启用' if system_overview.proxy.enabled else '未启用' }}</strong>
+    <small>本地代理端口：{{ system_overview.proxy.local_proxy_ports }}</small>
   </article>
+  <article class="stat-card">
+    <span>端口暴露面</span>
+    <strong>{{ system_overview.ports.total }}</strong>
+    <small>监听端口 · 扫描 {{ system_overview.scan.cost_ms }}ms</small>
+  </article>
+</section>
+
+<section class="overview-ops-grid">
+  <article class="panel overview-card overview-card--wide">
+    <div class="section-heading">
+      <div>
+        <h2>网络与代理</h2>
+        <p>只读轻量扫描，解释 WSL、Windows、Tailscale、Docker 代理之间的关系。</p>
+      </div>
+      <span class="status-pill status-{{ 'ok' if system_overview.proxy.no_proxy_has_local else 'warning' }}">NO_PROXY</span>
+    </div>
+    <div class="overview-kv-grid">
+      <div><small>Tailscale 面板入口</small><strong>{{ system_overview.network.panel_tailscale_url }}</strong><em>{{ system_overview.network.panel_tailscale_description }}</em></div>
+      <div><small>当前 WSL Tailscale IP</small><strong>{{ system_overview.network.tailscale_ip }}</strong><em>这是内网 IP，不是普通网卡接口</em></div>
+      <div><small>Cloudflare 面板入口</small><strong>{{ system_overview.network.panel_cf_url }}</strong></div>
+      <div><small>默认路由</small><strong>{{ system_overview.network.default_route }}</strong></div>
+      <div><small>Windows / WSL 关系</small><strong>WSL {{ system_overview.network.wsl_ip }} → Windows 网关 {{ system_overview.network.windows_gateway }}</strong></div>
+      <div><small>host.docker.internal</small><strong>{{ system_overview.network.host_docker_internal }}</strong></div>
+      <div><small>DNS</small><strong>{{ system_overview.network.dns }}</strong></div>
+      <div><small>负载</small><strong>{{ system_overview.resources.load }}</strong></div>
+      <div><small>内存</small><strong>{{ system_overview.resources.memory }}</strong></div>
+      <div><small>磁盘</small><strong>{{ system_overview.resources.disk }}</strong></div>
+      <div><small>Clash / Mihomo 代理池</small><strong>{{ system_overview.proxy.clash_container_count }} 个 Clash 容器</strong><em>代理 {{ system_overview.proxy.clash_proxy_range }} · 控制 {{ system_overview.proxy.clash_control_range }}</em></div>
+      <div><small>gap-mihomo 主代理</small><strong>{{ system_overview.proxy.gap_mihomo }}</strong></div>
+      <div><small>HTTP_PROXY</small><strong>{{ system_overview.proxy.http_proxy }}</strong></div>
+      <div><small>HTTPS_PROXY</small><strong>{{ system_overview.proxy.https_proxy }}</strong></div>
+      <div><small>ALL_PROXY</small><strong>{{ system_overview.proxy.all_proxy }}</strong></div>
+      <div><small>NO_PROXY</small><strong>{{ system_overview.proxy.no_proxy }}</strong></div>
+    </div>
+  </article>
+
+  <article class="panel overview-card">
+    <div class="section-heading">
+      <div>
+        <h2>服务健康</h2>
+        <p>systemd 关键服务状态。</p>
+      </div>
+    </div>
+    <div class="service-status-list">
+      <span>Docker <strong>{{ system_overview.services.docker }}</strong></span>
+      <span>面板 <strong>{{ system_overview.services.panel }}</strong></span>
+      <span>CF Tunnel <strong>{{ system_overview.services.cloudflare_tunnel }}</strong></span>
+      <span>Tailscale <strong>{{ system_overview.services.tailscaled }}</strong></span>
+    </div>
+  </article>
+</section>
+
+<section class="panel overview-card">
+  <div class="section-heading">
+    <div>
+      <h2>端口暴露面</h2>
+      <p>展示前 {{ system_overview.ports['items']|length }} 个监听端口，包含本机代理端口和面板入口。</p>
+    </div>
+  </div>
+  <div class="port-strip">
+    {% for port in system_overview.ports['items'] %}
+    <span class="port-chip port-chip--{{ port.scope }}">
+      <strong>{{ port.port }}</strong>
+      <small>{{ port.address }} · {{ port.process }}</small>
+    </span>
+    {% else %}
+    <div class="empty-state">未扫描到监听端口</div>
+    {% endfor %}
+  </div>
+  {% if system_overview.warnings %}
+  <div class="warning-list">
+    {% for warning in system_overview.warnings %}<span>{{ warning }}</span>{% endfor %}
+  </div>
+  {% endif %}
 </section>
 
 <section class="panel">
@@ -48,28 +122,4 @@
   </div>
 </section>
 
-{% if selected_category %}
-<section class="panel">
-  <div class="section-heading">
-    <div>
-      <h2>{{ selected_category.label }} 预览</h2>
-      <p>当前展示 {{ assets|length }} 个资产。</p>
-    </div>
-    <a class="ghost-button" href="{{ request.url_for('category_page', category_id=selected_category.id) }}">查看全部</a>
-  </div>
-  <div class="table-list compact-list">
-    {% for asset in assets %}
-    <a class="list-row" href="{{ request.url_for('asset_detail', object_id=asset.object_id) }}">
-      <span>
-        <strong>{{ asset.name }}</strong>
-        <small>{{ asset.object_id }}</small>
-      </span>
-      <span class="status-pill status-{{ 'ok' if asset.status in ['running', 'active'] else 'muted' }}">{{ asset.status }}</span>
-    </a>
-    {% else %}
-    <div class="empty-state">当前分类暂无资产</div>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
 {% endblock %}

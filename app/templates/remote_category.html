@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="remote-hero">
+  <div>
+    <p class="eyebrow">Remote Ops</p>
+    <h1>SSH 与配置同步</h1>
+    <p>SSH 只是连接底座。这里主要负责系统配置扫描、同步前检查和跨设备 dry-run。Node / Python / Agent 的安装更新放回各自分类操作。</p>
+  </div>
+  <div class="remote-hero__count">
+    <strong>{{ remote_nodes|length }}</strong>
+    <small>已保存节点</small>
+  </div>
+</section>
+
+<section class="remote-ssh-box">
+  <div class="remote-box-head">
+    <div>
+      <h2>节点中心</h2>
+      <p>保存、测速、状态都在这里完成。红灯悬停可看失败原因。</p>
+    </div>
+  </div>
+
+  <form class="remote-inline-form" method="post" action="/remote/nodes">
+    <label>名称<input name="name" required placeholder="MacBook / VPS / WSL" /></label>
+    <label>主机<input name="host" required placeholder="100.x.x.x 或域名" /></label>
+    <label>端口<input name="port" type="number" value="22" min="1" max="65535" /></label>
+    <label>用户名<input name="username" required placeholder="root / div / admin" /></label>
+    <label>方式
+      <select name="auth_type">
+        <option value="password">密码</option>
+        <option value="key">SSH Key</option>
+      </select>
+    </label>
+    <label>密码<input name="password" type="password" autocomplete="new-password" /></label>
+    <label>Key 路径<input name="key_path" placeholder="/home/div/.ssh/id_ed25519" /></label>
+    <label>系统
+      <select name="os_hint">
+        <option value="auto">自动</option>
+        <option value="wsl">WSL</option>
+        <option value="linux">Linux</option>
+        <option value="macos">macOS</option>
+        <option value="windows">Windows</option>
+      </select>
+    </label>
+    <label>标签<input name="tags" placeholder="mac,work,codex" /></label>
+    <button class="primary-button" type="submit">保存</button>
+  </form>
+
+  <div class="remote-node-strip">
+    {% for node in remote_nodes %}
+    <article class="remote-node-chip status-{{ 'ok' if node.status == 'online' else 'error' if node.status == 'error' else 'muted' }}">
+      <div class="remote-node-main">
+        <strong>{{ node.name }}</strong>
+        <small>{{ node.username }}@{{ node.host }}:{{ node.port }}</small>
+      </div>
+      <span class="remote-status-dot" title="{{ node.last_error or node.status }}" aria-label="{{ node.status }}"></span>
+      <form method="post" action="/remote/nodes/{{ node.id }}/test"><button class="ghost-button compact-button" type="submit">测速</button></form>
+      <form method="post" action="/remote/nodes/{{ node.id }}/delete"><button class="danger-button compact-button" type="submit">删</button></form>
+    </article>
+    {% else %}
+    <div class="empty-state">还没有 SSH 节点。</div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="remote-sync-box config-sync-workflow" data-config-sync-panel>
+  <div class="remote-box-head config-sync-head">
+    <div>
+      <p class="eyebrow">Config Workflow</p>
+      <h2>系统配置同步中心</h2>
+      <p>先用“快速追加一行”处理常见配置；复杂修改再进模块编辑草稿。Windows 不适用的配置会自动跳过。</p>
+    </div>
+  </div>
+
+  <form id="config-apply-form" data-config-apply-form method="post" action="/remote/actions/config-apply"><div data-config-apply-nodes></div></form>
+  <form class="remote-action-panel config-sync-form" data-config-scan-form method="post" action="/remote/actions/config-scan">
+    <div class="config-sync-steps">
+      <div class="config-sync-step">
+        <span>1</span>
+        <strong>选设备</strong>
+        <small>红色设备不可选，先去节点中心测速。</small>
+      </div>
+      <div class="config-sync-step">
+        <span>2</span>
+        <strong>选配置</strong>
+        <small>可以多选，也可以按场景一键选择。</small>
+      </div>
+      <div class="config-sync-step">
+        <span>3</span>
+        <strong>扫描 / dry-run</strong>
+        <small>先看差异和状态，后续再做安全应用。</small>
+      </div>
+    </div>
+
+    <div class="config-quick-apply">
+      <div class="config-quick-copy">
+        <strong>快速追加一行</strong>
+        <small>最常用的同步方式。会自动备份目标文件；例如给 zshrc / npmrc / gitconfig 追加一条配置。</small>
+      </div>
+      <label>配置文件
+        <select name="module_id" form="config-apply-form" data-config-apply-module>
+          {% for module in config_modules or [] %}
+          <option value="{{ module.id }}" data-compatible="{{ module.compatible_os }}" {{ 'selected' if module.id == 'zshrc' else '' }}>{{ module.label }} · {{ module.path }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>追加内容
+        <input name="content" form="config-apply-form" data-config-apply-content placeholder="export HTTP_PROXY=http://127.0.0.1:7890" />
+      </label>
+      <input type="hidden" name="operation" value="append_line" form="config-apply-form" />
+      <button class="primary-button" type="submit" form="config-apply-form">备份并追加到选中设备</button>
+      <small class="config-compat-hint" data-config-compat-hint>会按系统兼容性自动跳过不适用设备。</small>
+    </div>
+
+    <div class="config-sync-toolbar">
+      <div class="remote-device-picker config-device-picker">
+        <label><input type="checkbox" name="node_ids" value="__local__" data-node-os="wsl" checked /> 当前 WSL</label>
+        {% for node in remote_nodes %}<label class="device-chip device-chip--{{ 'online' if node.status == 'online' else 'offline' }}" title="{{ node.last_error or node.status }}"><input type="checkbox" name="node_ids" value="{{ node.id }}" data-node-os="{{ 'windows' if node.os_hint == 'windows' or node.username in ['Administrator', 'admin'] else node.os_hint if node.os_hint != 'auto' else 'unknown' }}" {{ 'checked' if node.status == 'online' else 'disabled' }} /> <span class="device-dot"></span>{{ node.name }}</label>{% endfor %}
+      </div>
+      <div class="config-preset-row">
+        <button class="ghost-button compact-button" type="button" data-config-preset="daily" data-config-modules="zshrc,bashrc,profile,gitconfig,ssh_config,npmrc">常用终端</button>
+        <button class="ghost-button compact-button" type="button" data-config-preset="proxy" data-config-modules="zshrc,bashrc,profile,gitconfig,npmrc,environment,docker_daemon">代理 / 网络</button>
+        <button class="ghost-button compact-button" type="button" data-config-preset="package" data-config-modules="npmrc,apt_sources,apt_sources_d,docker_daemon">包管理器</button>
+        <button class="ghost-button compact-button" type="button" data-config-preset="system" data-config-modules="wsl_conf,environment,apt_sources,docker_daemon">系统级</button>
+        <button class="ghost-button compact-button" type="button" data-config-preset="all">全选</button>
+        <button class="ghost-button compact-button" type="button" data-config-preset="clear">清空</button>
+      </div>
+      <div class="config-sync-runbar">
+        <strong><span data-config-selected-count>0</span> 个配置已选</strong>
+        <button class="primary-button" type="submit">扫描选中配置 / dry-run</button>
+      </div>
+    </div>
+
+    <div class="config-module-grid config-file-grid config-module-picker">
+      {% for module in config_modules or [] %}
+      <label class="config-module-card config-file-card {{ 'is-missing' if not module.exists else '' }}" data-config-module-card data-config-group="{{ module.group }}" data-config-module-id="{{ module.id }}" data-config-compatible="{{ module.compatible_os }}">
+        <input type="checkbox" name="sync_kind" value="{{ module.id }}" {{ 'checked' if module.id in ['zshrc', 'gitconfig', 'ssh_config', 'npmrc'] else '' }} />
+        <div class="config-file-main">
+          <div class="config-file-title">
+            <strong>{{ module.label }}</strong>
+            <span class="tag {{ 'tag-ok' if module.exists else 'tag-muted' }}">{{ module.status }}</span>
+            {% if module.requires_sudo %}<span class="tag tag-blocked">sudo</span>{% endif %}
+          </div>
+          <code>{{ module.path }}</code>
+          <small>{{ module.summary }}</small>
+          <div class="config-file-meta">
+            <span>{{ module.group }}</span>
+            <span>{{ module.applies_to }}</span>
+            <span>兼容 {{ module.compatible_os }}</span>
+            <span>{{ module.size_label }}</span>
+            <span>{{ module.updated_at }}</span>
+            {% if module.fingerprint %}<span>sha256 {{ module.fingerprint }}</span>{% endif %}
+          </div>
+          <div class="button-row config-file-actions">
+            <a class="ghost-button compact-button" href="/remote/config-modules/{{ module.id }}" onclick="event.stopPropagation()">编辑草稿</a>
+          </div>
+        </div>
+      </label>
+      {% endfor %}
+    </div>
+  </form>
+</section>
+
+{% endblock %}

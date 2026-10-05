@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import subprocess
 from time import perf_counter
 from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.adapters.base import ActionPlan
@@ -26,27 +26,40 @@ from app.services.agent_mcp_adapters import (
     CLIENT_PATHS,
     apply_mcp_to_home,
     remove_mcp_from_home,
-    scan_mcp_home,
 )
+from app.services.agent_profiles import AgentProfileStore
 from app.services.agent_prompts import (
-    AgentPromptFileManager,
     AgentPromptStore,
     PromptFileConflictError,
     build_prompt_apply_shell,
 )
+from app.services.agent_provider_adapters import (
+    ADDITIVE_PROVIDER_APPS,
+    build_native_settings,
+)
 from app.services.agent_providers import (
     AgentProviderStore,
+    CurrentProviderError,
     build_provider_apply_shell,
+    build_provider_remove_shell,
     public_provider,
     redact_sensitive,
 )
+from app.services.agent_reconciler import (
+    AgentReconciler,
+    AgentResourceOperation,
+    AgentResourcePlan,
+)
+from app.services.agent_router_config import AgentRouterConfigError, AgentRouterConfigStore
+from app.services.agent_skill_store import AgentSkillStore, SkillAssignedError
+from app.services.agent_workbench import build_agent_workbench_context
 from app.services.state_store import PanelStateStore
 from app.services.agent_skills import (
     build_skill_delete_shell,
     build_skill_install_shell,
     build_skill_update_shell,
-    install_skill_to_home,
     safe_skill_name,
+    scan_agent_skills,
     uninstall_skill_from_home,
     update_skill_to_home,
 )
@@ -89,6 +102,8 @@ class AgentProviderUpsertRequest(BaseModel):
     name: str
     settings_config: dict[str, object] = Field(default_factory=dict)
     routing: dict[str, object] | None = None
+    form: dict[str, object] | None = None
+    meta: dict[str, object] | None = None
     website_url: str | None = None
     category: str | None = None
     notes: str | None = None
@@ -111,6 +126,19 @@ class AgentProviderCurrentRequest(BaseModel):
 
     app_id: str
     provider_id: str
+
+
+class AgentProviderActivateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    write_secrets: bool = True
+
+
+class AgentProviderDuplicateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    new_id: str | None = None
+    new_name: str | None = None
 
 
 class AgentMcpUpsertRequest(BaseModel):
@@ -161,6 +189,7 @@ class AgentPromptUpsertRequest(BaseModel):
 
     prompt_id: str
     name: str
+    description: str | None = None
     content: str
 
 
@@ -221,6 +250,330 @@ class AgentSkillLocalActionRequest(BaseModel):
     mode: Literal["copy", "symlink"] | None = None
 
 
+class AgentMcpImportCurrentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+    mcp_ids: list[str] = Field(default_factory=list)
+
+
+class AgentSkillImportSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str
+    name: str
+    source: str
+    description: str | None = None
+    version: str | None = None
+
+
+class AgentSkillImportCurrentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+    skill_name: str
+    skill_id: str | None = None
+    name: str | None = None
+
+
+class AgentPromptImportCurrentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+    prompt_id: str | None = None
+    name: str | None = None
+
+
+class AgentResourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["install", "update", "uninstall", "sync"] = "sync"
+    resource_type: Literal["provider", "mcp", "skill", "prompt", "router"] | None = None
+    resource_ids: list[str] = Field(default_factory=list)
+    client_id: str | None = None
+    node_id: str = "__local__"
+    profile_id: str | None = None
+
+
+class AgentResourceOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resource_type: Literal["provider", "mcp", "skill", "prompt", "profile"]
+    resource_ids: list[str] = Field(min_length=1)
+    client_id: str | None = None
+
+
+class AgentProfileItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str
+    resource_type: Literal["provider", "mcp", "skill", "prompt", "router"]
+    resource_id: str
+    config: dict[str, object] = Field(default_factory=dict)
+    sort_index: int = 0
+
+
+class AgentProfileUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str | None = None
+    items: list[AgentProfileItemRequest] = Field(default_factory=list)
+
+
+class AgentProfileApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = "__local__"
+    client_id: str | None = None
+
+
+@router.get("/library", response_model=dict[str, object])
+def get_agent_library(request: Request) -> dict[str, object]:
+    require_authenticated_request(request)
+    context = build_agent_workbench_context(
+        request.app.state.config_root, home=Path.home()
+    )
+    return dict(context["agent_library"])
+
+
+@router.post("/mcp/import-current", response_model=dict[str, object])
+def import_current_mcp(
+    payload: AgentMcpImportCurrentRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    client_id = _require_local_client(payload.client_id, "mcp")
+    selected_ids = {item.strip() for item in payload.mcp_ids if item.strip()}
+    imported = _mcp_store(request).import_from_home(
+        Path.home(),
+        apps=[client_id],
+        node_id="__local__",
+        platform="linux",
+        server_ids=selected_ids or None,
+    )
+    return {"client_id": client_id, "imported_count": imported}
+
+
+@router.post("/skills/import-source", response_model=dict[str, object])
+def import_skill_source(
+    payload: AgentSkillImportSourceRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    try:
+        return _skill_store(request).import_source(
+            payload.skill_id,
+            payload.name,
+            payload.source,
+            description=payload.description,
+            version=payload.version,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/skills/import-current", response_model=dict[str, object])
+def import_current_skill(
+    payload: AgentSkillImportCurrentRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    client_id = _require_local_client(payload.client_id, "skills")
+    try:
+        return _skill_store(request).import_from_client(
+            Path.home(),
+            client_id,
+            payload.skill_name,
+            skill_id=payload.skill_id,
+            name=payload.name,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/resources/plan", response_model=dict[str, object])
+def plan_agent_resources(
+    payload: AgentResourceRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    return _build_resource_plan(request, payload).as_dict()
+
+
+@router.post("/resources/reconcile", response_model=dict[str, object])
+def reconcile_agent_resources(
+    payload: AgentResourceRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    return _reconcile_resource_request(request, payload)
+
+
+@router.put("/resources/order", response_model=dict[str, object])
+def reorder_agent_resources(
+    payload: AgentResourceOrderRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    client_id = _safe_id(payload.client_id) if payload.client_id else None
+    state = PanelStateStore(agent_data_root(request.app.state.config_root))
+    try:
+        resource_ids = state.reorder_agent_resources(
+            payload.resource_type,
+            payload.resource_ids,
+            client_id=client_id,
+        )
+    except ValueError as exc:
+        status_code = 409 if "完整" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return {
+        "resource_type": payload.resource_type,
+        "client_id": client_id,
+        "resource_ids": resource_ids,
+    }
+
+
+@router.delete(
+    "/resources/{resource_type}/{resource_id}", response_model=dict[str, object]
+)
+def delete_agent_resource(
+    resource_type: str, resource_id: str, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    clean_type = resource_type.strip().lower()
+    clean_id = resource_id.strip()
+    if clean_type not in {"mcp", "skill", "prompt"} or not clean_id:
+        raise HTTPException(status_code=400, detail="resource type or id is invalid")
+    state = PanelStateStore(agent_data_root(request.app.state.config_root))
+    assignments = _resource_assignments(state, clean_type, clean_id)
+    remote = [item for item in assignments if item["node_id"] != "__local__"]
+    if remote:
+        targets = ", ".join(
+            f"{item['node_id']}/{item['client_id']}" for item in remote
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"资源仍分配给非本地目标: {targets}",
+        )
+
+    uninstalled: list[dict[str, object]] = []
+    failures: list[dict[str, object]] = []
+    for assignment in assignments:
+        operation = AgentResourceOperation(
+            action="uninstall",
+            resource_type=clean_type,  # type: ignore[arg-type]
+            resource_id=clean_id,
+            client_id=str(assignment["client_id"]),
+            node_id="__local__",
+            reason="delete_from_library",
+        )
+        if not _resource_observed_present(
+            state, clean_type, clean_id, "__local__", operation.client_id
+        ):
+            _remove_resource_assignment(
+                state, clean_type, clean_id, "__local__", operation.client_id
+            )
+            uninstalled.append(
+                {
+                    "client_id": operation.client_id,
+                    "verified": True,
+                    "already_missing": True,
+                }
+            )
+            continue
+        try:
+            result = _execute_resource_operation(request, operation)
+        except Exception as exc:  # converted to a transactional 409 below
+            failures.append(
+                {"client_id": operation.client_id, "error": _operation_error(exc)}
+            )
+        else:
+            if bool(result.get("verified")):
+                uninstalled.append(result)
+            else:
+                failures.append(
+                    {
+                        "client_id": operation.client_id,
+                        "error": "客户端回读未通过",
+                    }
+                )
+    if failures:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "资源卸载未全部完成", "failures": failures},
+        )
+
+    try:
+        if clean_type == "mcp":
+            deleted = _mcp_store(request).delete_server(clean_id)
+        elif clean_type == "skill":
+            deleted = _skill_store(request).delete(clean_id)
+        else:
+            deleted = _prompt_store(request).delete_prompt(clean_id)
+    except SkillAssignedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="resource not found")
+    return {"deleted": True, "resource_type": clean_type, "uninstalled": uninstalled}
+
+
+@router.get("/profiles", response_model=dict[str, object])
+def list_agent_profiles(request: Request) -> dict[str, object]:
+    require_authenticated_request(request)
+    return {
+        "profiles": [
+            _public_profile(profile) for profile in _profile_store(request).list()
+        ]
+    }
+
+
+@router.put("/profiles/{profile_id}", response_model=dict[str, object])
+def upsert_agent_profile(
+    profile_id: str, payload: AgentProfileUpsertRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    try:
+        return _profile_store(request).upsert(
+            profile_id,
+            payload.name,
+            description=payload.description,
+            items=[item.model_dump() for item in payload.items],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/profiles/{profile_id}/apply", response_model=dict[str, object])
+def apply_agent_profile(
+    profile_id: str, payload: AgentProfileApplyRequest, request: Request
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    return _reconcile_resource_request(
+        request,
+        AgentResourceRequest(
+            action="sync",
+            node_id=payload.node_id,
+            client_id=payload.client_id,
+            profile_id=profile_id,
+        ),
+    )
+
+
+@router.delete("/profiles/{profile_id}", response_model=dict[str, bool])
+def delete_agent_profile(profile_id: str, request: Request) -> dict[str, bool]:
+    require_authenticated_request(request)
+    try:
+        deleted = _profile_store(request).delete(profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="profile not found")
+    return {"deleted": True}
+
+
 @router.get("/providers/{app_id}/{provider_id}", response_model=dict[str, object])
 def get_provider(app_id: str, provider_id: str, request: Request) -> dict[str, object]:
     require_authenticated_request(request)
@@ -238,9 +591,16 @@ def import_local_providers(
 ) -> AgentImportResponse:
     require_authenticated_request(request)
     store = _provider_store(request)
-    apps = _safe_apps(payload.apps if payload else [])
+    apps = _safe_apps(payload.apps if payload else [], feature="providers")
     if payload is not None and payload.apps and not apps:
         raise HTTPException(status_code=400, detail="no supported apps selected")
+    import_apps = apps or sorted(_supported_apps("providers"))
+    active = _active_takeover_apps(request, import_apps)
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=_takeover_conflict_message(active),
+        )
     imported_count = store.import_from_home(Path.home(), apps=apps or None)
     request.app.state.system_terminal_sink.write(
         f"Agent Provider 已从本机配置导入：{imported_count} 个\n"
@@ -259,9 +619,37 @@ def upsert_provider(
         raise HTTPException(
             status_code=400, detail="app_id and provider_id are required"
         )
-    if not payload.settings_config and not payload.routing:
-        raise HTTPException(status_code=400, detail="settings_config or routing is required")
+    if not payload.settings_config and not payload.routing and payload.form is None:
+        raise HTTPException(
+            status_code=400, detail="settings_config, routing or form is required"
+        )
+    store = _provider_store(request)
+    existing = store.get_provider(app_id, provider_id)
     settings = dict(payload.settings_config)
+    meta = dict(existing.get("meta") or {}) if existing is not None else {}
+    if payload.meta is not None:
+        meta.update(dict(payload.meta))
+    if payload.form is not None:
+        form = {
+            **dict(payload.form),
+            "provider_id": provider_id,
+            "name": payload.name.strip() or provider_id,
+        }
+        settings = build_native_settings(
+            app_id,
+            form,
+            dict(existing.get("settings_config") or {}) if existing else settings,
+        )
+        for key in (
+            "api_format",
+            "auth_mode",
+            "full_url",
+            "use_outbound_proxy",
+            "model_map",
+            "headers",
+        ):
+            if key in form:
+                meta[key] = form[key]
     if payload.routing is not None:
         current_routing = settings.get("routing")
         merged_routing = (
@@ -269,18 +657,26 @@ def upsert_provider(
         )
         merged_routing.update(dict(payload.routing))
         settings["routing"] = merged_routing
+    is_current = (
+        payload.is_current
+        if "is_current" in payload.model_fields_set
+        else bool(existing.get("is_current"))
+        if existing is not None
+        else False
+    )
     try:
-        saved = _provider_store(request).upsert_provider(
+        saved = store.upsert_provider(
             app_id=app_id,
             provider_id=provider_id,
             name=payload.name.strip() or provider_id,
             settings=settings,
+            meta=meta,
             website_url=payload.website_url,
             category=payload.category,
             notes=payload.notes,
             icon=payload.icon,
             icon_color=payload.icon_color,
-            is_current=payload.is_current,
+            is_current=is_current,
             source="manual",
         )
         return public_provider(saved, include_settings=True)
@@ -301,7 +697,9 @@ def test_provider_connection(
     if profile is None:
         raise HTTPException(status_code=404, detail="provider profile not found")
 
-    url = _provider_models_url(profile)
+    # CC Switch 的连通性检查只探测 Base URL：收到任意 HTTP 响应就说明
+    # 网关可达，401/404 等业务状态不等同于网络断开。
+    url = _provider_probe_url(profile)
     headers, params = _provider_auth(profile)
     started = perf_counter()
     try:
@@ -317,7 +715,7 @@ def test_provider_connection(
 
     latency_ms = max(0, round((perf_counter() - started) * 1000))
     result: dict[str, object] = {
-        "ok": 200 <= response.status_code < 400,
+        "ok": True,
         "status_code": response.status_code,
         "latency_ms": latency_ms,
     }
@@ -332,16 +730,20 @@ def test_provider_connection(
     return result
 
 
+def _provider_probe_url(profile: dict[str, object]) -> str:
+    """Return the configured base endpoint used by the reachability probe.
+
+    The probe deliberately does not append ``/models`` or a protocol-specific
+    generation path.  A provider may expose only a custom gateway route, and
+    an HTTP error response still proves that DNS, TCP and TLS reached the
+    upstream.
+    """
+    return str(profile.get("base_url") or "").strip()
+
+
 def _provider_models_url(profile: dict[str, object]) -> str:
-    base_url = str(profile.get("base_url") or "").rstrip("/")
-    api_format = str(profile.get("api_format") or "")
-    if api_format == "gemini":
-        if base_url.endswith("/v1beta"):
-            return f"{base_url}/models"
-        return f"{base_url}/v1beta/models"
-    if base_url.endswith("/v1"):
-        return f"{base_url}/models"
-    return f"{base_url}/v1/models"
+    """Compatibility alias for callers that used the old helper name."""
+    return _provider_probe_url(profile)
 
 
 def _provider_auth(
@@ -367,6 +769,154 @@ def _provider_auth(
     return headers, params
 
 
+@router.post(
+    "/providers/{app_id}/{provider_id}/duplicate",
+    response_model=dict[str, object],
+)
+def duplicate_provider(
+    app_id: str,
+    provider_id: str,
+    request: Request,
+    payload: AgentProviderDuplicateRequest | None = None,
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    store = _provider_store(request)
+    try:
+        duplicated = store.duplicate_provider(
+            _safe_id(app_id),
+            _safe_id(provider_id),
+            new_id=_safe_id(payload.new_id) if payload and payload.new_id else None,
+            new_name=payload.new_name.strip() if payload and payload.new_name else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="provider not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return public_provider(duplicated, include_settings=True)
+
+
+@router.post(
+    "/providers/{app_id}/{provider_id}/activate",
+    response_model=dict[str, object],
+)
+def activate_provider(
+    app_id: str,
+    provider_id: str,
+    request: Request,
+    response: Response,
+    payload: AgentProviderActivateRequest | None = None,
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    clean_app = _safe_id(app_id)
+    clean_provider = _safe_id(provider_id)
+    store = _provider_store(request)
+    provider = store.get_provider(clean_app, clean_provider)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    if bool(provider.get("meta", {}).get("native_read_only")):
+        raise HTTPException(status_code=409, detail="原生只读 Provider 只用于查看")
+
+    if clean_app in _active_takeover_apps(request, [clean_app]):
+        runtime = store.runtime_profile(clean_app, clean_provider)
+        if runtime is None:
+            raise HTTPException(status_code=400, detail="Provider 缺少可用端点")
+        router_store = AgentRouterConfigStore(
+            agent_data_root(request.app.state.config_root)
+        )
+        current = router_store.get_provider(clean_app) or {}
+        for key in (
+            "auto_failover",
+            "max_retries",
+            "failure_threshold",
+            "cooldown_seconds",
+            "fallbacks",
+        ):
+            if key in current:
+                runtime[key] = current[key]
+        saved = router_store.set_provider(
+            clean_app, runtime, provider_id=clean_provider
+        )
+        store.set_current(clean_app, clean_provider)
+        return {
+            "mode": "router",
+            "queued_count": 0,
+            "tasks": [],
+            "provider_id": clean_provider,
+            "provider": redact_sensitive(saved),
+        }
+
+    apply_provider = store.provider_for_apply(
+        clean_app, clean_provider, include_secrets=True
+    )
+    if apply_provider is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    queued = _queue_agent_shell_tasks(
+        request,
+        node_ids=["__local__"],
+        action="agent_provider_add"
+        if clean_app in ADDITIVE_PROVIDER_APPS
+        else "agent_provider_activate",
+        object_suffix=f"provider__{clean_app}__{clean_provider}",
+        build_shell=lambda windows: build_provider_apply_shell(
+            apply_provider,
+            windows=windows,
+            write_secrets=(payload.write_secrets if payload else True),
+        ),
+    )
+    if queued.queued_count < 1:
+        raise HTTPException(status_code=400, detail=queued.skipped or "Provider 写入未入队")
+    store.set_current(clean_app, clean_provider)
+    response.status_code = 202
+    return {
+        **queued.model_dump(),
+        "mode": "additive"
+        if clean_app in ADDITIVE_PROVIDER_APPS
+        else "direct",
+        "provider_id": clean_provider,
+    }
+
+
+@router.post(
+    "/providers/{app_id}/{provider_id}/remove-live",
+    response_model=dict[str, object],
+)
+def remove_live_provider(
+    app_id: str,
+    provider_id: str,
+    request: Request,
+    response: Response,
+) -> dict[str, object]:
+    require_authenticated_request(request)
+    clean_app = _safe_id(app_id)
+    clean_provider = _safe_id(provider_id)
+    if clean_app not in ADDITIVE_PROVIDER_APPS:
+        raise HTTPException(status_code=400, detail="当前客户端使用切换模式")
+    store = _provider_store(request)
+    provider = store.get_provider(clean_app, clean_provider)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    if bool(provider.get("meta", {}).get("native_read_only")):
+        raise HTTPException(status_code=409, detail="原生只读 Provider 由客户端维护")
+    queued = _queue_agent_shell_tasks(
+        request,
+        node_ids=["__local__"],
+        action="agent_provider_remove",
+        object_suffix=f"provider_remove__{clean_app}__{clean_provider}",
+        build_shell=lambda windows: build_provider_remove_shell(
+            clean_app, clean_provider, windows=windows
+        ),
+    )
+    if queued.queued_count < 1:
+        raise HTTPException(status_code=400, detail=queued.skipped or "Provider 移除未入队")
+    store.clear_current(clean_app, clean_provider)
+    response.status_code = 202
+    return {
+        **queued.model_dump(),
+        "mode": "remove",
+        "provider_id": clean_provider,
+    }
+
+
 @router.post("/providers/current", response_model=dict[str, bool])
 def set_current_provider(
     payload: AgentProviderCurrentRequest, request: Request
@@ -383,9 +933,35 @@ def set_current_provider(
 @router.delete("/providers/{app_id}/{provider_id}", response_model=dict[str, bool])
 def delete_provider(app_id: str, provider_id: str, request: Request) -> dict[str, bool]:
     require_authenticated_request(request)
-    deleted = _provider_store(request).delete_provider(
-        _safe_id(app_id), _safe_id(provider_id)
-    )
+    clean_app = _safe_id(app_id)
+    clean_provider = _safe_id(provider_id)
+    provider_store = _provider_store(request)
+    provider = provider_store.get_provider(clean_app, clean_provider)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    if bool(provider.get("meta", {}).get("native_read_only")):
+        raise HTTPException(status_code=409, detail="原生只读 Provider 由客户端维护")
+    if clean_app in ADDITIVE_PROVIDER_APPS:
+        try:
+            live_ids = provider_store.live_provider_ids(clean_app, Path.home())
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if clean_provider in live_ids:
+            raise HTTPException(
+                status_code=409, detail="先从客户端移除 Provider，再从数据库删除"
+            )
+    router_store = AgentRouterConfigStore(agent_data_root(request.app.state.config_root))
+    if bool(provider.get("is_current")) or (
+        router_store.snapshot().get("provider_ids", {}).get(clean_app) == clean_provider
+    ):
+        raise HTTPException(status_code=409, detail="当前 Provider 不能删除，请先切换当前项")
+    try:
+        deleted = provider_store.delete_provider(clean_app, clean_provider)
+        router_store.remove_provider_reference(clean_app, clean_provider)
+    except CurrentProviderError as exc:
+        raise HTTPException(status_code=409, detail="当前 Provider 不能删除，请先切换当前项") from exc
+    except AgentRouterConfigError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="provider not found")
     return {"deleted": True}
@@ -396,20 +972,32 @@ def queue_provider_apply(
     payload: AgentProviderApplyRequest, request: Request
 ) -> AgentQueuedResponse:
     require_authenticated_request(request)
-    provider = _provider_store(request).get_provider(
-        _safe_id(payload.app_id), _safe_id(payload.provider_id)
-    )
-    if provider is None:
-        raise HTTPException(status_code=404, detail="provider not found")
+    clean_app = _safe_id(payload.app_id)
+    clean_provider = _safe_id(payload.provider_id)
     if not payload.node_ids:
         raise HTTPException(status_code=400, detail="node_ids is required")
+    if "__local__" in payload.node_ids:
+        active = _active_takeover_apps(request, [clean_app])
+        if active:
+            raise HTTPException(
+                status_code=409,
+                detail=_takeover_conflict_message(active),
+            )
+    provider = _provider_store(request).get_provider(clean_app, clean_provider)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    apply_provider = _provider_store(request).provider_for_apply(
+        str(provider["app_id"]), str(provider["id"]), include_secrets=payload.write_secrets
+    )
+    if apply_provider is None:
+        raise HTTPException(status_code=404, detail="provider not found")
     response = _queue_agent_shell_tasks(
         request,
         node_ids=payload.node_ids,
         action="agent_provider_apply",
         object_suffix=f"provider__{provider['app_id']}__{provider['id']}",
         build_shell=lambda windows: build_provider_apply_shell(
-            provider, windows=windows, write_secrets=payload.write_secrets
+            apply_provider, windows=windows, write_secrets=payload.write_secrets
         ),
     )
     return response
@@ -441,7 +1029,7 @@ def get_mcp_inventory(request: Request) -> dict[str, object]:
 @router.post("/mcp/scan", response_model=dict[str, object])
 def scan_mcp_targets(payload: AgentScanRequest, request: Request) -> dict[str, object]:
     require_authenticated_request(request)
-    apps = _safe_apps(payload.apps)
+    apps = _safe_apps(payload.apps, feature="mcp")
     if not payload.node_ids or not apps:
         raise HTTPException(status_code=400, detail="node_ids and apps are required")
     store = _mcp_store(request)
@@ -513,28 +1101,14 @@ def scan_mcp_targets(payload: AgentScanRequest, request: Request) -> dict[str, o
                                 client_id, {}
                             ).items():
                                 discovered_remote.add(mcp_id)
-                                store.upsert_server(
-                                    mcp_id, spec, {client_id: True}, name=mcp_id
-                                )
-                                state.upsert_mcp_variant(
-                                    mcp_id,
-                                    client_id,
-                                    node.os_hint or "linux",
-                                    spec,
-                                    source="scan",
-                                )
                                 observations.append(
-                                    {
-                                        "mcp_id": mcp_id,
-                                        "present": True,
-                                        "spec_hash": hashlib.sha256(
-                                            json.dumps(
-                                                spec, sort_keys=True, ensure_ascii=False
-                                            ).encode()
-                                        ).hexdigest(),
-                                        "public_spec": redact_sensitive(spec),
-                                        "status": "installed",
-                                    }
+                                    _mcp_observation(
+                                        store,
+                                        client_id,
+                                        node.os_hint or "linux",
+                                        mcp_id,
+                                        spec,
+                                    )
                                 )
                             state.replace_mcp_observations(
                                 node_id, client_id, observations
@@ -549,37 +1123,18 @@ def scan_mcp_targets(payload: AgentScanRequest, request: Request) -> dict[str, o
                         )
             continue
         discovered: set[str] = set()
+        errors = []
         for client_id in apps:
-            scanned = scan_mcp_home(Path.home(), client_id)
-            observations: list[dict[str, object]] = []
-            for mcp_id, spec in scanned.items():
-                discovered.add(mcp_id)
-                store.upsert_server(mcp_id, spec, {client_id: True}, name=mcp_id)
-                state.upsert_mcp_variant(
-                    mcp_id, client_id, "linux", spec, source="scan"
-                )
-                observations.append(
-                    {
-                        "mcp_id": mcp_id,
-                        "present": True,
-                        "spec_hash": hashlib.sha256(
-                            json.dumps(
-                                spec, sort_keys=True, ensure_ascii=False
-                            ).encode()
-                        ).hexdigest(),
-                        "public_spec": redact_sensitive(spec),
-                        "status": "installed",
-                    }
-                )
-            state.replace_mcp_observations("__local__", client_id, observations)
-        targets.append(
-            {
-                "node_id": "__local__",
-                "status": "scanned",
-                "reason": None,
-                "mcp_ids": sorted(discovered, key=str.lower),
-            }
-        )
+            try:
+                observations = store.refresh_observations(Path.home(), client_id)
+                discovered.update(str(item['mcp_id']) for item in observations)
+            except ValueError as exc:
+                errors.append(str(exc))
+        targets.append({
+            "node_id": "__local__", "status": "error" if errors else "scanned",
+            "reason": "; ".join(errors) if errors else None,
+            "mcp_ids": sorted(discovered, key=str.lower),
+        })
     return {"targets": targets}
 
 
@@ -618,15 +1173,23 @@ def _run_local_mcp_operation(
     servers = store.list_servers()
     home = Path.home()
     try:
-        before = scan_mcp_home(home, client_id)
-    except (OSError, ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=f"读取 {client_id} 配置失败: {exc}") from exc
+        before = store.scan_home(home, client_id)
+    except ValueError as exc:
+        error = str(exc)
+        raise HTTPException(status_code=400, detail=error) from None
 
     if action == "install":
         missing = sorted(set(ids) - set(servers))
         if missing:
             raise HTTPException(status_code=404, detail=f"MCP 不存在: {', '.join(missing)}")
-        selected = {server_id: dict(servers[server_id].get("spec") or {}) for server_id in ids}
+        resolved = {
+            server_id: store.resolve_server_for_client(server_id, client_id, "linux")
+            for server_id in ids
+        }
+        selected = {
+            server_id: dict((resolved[server_id] or {}).get("spec") or {})
+            for server_id in ids
+        }
         try:
             apply_mcp_to_home(home, client_id, selected)
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
@@ -644,9 +1207,10 @@ def _run_local_mcp_operation(
             raise HTTPException(status_code=400, detail=f"卸载 MCP 失败: {exc}") from exc
 
     try:
-        after = scan_mcp_home(home, client_id)
-    except (OSError, ValueError, TypeError) as exc:
-        raise HTTPException(status_code=502, detail=f"读取回执失败: {exc}") from exc
+        after = store.scan_home(home, client_id)
+    except ValueError as exc:
+        error = str(exc)
+        raise HTTPException(status_code=502, detail=error) from None
 
     verified = all(
         (server_id in after) if action == "install" else (server_id not in after)
@@ -666,8 +1230,26 @@ def _run_local_mcp_operation(
         removed = sorted(set(ids) - set(after), key=str.lower)
 
     _persist_local_mcp_observations(request, client_id, after)
-    operation_id = f"local:{client_id}:{action}:{hashlib.sha256(','.join(ids).encode()).hexdigest()[:16]}"
     state = PanelStateStore(agent_data_root(request.app.state.config_root))
+    if verified and action == "install":
+        for server_id in ids:
+            resolved_server = resolved[server_id]
+            if resolved_server is None:
+                continue
+            state.set_mcp_assignment(
+                "__local__",
+                client_id,
+                server_id,
+                variant_client_id=str(
+                    resolved_server.get("variant_client_id") or client_id
+                ),
+                variant_platform=str(
+                    resolved_server.get("variant_platform") or "any"
+                ),
+            )
+    elif verified:
+        state.remove_mcp_assignments("__local__", client_id, set(ids))
+    operation_id = f"local:{client_id}:{action}:{hashlib.sha256(','.join(ids).encode()).hexdigest()[:16]}"
     state.record_mcp_operation(
         operation_id, "__local__", client_id, action, "verified" if verified else "failed",
         error=None if verified else "本地配置回读未通过",
@@ -689,24 +1271,20 @@ def _persist_local_mcp_observations(
     store = _mcp_store(request)
     observations: list[dict[str, object]] = []
     for mcp_id, spec in scanned.items():
-        # 观测到的客户端配置也要先有本地库主记录，才能建立按客户端的变体
-        # 外键；这不会把它误标成“本次安装”，只是保留真实配置定义。
-        if store.get_server(mcp_id) is None:
-            store.upsert_server(mcp_id, dict(spec), {client_id: True}, name=mcp_id)
-        public_spec = redact_sensitive(dict(spec))
         observations.append(
-            {
-                "mcp_id": mcp_id,
-                "present": True,
-                "spec_hash": hashlib.sha256(
-                    json.dumps(spec, ensure_ascii=False, sort_keys=True).encode("utf-8")
-                ).hexdigest(),
-                "public_spec": public_spec,
-                "status": "installed",
-            }
+            _mcp_observation(store, client_id, "linux", mcp_id, spec)
         )
-        state.upsert_mcp_variant(mcp_id, client_id, "linux", dict(spec), source="local")
     state.replace_mcp_observations("__local__", client_id, observations)
+
+
+def _mcp_observation(
+    store: AgentMcpStore,
+    client_id: str,
+    platform: str,
+    mcp_id: str,
+    spec: dict[str, object],
+) -> dict[str, object]:
+    return store.observation_for(client_id, platform, mcp_id, spec)
 
 
 @router.post("/mcp/import-local", response_model=AgentImportResponse)
@@ -715,7 +1293,7 @@ def import_local_mcp(
 ) -> AgentImportResponse:
     require_authenticated_request(request)
     store = _mcp_store(request)
-    apps = _safe_apps(payload.apps if payload else [])
+    apps = _safe_apps(payload.apps if payload else [], feature="mcp")
     if payload is not None and payload.apps and not apps:
         raise HTTPException(status_code=400, detail="no supported apps selected")
     imported_count = store.import_from_home(Path.home(), apps=apps or None)
@@ -740,7 +1318,9 @@ def upsert_mcp_server(
         dict(payload.spec),
         payload.apps,
         name=(payload.name or server_id).strip(),
-        description=(payload.description or "").strip() or None,
+        description=(
+            payload.description.strip() if payload.description is not None else None
+        ),
         homepage=(payload.homepage or "").strip() or None,
         docs=(payload.docs or "").strip() or None,
         tags=[tag.strip() for tag in payload.tags if tag.strip()],
@@ -770,7 +1350,7 @@ def preview_mcp_matrix(
         client_id = _safe_id(assignment.client_id)
         status = "ready"
         reason = None
-        if client_id not in _supported_apps():
+        if client_id not in _supported_apps("mcp"):
             status, reason = "unsupported", "客户端暂不支持"
         elif assignment.node_id != "__local__":
             node = request.app.state.remote_node_store.get_node(assignment.node_id)
@@ -853,7 +1433,7 @@ def apply_mcp_matrix(
         persisted: dict[str, list[dict[str, object]]] = {}
         for assignment in assignments:
             client_id = _safe_id(assignment.client_id)
-            if client_id not in _supported_apps():
+            if client_id not in _supported_apps("mcp"):
                 skipped.append(f"{node_id}/{client_id}: 客户端暂不支持")
                 continue
             selected: dict[str, dict[str, object]] = {}
@@ -950,7 +1530,7 @@ def uninstall_mcp_matrix(
         queued_removals: dict[str, set[str]] = {}
         for assignment in assignments:
             client_id = _safe_id(assignment.client_id)
-            if client_id not in _supported_apps():
+            if client_id not in _supported_apps("mcp"):
                 skipped.append(f"{node_id}/{client_id}: 客户端暂不支持")
                 continue
             selected_ids = {mcp_id for mcp_id in assignment.mcp_ids if mcp_id}
@@ -1016,7 +1596,7 @@ def queue_mcp_sync(
         raise HTTPException(status_code=400, detail="apps is required")
     if not payload.node_ids:
         raise HTTPException(status_code=400, detail="node_ids is required")
-    invalid_apps = sorted(set(payload.apps) - _supported_apps())
+    invalid_apps = sorted(set(payload.apps) - _supported_apps("mcp"))
     if invalid_apps:
         raise HTTPException(
             status_code=400, detail=f"unsupported apps: {', '.join(invalid_apps)}"
@@ -1043,11 +1623,19 @@ def queue_mcp_sync(
 
 @router.post("/prompts/import-current", response_model=dict[str, object])
 def import_current_prompt(
-    payload: AgentPromptClientRequest, request: Request
+    payload: AgentPromptImportCurrentRequest, request: Request
 ) -> dict[str, object]:
     require_authenticated_request(request)
+    client_id = _require_local_client(payload.client_id, "prompts")
     try:
-        return _prompt_file_manager(request).import_current(_safe_id(payload.client_id))
+        return _prompt_store(request).import_current(
+            Path.home(),
+            client_id,
+            prompt_id=payload.prompt_id,
+            name=payload.name,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
@@ -1059,20 +1647,23 @@ def apply_local_prompt(
     payload: AgentPromptLocalApplyRequest, request: Request
 ) -> dict[str, object]:
     require_authenticated_request(request)
-    content = payload.content
-    if payload.prompt_id:
-        prompt = _prompt_store(request).get_prompt(_safe_id(payload.prompt_id))
-        if prompt is None:
+    client_id = _require_local_client(payload.client_id, "prompts")
+    store = _prompt_store(request)
+    prompt_id = _safe_id(payload.prompt_id) if payload.prompt_id else ""
+    if prompt_id:
+        if store.get_prompt(prompt_id) is None:
             raise HTTPException(status_code=404, detail="prompt not found")
-        content = str(prompt.get("content") or "")
-    if content is None:
+    elif payload.content is not None:
+        prompt_id = f"{client_id}-adhoc"
+        store.upsert_prompt(prompt_id, f"{client_id} 临时提示词", payload.content)
+    else:
         raise HTTPException(status_code=400, detail="prompt_id or content is required")
     try:
-        result = _prompt_file_manager(request).apply(
-            _safe_id(payload.client_id), content
-        )
+        result = store.install_local(Path.home(), client_id, prompt_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (OSError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     request.app.state.system_terminal_sink.write(
@@ -1086,8 +1677,9 @@ def restore_local_prompt(
     payload: AgentPromptClientRequest, request: Request
 ) -> dict[str, object]:
     require_authenticated_request(request)
+    client_id = _require_local_client(payload.client_id, "prompts")
     try:
-        result = _prompt_file_manager(request).restore(_safe_id(payload.client_id))
+        result = _prompt_store(request).restore_local(Path.home(), client_id)
     except PromptFileConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -1113,7 +1705,10 @@ def upsert_prompt(
     if not payload.content.strip():
         raise HTTPException(status_code=400, detail="content is required")
     return _prompt_store(request).upsert_prompt(
-        prompt_id, payload.name.strip() or prompt_id, payload.content
+        prompt_id,
+        payload.name.strip() or prompt_id,
+        payload.content,
+        description=(payload.description or "").strip() or None,
     )
 
 
@@ -1194,13 +1789,15 @@ def install_local_skill(
     payload: AgentSkillLocalInstallRequest, request: Request
 ) -> dict[str, object]:
     require_authenticated_request(request)
+    client_id = _require_local_client(payload.client_id, "skills")
+    skill_id = safe_skill_name(payload.skill_name)
+    if not skill_id:
+        raise HTTPException(status_code=400, detail="skill_name is invalid")
     try:
-        result = install_skill_to_home(
-            Path.home(),
-            _safe_id(payload.client_id),
-            payload.skill_name,
-            payload.source,
-            mode=payload.mode,
+        store = _skill_store(request)
+        store.import_source(skill_id, skill_id, payload.source)
+        result = store.install_to_client(
+            Path.home(), skill_id, client_id, mode=payload.mode
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1219,14 +1816,40 @@ def update_local_skill(
     payload: AgentSkillLocalActionRequest, request: Request
 ) -> dict[str, object]:
     require_authenticated_request(request)
+    client_id = _require_local_client(payload.client_id, "skills")
+    skill_id = safe_skill_name(payload.skill_name)
+    if not skill_id:
+        raise HTTPException(status_code=400, detail="skill_name is invalid")
     try:
-        result = update_skill_to_home(
-            Path.home(),
-            _safe_id(payload.client_id),
-            payload.skill_name,
-            source=payload.source,
-            mode=payload.mode,
-        )
+        store = _skill_store(request)
+        current = store.get(skill_id)
+        if current is None:
+            legacy = update_skill_to_home(
+                Path.home(),
+                client_id,
+                skill_id,
+                source=payload.source,
+                mode=payload.mode,
+            )
+            store.import_from_client(Path.home(), client_id, skill_id)
+            result = legacy
+        else:
+            source = payload.source or str(current.get("source") or "")
+            if source:
+                store.import_source(
+                    skill_id,
+                    str(current.get("name") or skill_id),
+                    source,
+                    description=current.get("description"),
+                    version=current.get("version"),
+                    metadata=dict(current.get("metadata") or {}),
+                )
+            result = store.install_to_client(
+                Path.home(),
+                skill_id,
+                client_id,
+                mode=payload.mode or "copy",
+            )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1244,10 +1867,16 @@ def uninstall_local_skill(
     payload: AgentSkillLocalActionRequest, request: Request
 ) -> dict[str, object]:
     require_authenticated_request(request)
+    client_id = _require_local_client(payload.client_id, "skills")
+    skill_id = safe_skill_name(payload.skill_name)
+    if not skill_id:
+        raise HTTPException(status_code=400, detail="skill_name is invalid")
     try:
-        result = uninstall_skill_from_home(
-            Path.home(), _safe_id(payload.client_id), payload.skill_name
-        )
+        store = _skill_store(request)
+        if store.get(skill_id) is None:
+            result = uninstall_skill_from_home(Path.home(), client_id, skill_id)
+        else:
+            result = store.uninstall_from_client(Path.home(), skill_id, client_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1320,6 +1949,447 @@ def queue_skill_delete(
             app_id, skill_name, windows=windows
         ),
     )
+
+
+def _build_resource_plan(
+    request: Request, payload: AgentResourceRequest
+) -> AgentResourcePlan:
+    if payload.node_id != "__local__":
+        raise HTTPException(status_code=400, detail="当前版本只执行本地 WSL 资源计划")
+    reconciler = AgentReconciler(agent_data_root(request.app.state.config_root))
+    if payload.resource_type in {None, 'mcp'} or payload.profile_id:
+        store = _mcp_store(request)
+        clients = [payload.client_id] if payload.client_id else list(CLIENT_PATHS)
+        for client_id in clients:
+            if client_id in CLIENT_PATHS:
+                try:
+                    store.refresh_observations(Path.home(), client_id)
+                except ValueError:
+                    # Persisted scan errors become plan warnings, not blind writes.
+                    pass
+    if payload.profile_id:
+        try:
+            return reconciler.plan_profile(
+                payload.profile_id,
+                node_id=payload.node_id,
+                client_id=_safe_id(payload.client_id) if payload.client_id else None,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if payload.action == "sync":
+        selected_types = {payload.resource_type} if payload.resource_type else None
+        plan = reconciler.plan_assignments(
+            node_id=payload.node_id,
+            client_id=_safe_id(payload.client_id) if payload.client_id else None,
+            resource_types=selected_types,
+        )
+        if payload.resource_ids:
+            selected_ids = {item.strip() for item in payload.resource_ids if item.strip()}
+            plan = AgentResourcePlan(
+                operations=[
+                    item for item in plan.operations if item.resource_id in selected_ids
+                ],
+                already_consistent=[
+                    item
+                    for item in plan.already_consistent
+                    if item.rsplit(":", 1)[-1] in selected_ids
+                ],
+                warnings=list(plan.warnings),
+            )
+        return plan
+    if payload.resource_type is None or payload.client_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="resource_type and client_id are required",
+        )
+    resource_ids = [item.strip() for item in payload.resource_ids if item.strip()]
+    if not resource_ids:
+        raise HTTPException(status_code=400, detail="resource_ids is required")
+    feature = {
+        "provider": "providers",
+        "mcp": "mcp",
+        "skill": "skills",
+        "prompt": "prompts",
+        "router": "route",
+    }[payload.resource_type]
+    client_id = _require_local_client(payload.client_id, feature)
+    return reconciler.plan_resources(
+        payload.resource_type,
+        resource_ids,
+        client_id,
+        action=payload.action,
+        node_id=payload.node_id,
+    )
+
+
+def _reconcile_resource_request(
+    request: Request, payload: AgentResourceRequest
+) -> dict[str, object]:
+    plan = _build_resource_plan(request, payload)
+    results: list[dict[str, object]] = []
+    failures: list[dict[str, object]] = []
+    added: list[str] = []
+    updated: list[str] = []
+    removed: list[str] = []
+    for operation in plan.operations:
+        try:
+            result = _execute_resource_operation(request, operation)
+        except Exception as exc:
+            failure = {
+                "action": operation.action,
+                "resource_type": operation.resource_type,
+                "resource_id": operation.resource_id,
+                "client_id": operation.client_id,
+                "error": _operation_error(exc),
+            }
+            failures.append(failure)
+            results.append({**failure, "verified": False})
+            continue
+        normalized = {
+            **result,
+            "action": operation.action,
+            "resource_type": operation.resource_type,
+            "resource_id": operation.resource_id,
+            "client_id": operation.client_id,
+        }
+        results.append(normalized)
+        if not bool(result.get("verified")):
+            failures.append({**normalized, "error": "客户端回读未通过"})
+            continue
+        if operation.action == "install":
+            added.append(operation.resource_id)
+        elif operation.action == "update":
+            updated.append(operation.resource_id)
+        else:
+            removed.append(operation.resource_id)
+
+    verified = not failures and not plan.warnings
+    if verified:
+        if payload.profile_id:
+            _align_profile_assignments(request, payload)
+        elif payload.action in {"install", "update", "uninstall"}:
+            _align_explicit_assignments(request, payload)
+    response = plan.as_dict()
+    response.update(
+        {
+            "results": results,
+            "failures": failures,
+            "verified": verified,
+            "added": sorted(set(added)),
+            "updated": sorted(set(updated)),
+            "removed": sorted(set(removed)),
+        }
+    )
+    return response
+
+
+def _execute_resource_operation(
+    request: Request, operation: AgentResourceOperation
+) -> dict[str, object]:
+    if operation.node_id != "__local__":
+        raise ValueError("当前版本只执行本地 WSL 资源操作")
+    if operation.resource_type == "mcp":
+        result = _run_local_mcp_operation(
+            request,
+            AgentMcpLocalRequest(
+                client_id=operation.client_id,
+                mcp_ids=[operation.resource_id],
+            ),
+            action="uninstall" if operation.action == "uninstall" else "install",
+        )
+        return dict(result)
+    if operation.resource_type == "skill":
+        store = _skill_store(request)
+        if operation.action == "uninstall":
+            return store.uninstall_from_client(
+                Path.home(), operation.resource_id, operation.client_id
+            )
+        return store.install_to_client(
+            Path.home(), operation.resource_id, operation.client_id
+        )
+    if operation.resource_type == "prompt":
+        store = _prompt_store(request)
+        if operation.action != "uninstall":
+            return store.install_local(
+                Path.home(), operation.client_id, operation.resource_id
+            )
+        try:
+            return store.restore_local(Path.home(), operation.client_id)
+        except FileNotFoundError:
+            store.state.remove_prompt_assignment("__local__", operation.client_id)
+            store.state.clear_prompt_observations("__local__", operation.client_id)
+            return {
+                "client_id": operation.client_id,
+                "prompt_id": operation.resource_id,
+                "retained_current_file": True,
+                "verified": True,
+            }
+    if operation.resource_type == "provider":
+        if operation.action == "uninstall":
+            raise ValueError("Provider 使用切换或从库删除，不执行卸载")
+        active = _active_takeover_apps(request, [operation.client_id])
+        if active:
+            raise ValueError(_takeover_conflict_message(active))
+        store = _provider_store(request)
+        include_secrets = bool((operation.config or {}).get("write_secrets"))
+        provider = store.provider_for_apply(
+            operation.client_id,
+            operation.resource_id,
+            include_secrets=include_secrets,
+        )
+        if provider is None:
+            raise FileNotFoundError(f"Provider 不存在: {operation.resource_id}")
+        shell = build_provider_apply_shell(
+            provider,
+            windows=False,
+            write_secrets=include_secrets,
+        )
+        if not shell:
+            raise ValueError(f"{operation.client_id} 暂不支持 Provider 写入")
+        completed = subprocess.run(
+            ["bash", "-lc", shell],
+            cwd=Path.cwd(),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("Provider 客户端写入失败")
+        store.set_current(operation.client_id, operation.resource_id)
+        return {
+            "client_id": operation.client_id,
+            "provider_id": operation.resource_id,
+            "verified": True,
+        }
+    if operation.resource_type == "router":
+        if operation.action == "uninstall":
+            raise ValueError("Router Profile 不执行卸载")
+        return _apply_router_profile_item(request, operation)
+    raise ValueError(f"不支持的资源类型: {operation.resource_type}")
+
+
+def _apply_router_profile_item(
+    request: Request, operation: AgentResourceOperation
+) -> dict[str, object]:
+    config = dict(operation.config or {})
+    controller = request.app.state.agent_router_controller
+    store = controller.store
+    global_keys = {
+        key: config[key]
+        for key in (
+            "listen_address",
+            "listen_port",
+            "show_home_switch",
+            "outbound_proxy",
+        )
+        if key in config
+    }
+    if global_keys:
+        store.update_global(**global_keys)
+    provider_id = str(config.get("provider_id") or "").strip()
+    if provider_id:
+        runtime = _provider_store(request).runtime_profile(
+            operation.client_id, provider_id
+        )
+        if runtime is None:
+            raise FileNotFoundError(f"Router Provider 不存在: {provider_id}")
+        store.set_provider(
+            operation.client_id, runtime, provider_id=provider_id
+        )
+    queue = config.get("failover_queue")
+    if isinstance(queue, list):
+        store.set_failover_queue(
+            operation.client_id, [str(item) for item in queue]
+        )
+    policy = config.get("policy")
+    if isinstance(policy, dict) and policy:
+        store.update_provider_policy(operation.client_id, **policy)
+    if "takeover" in config:
+        if bool(config["takeover"]):
+            controller.enable_takeover(operation.client_id)
+        else:
+            controller.disable_takeover(operation.client_id)
+    return {
+        "client_id": operation.client_id,
+        "router_id": operation.resource_id,
+        "verified": True,
+    }
+
+
+def _align_explicit_assignments(
+    request: Request, payload: AgentResourceRequest
+) -> None:
+    if payload.resource_type not in {"mcp", "skill", "prompt"} or not payload.client_id:
+        return
+    state = PanelStateStore(agent_data_root(request.app.state.config_root))
+    client_id = _safe_id(payload.client_id)
+    for resource_id in {item.strip() for item in payload.resource_ids if item.strip()}:
+        if payload.action == "uninstall":
+            _remove_resource_assignment(
+                state, payload.resource_type, resource_id, "__local__", client_id
+            )
+            continue
+        _set_resource_assignment(
+            request,
+            state,
+            payload.resource_type,
+            resource_id,
+            client_id,
+        )
+
+
+def _align_profile_assignments(
+    request: Request, payload: AgentResourceRequest
+) -> None:
+    if not payload.profile_id:
+        return
+    profile = _profile_store(request).get(payload.profile_id)
+    if profile is None:
+        return
+    items = [
+        item
+        for item in profile.get("items", [])
+        if payload.client_id is None or item["client_id"] == _safe_id(payload.client_id)
+    ]
+    clients = {str(item["client_id"]) for item in items}
+    if payload.client_id:
+        clients.add(_safe_id(payload.client_id))
+    state = PanelStateStore(agent_data_root(request.app.state.config_root))
+    for client_id in clients:
+        client_items = [item for item in items if item["client_id"] == client_id]
+        mcp_assignments: list[dict[str, object]] = []
+        skill_assignments: list[dict[str, object]] = []
+        prompt_id: str | None = None
+        for item in client_items:
+            resource_type = str(item["resource_type"])
+            resource_id = str(item["resource_id"])
+            if resource_type == "mcp":
+                resolved = _mcp_store(request).resolve_server_for_client(
+                    resource_id, client_id, "linux"
+                )
+                if resolved is not None:
+                    mcp_assignments.append(
+                        {
+                            "mcp_id": resource_id,
+                            "variant_client_id": resolved.get(
+                                "variant_client_id", client_id
+                            ),
+                            "variant_platform": resolved.get(
+                                "variant_platform", "any"
+                            ),
+                        }
+                    )
+            elif resource_type == "skill":
+                skill_assignments.append(
+                    {
+                        "skill_id": resource_id,
+                        "variant_client_id": client_id,
+                        "variant_platform": "linux",
+                    }
+                )
+            elif resource_type == "prompt":
+                prompt_id = resource_id
+        state.replace_mcp_assignments("__local__", client_id, mcp_assignments)
+        state.replace_skill_assignments("__local__", client_id, skill_assignments)
+        if prompt_id:
+            state.set_prompt_assignment("__local__", client_id, prompt_id)
+        else:
+            state.remove_prompt_assignment("__local__", client_id)
+
+
+def _set_resource_assignment(
+    request: Request,
+    state: PanelStateStore,
+    resource_type: str,
+    resource_id: str,
+    client_id: str,
+) -> None:
+    if resource_type == "mcp":
+        resolved = _mcp_store(request).resolve_server_for_client(
+            resource_id, client_id, "linux"
+        )
+        if resolved is not None:
+            state.set_mcp_assignment(
+                "__local__",
+                client_id,
+                resource_id,
+                variant_client_id=str(
+                    resolved.get("variant_client_id") or client_id
+                ),
+                variant_platform=str(
+                    resolved.get("variant_platform") or "any"
+                ),
+            )
+    elif resource_type == "skill":
+        state.set_skill_assignment("__local__", client_id, resource_id)
+    elif resource_type == "prompt":
+        state.set_prompt_assignment("__local__", client_id, resource_id)
+
+
+def _resource_assignments(
+    state: PanelStateStore, resource_type: str, resource_id: str
+) -> list[dict[str, object]]:
+    if resource_type == "mcp":
+        return [
+            item
+            for item in state.list_mcp_assignments()
+            if item["mcp_id"] == resource_id
+        ]
+    if resource_type == "skill":
+        return [
+            item
+            for item in state.list_skill_assignments()
+            if item["skill_id"] == resource_id
+        ]
+    return [
+        item
+        for item in state.list_prompt_assignments()
+        if item["prompt_id"] == resource_id
+    ]
+
+
+def _resource_observed_present(
+    state: PanelStateStore,
+    resource_type: str,
+    resource_id: str,
+    node_id: str,
+    client_id: str,
+) -> bool:
+    if resource_type == "mcp":
+        rows = state.list_mcp_observations(node_id, client_id)
+        id_key = "mcp_id"
+    elif resource_type == "skill":
+        rows = state.list_skill_observations(node_id, client_id)
+        id_key = "skill_id"
+    else:
+        rows = state.list_prompt_observations(node_id, client_id)
+        id_key = "prompt_id"
+    return any(
+        item[id_key] == resource_id and bool(item.get("present"))
+        for item in rows
+    )
+
+
+def _remove_resource_assignment(
+    state: PanelStateStore,
+    resource_type: str,
+    resource_id: str,
+    node_id: str,
+    client_id: str,
+) -> None:
+    if resource_type == "mcp":
+        state.remove_mcp_assignments(node_id, client_id, {resource_id})
+    elif resource_type == "skill":
+        state.remove_skill_assignments(node_id, client_id, {resource_id})
+    else:
+        state.remove_prompt_assignment(node_id, client_id)
+
+
+def _operation_error(exc: Exception) -> object:
+    if isinstance(exc, HTTPException):
+        return exc.detail
+    return str(exc)
 
 
 def _queue_agent_app_tasks(
@@ -1446,17 +2516,88 @@ def _mcp_store(request: Request) -> AgentMcpStore:
     return AgentMcpStore(agent_data_root(request.app.state.config_root))
 
 
+def _skill_store(request: Request) -> AgentSkillStore:
+    return AgentSkillStore(agent_data_root(request.app.state.config_root))
+
+
+def _profile_store(request: Request) -> AgentProfileStore:
+    return AgentProfileStore(agent_data_root(request.app.state.config_root))
+
+
 def _prompt_store(request: Request) -> AgentPromptStore:
     return AgentPromptStore(agent_data_root(request.app.state.config_root))
 
 
-def _prompt_file_manager(request: Request) -> AgentPromptFileManager:
-    data_root = agent_data_root(request.app.state.config_root)
-    return AgentPromptFileManager(Path.home(), data_root / "prompt-files")
-
-
 def _provider_store(request: Request) -> AgentProviderStore:
     return AgentProviderStore(agent_data_root(request.app.state.config_root))
+
+
+def _active_takeover_apps(request: Request, apps: list[str]) -> set[str]:
+    controller = getattr(request.app.state, "agent_router_controller", None)
+    if controller is None:
+        return set()
+    active = controller.active_takeover_clients()
+    return {app_id for app_id in apps if app_id in active}
+
+
+def _takeover_conflict_message(apps: set[str]) -> str:
+    names = ", ".join(sorted(apps))
+    return f"Router 正在接管 {names}，请先关闭接管并恢复客户端配置"
+
+
+def _group_rows(
+    rows: list[dict[str, object]], key: str
+) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for item in rows:
+        grouped.setdefault(str(item[key]), []).append(item)
+    return grouped
+
+
+def _public_profile(profile: dict[str, object]) -> dict[str, object]:
+    return redact_sensitive(profile)
+
+
+def _public_observation(item: dict[str, object]) -> dict[str, object]:
+    safe = dict(item)
+    safe.pop("public_spec_json", None)
+    if isinstance(safe.get("public_spec"), dict):
+        safe["public_spec"] = redact_sensitive(dict(safe["public_spec"]))
+    return safe
+
+
+def _skill_discovery(
+    home: Path, managed: dict[str, dict[str, object]]
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for client_id, inventory in scan_agent_skills(home).items():
+        items = inventory.get("items") if isinstance(inventory, dict) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            skill_id = str(item.get("name") or "")
+            if not skill_id or skill_id in managed:
+                continue
+            rows.append({**item, "id": skill_id, "client_id": client_id})
+    return sorted(
+        rows,
+        key=lambda item: (
+            str(item.get("name") or "").lower(),
+            str(item.get("client_id") or ""),
+        ),
+    )
+
+
+def _require_local_client(value: str, feature: str) -> str:
+    client_id = _safe_id(value)
+    if not client_id or client_id not in _supported_apps(feature):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{client_id or value} 暂不支持本地 {feature} 写入",
+        )
+    return client_id
 
 
 def _safe_id(value: str) -> str:
@@ -1465,12 +2606,16 @@ def _safe_id(value: str) -> str:
     ).strip("-")
 
 
-def _safe_apps(values: list[str]) -> list[str]:
-    supported = _supported_apps()
+def _safe_apps(values: list[str], *, feature: str | None = None) -> list[str]:
+    supported = _supported_apps(feature)
     return [app_id for value in values if (app_id := _safe_id(value)) in supported]
 
 
-def _supported_apps() -> set[str]:
+def _supported_apps(feature: str | None = None) -> set[str]:
     from app.services.agent_clients import AGENT_CLIENTS
 
-    return {client.id for client in AGENT_CLIENTS}
+    return {
+        client.id
+        for client in AGENT_CLIENTS
+        if feature is None or feature in client.write_support
+    }

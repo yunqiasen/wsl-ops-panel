@@ -1,5 +1,5 @@
 id: agent
-label: agent
+label: Agent
 order: 60
-description: Agent placeholders
+description: Agent 插件、Skill、MCP、工具和工作流维护入口。CLI 本体仍在 Node 分类展示。
 enabled: true

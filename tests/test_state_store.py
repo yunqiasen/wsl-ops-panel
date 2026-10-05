@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from app.models.assets import AssetSnapshot
 from app.registry.service import RegistryService
 from app.services.agent_mcp import AgentMcpStore
@@ -134,7 +136,11 @@ def test_agent_provider_store_persists_in_state_db(tmp_path: Path) -> None:
     )
     assert reloaded is not None
     assert reloaded["settings_config"]["config"] == 'model = "gpt-5"'
-    assert store.delete_provider("codex", "team") is True
+    from app.services.agent_providers import CurrentProviderError
+
+    with pytest.raises(CurrentProviderError, match="current provider"):
+        store.delete_provider("codex", "team")
+    assert store.get_provider("codex", "team") is not None
 
 
 def test_panel_state_store_persists_mcp_variant_assignment_and_observation(

@@ -1,0 +1,17 @@
+id: docker__xinghai-image-studio-ui
+category: docker
+type: docker_compose
+name: 星海图像工作台 UI
+description: 星海图像工作台用户端 UI：面向普通用户的图片生成和查看前端页面。
+enabled: true
+config:
+  project_dir: "/home/div/1_Project_dir/AI/image/xinghai-image-studio-ui"
+  compose_file: "docker-compose.yml"
+  primary_container: "xinghai-image-studio-ui"
+  compose_service: "web"
+  endpoints:
+    - label: "Web 入口"
+      host_port: "18100"
+      container_port: "18100"
+      path: "/"
+      primary: true

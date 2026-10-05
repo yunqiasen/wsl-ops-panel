@@ -1,0 +1,21 @@
+id: docker__xianyu-auto-reply-fix
+category: docker
+type: docker_compose
+name: Xianyu Auto Reply
+description: Xianyu Auto Reply：闲鱼智能客服系统，支持多账号管理、AI 自动回复、自动发货确认和 Web 管理后台。
+enabled: true
+config:
+  project_dir: "/home/div/1_Project_dir/Project/Xianyu/xianyu-auto-reply-fix"
+  compose_file: "docker-compose.yml"
+  primary_container: "xianyu-auto-reply-fix"
+  compose_service: "xianyu-app"
+  endpoints:
+    - label: "Web 管理后台"
+      host_port: "9000"
+      container_port: "8090"
+      path: "/"
+      primary: true
+    - label: "VNC"
+      host_port: "5900"
+      container_port: "5900"
+      path: "/"

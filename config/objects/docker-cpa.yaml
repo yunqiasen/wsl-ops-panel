@@ -2,9 +2,32 @@ id: cpa
 category: docker
 type: docker_compose
 name: CPA / CLIProxyAPI
+description: CPA CLIProxyAPI：把 ChatGPT、Claude、Gemini 等账号凭证代理成 OpenAI 兼容 API，并提供管理面板。
 enabled: true
 config:
   project_dir: "/home/div/1_Project_dir/AI/CLIProxyAPI"
-  compose_file: "docker-compose.yml"
+  compose_file: "docker-compose.local.yml"
   primary_container: "cli-proxy-api"
   compose_service: "cli-proxy-api"
+  endpoints:
+    - label: "API / 管理面板入口"
+      host_port: "8317"
+      container_port: "8317"
+      path: "/management.html"
+      primary: true
+    - label: "OpenAI / Claude / Gemini 兼容 API"
+      host_port: "8317"
+      container_port: "8317"
+      path: "/v1/models"
+    - label: "iFlow OAuth 回调"
+      host_port: "11451"
+      container_port: "11451"
+      path: "/oauth2callback"
+    - label: "Antigravity OAuth 回调"
+      host_port: "51121"
+      container_port: "51121"
+      path: "/oauth-callback"
+    - label: "Claude OAuth 回调"
+      host_port: "54545"
+      container_port: "54545"
+      path: "/callback"

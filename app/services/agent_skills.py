@@ -11,12 +11,19 @@ import urllib.error
 import urllib.request
 import zipfile
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Mapping
+
+from app.services.agent_paths import resolve_agent_paths
 
 from app.services.agent_clients import AGENT_CLIENTS, get_agent_client
 
 
-def scan_agent_skills(home: Path | None = None) -> dict[str, dict[str, Any]]:
+def scan_agent_skills(
+    home: Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Path | str] | None = None,
+) -> dict[str, dict[str, Any]]:
     home = home or Path.home()
     result: dict[str, dict[str, Any]] = {}
     for client in AGENT_CLIENTS:
@@ -28,7 +35,17 @@ def scan_agent_skills(home: Path | None = None) -> dict[str, dict[str, Any]]:
                 "items": [],
             }
             continue
-        path = _resolve(client.skill_dir, home)
+        path = resolve_agent_paths(
+            client.id, home, environ=environ, overrides=overrides
+        ).skills
+        if path is None:
+            result[client.id] = {
+                "client": client.id,
+                "path": None,
+                "count": 0,
+                "items": [],
+            }
+            continue
         items = []
         if path.exists() and path.is_dir():
             for child in sorted(path.iterdir(), key=lambda item: item.name.lower()):
@@ -64,7 +81,7 @@ def build_skill_install_shell(
     client = get_agent_client(client_id)
     safe_name = safe_skill_name(skill_name)
     source = source.strip()
-    if client is None or not client.skill_dir or windows or not safe_name or not source:
+    if client is None or not client.skill_dir or "skills" not in client.write_support or windows or not safe_name or not source:
         return None
     target = f"{client.skill_dir.rstrip('/')}/{safe_name}"
     if _looks_like_git_url(source):
@@ -86,7 +103,7 @@ def build_skill_update_shell(
 ) -> str | None:
     client = get_agent_client(client_id)
     safe_name = safe_skill_name(skill_name)
-    if client is None or not client.skill_dir or windows or not safe_name:
+    if client is None or not client.skill_dir or "skills" not in client.write_support or windows or not safe_name:
         return None
     target = f"{client.skill_dir.rstrip('/')}/{safe_name}"
     return (
@@ -102,7 +119,7 @@ def build_skill_delete_shell(
 ) -> str | None:
     client = get_agent_client(client_id)
     safe_name = safe_skill_name(skill_name)
-    if client is None or not client.skill_dir or windows or not safe_name:
+    if client is None or not client.skill_dir or "skills" not in client.write_support or windows or not safe_name:
         return None
     target = f"{client.skill_dir.rstrip('/')}/{safe_name}"
     return (
@@ -166,6 +183,8 @@ def install_skill_to_home(
     source: str,
     *,
     mode: str = "copy",
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Path | str] | None = None,
 ) -> dict[str, Any]:
     """Install one verified Skill into one client-specific local directory."""
     home_path = Path(home).expanduser()
@@ -184,7 +203,11 @@ def install_skill_to_home(
     if mode == "symlink" and _source_is_archive_or_remote(source_value):
         raise ValueError("symlink 只支持本地目录来源")
 
-    target_root = _resolve(client.skill_dir, home_path)
+    target_root = resolve_agent_paths(
+        client_id, home_path, environ=environ, overrides=overrides
+    ).skills
+    if target_root is None:
+        raise ValueError(f"{client_id} 暂不支持 Skill 写入")
     target_root.mkdir(parents=True, exist_ok=True)
     target = target_root / safe_name
     existed = _path_exists(target)
@@ -260,9 +283,13 @@ def update_skill_to_home(
     *,
     source: str | None = None,
     mode: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Path | str] | None = None,
 ) -> dict[str, Any]:
     home_path = Path(home).expanduser()
-    target = _skill_target(home_path, client_id, skill_name)
+    target = _skill_target(
+        home_path, client_id, skill_name, environ=environ, overrides=overrides
+    )
     metadata = _read_skill_metadata(target)
     source_value = (source or str(metadata.get("source") or "")).strip()
     if not source_value:
@@ -304,18 +331,31 @@ def update_skill_to_home(
             "verified": True,
         }
     return install_skill_to_home(
-        home_path, client_id, skill_name, source_value, mode=selected_mode
+        home_path,
+        client_id,
+        skill_name,
+        source_value,
+        mode=selected_mode,
+        environ=environ,
+        overrides=overrides,
     )
 
 
 def uninstall_skill_from_home(
-    home: Path | str, client_id: str, skill_name: str
+    home: Path | str,
+    client_id: str,
+    skill_name: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Path | str] | None = None,
 ) -> dict[str, Any]:
     home_path = Path(home).expanduser()
     safe_name = safe_skill_name(skill_name)
     if not safe_name:
         raise ValueError("skill_name is invalid")
-    target = _skill_target(home_path, client_id, safe_name)
+    target = _skill_target(
+        home_path, client_id, safe_name, environ=environ, overrides=overrides
+    )
     sidecar = _skill_sidecar(target)
     if not _path_exists(target):
         raise FileNotFoundError(f"Skill 不存在: {target}")
@@ -339,14 +379,26 @@ def uninstall_skill_from_home(
     }
 
 
-def _skill_target(home: Path, client_id: str, skill_name: str) -> Path:
+def _skill_target(
+    home: Path,
+    client_id: str,
+    skill_name: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Path | str] | None = None,
+) -> Path:
     client = get_agent_client(client_id)
     safe_name = safe_skill_name(skill_name)
     if client is None or not client.skill_dir or "skills" not in client.write_support:
         raise ValueError(f"{client_id} 暂不支持 Skill 写入")
     if not safe_name:
         raise ValueError("skill_name is invalid")
-    return _resolve(client.skill_dir, home) / safe_name
+    root = resolve_agent_paths(
+        client_id, home, environ=environ, overrides=overrides
+    ).skills
+    if root is None:
+        raise ValueError(f"{client_id} 暂不支持 Skill 写入")
+    return root / safe_name
 
 
 def _skill_sidecar(target: Path) -> Path:

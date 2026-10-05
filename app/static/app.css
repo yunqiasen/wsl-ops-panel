@@ -2330,6 +2330,70 @@ button.is-busy::after,
   min-height: 36px;
 }
 
+@media (max-width: 700px) {
+  body[data-page="agent"] .sidebar {
+    display: grid;
+    gap: 8px;
+    padding: 8px 12px 10px;
+    overflow: hidden;
+  }
+  body[data-page="agent"] .brand {
+    min-height: 38px;
+    gap: 8px;
+    padding: 0 2px;
+  }
+  body[data-page="agent"] .brand-mark--image {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    box-shadow: 0 8px 20px rgba(37, 99, 235, .14);
+  }
+  body[data-page="agent"] .brand-mark--image img {
+    border-radius: 10px;
+  }
+  body[data-page="agent"] .brand-copy strong {
+    max-width: 230px;
+    font-size: .84rem;
+  }
+  body[data-page="agent"] .brand-copy small {
+    font-size: .66rem;
+  }
+  body[data-page="agent"] .nav-stack {
+    display: flex;
+    gap: 4px;
+    margin-top: 0;
+    padding-bottom: 2px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+  body[data-page="agent"] .nav-stack::-webkit-scrollbar {
+    display: none;
+  }
+  body[data-page="agent"] .nav-group {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+  body[data-page="agent"] .nav-label {
+    display: none;
+  }
+  body[data-page="agent"] .nav-item {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: .74rem;
+    white-space: nowrap;
+  }
+  body[data-page="agent"] .nav-item.is-active::before {
+    inset: auto auto 2px 50%;
+    width: 18px;
+    height: 2px;
+    transform: translateX(-50%);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -5885,6 +5949,7 @@ button.is-busy::after,
 .agent-editor-context__glyph--gemini { background: #e0e7ff; color: #4338ca; }
 .agent-editor-context__glyph--opencode { background: #e2e8f0; color: #334155; }
 .agent-editor-context__glyph--openclaw { background: #ede9fe; color: #7c3aed; }
+.agent-editor-context__glyph--grokbuild { background: #dff7ef; color: #087f68; }
 .agent-editor-context__glyph--hermes { background: #fce7f3; color: #be185d; }
 
 .agent-editor-context strong,
@@ -7227,6 +7292,7 @@ body[data-page="agent"] .agent-client-glyph--claude { background: #ffead8; color
 body[data-page="agent"] .agent-client-glyph--gemini { background: #e7ecff; color: #4057b8; }
 body[data-page="agent"] .agent-client-glyph--opencode { background: #e8ebef; color: #43505e; }
 body[data-page="agent"] .agent-client-glyph--openclaw { background: #eee8ff; color: #6e42b6; }
+body[data-page="agent"] .agent-client-glyph--grokbuild { background: #e8f7f2; color: #087f68; }
 body[data-page="agent"] .agent-client-glyph--hermes { background: #fce5f1; color: #a33c73; }
 body[data-page="agent"] .agent-empty-inline { padding: 10px; color: var(--aw-muted); font-size: .78rem; }
 
@@ -7353,4 +7419,1185 @@ body[data-page="agent"] .agent-toast .flash { border-color: #b8cce7; background:
   body[data-page="agent"] .agent-row-actions { justify-content: flex-start; grid-column: 1 / -1; }
   body[data-page="agent"] .agent-tabs { width: 100%; overflow-x: auto; }
   body[data-page="agent"] .agent-tabs button { flex: 1 0 auto; }
+}
+
+/* Agent workbench: compact CC Switch-style routing controls. */
+body[data-page="agent"] .agent-provider-route-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+body[data-page="agent"] .agent-provider-route-options .agent-toggle-line,
+body[data-page="agent"] .agent-policy-switch {
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #dce5ef;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+body[data-page="agent"] .agent-route-card--policy {
+  align-content: start;
+}
+
+body[data-page="agent"] .agent-policy-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+body[data-page="agent"] .agent-policy-switch span {
+  display: grid;
+  gap: 2px;
+}
+
+body[data-page="agent"] .agent-policy-switch b {
+  color: var(--aw-ink);
+  font-size: .72rem;
+}
+
+body[data-page="agent"] .agent-policy-switch small {
+  color: var(--aw-muted);
+  font-size: .62rem;
+  line-height: 1.4;
+}
+
+body[data-page="agent"] .agent-policy-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+body[data-page="agent"] .agent-route-policy-foot {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+body[data-page="agent"] .agent-route-policy-foot .agent-route-help {
+  max-width: 42rem;
+}
+
+@media (max-width: 720px) {
+  body[data-page="agent"] .agent-provider-route-options,
+  body[data-page="agent"] .agent-policy-fields {
+    grid-template-columns: 1fr;
+  }
+  body[data-page="agent"] .agent-route-policy-foot {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+/* Agent Router: explicit CC Switch-style failover queue. */
+body[data-page="agent"] .agent-route-card--policy {
+  grid-column: 1 / -1;
+}
+
+body[data-page="agent"] .agent-failover-queue {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--aw-line);
+}
+
+body[data-page="agent"] .agent-failover-queue-head,
+body[data-page="agent"] .agent-failover-queue-editor {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+body[data-page="agent"] .agent-failover-queue-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+body[data-page="agent"] .agent-failover-queue-head strong {
+  color: var(--aw-ink);
+  font-size: .72rem;
+}
+
+body[data-page="agent"] .agent-failover-queue-head small {
+  color: var(--aw-muted);
+  font-size: .61rem;
+}
+
+body[data-page="agent"] .agent-failover-queue-list {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  overflow-x: auto;
+  border: 1px solid #dce5ef;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+body[data-page="agent"] .agent-queue-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 4px 3px 5px;
+  border: 1px solid #cdd9e7;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--aw-ink);
+  font-size: .65rem;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+}
+
+body[data-page="agent"] .agent-queue-chip > b {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 5px;
+  background: #e8f1fb;
+  color: #245786;
+  font-size: .58rem;
+}
+
+body[data-page="agent"] .agent-queue-chip-action {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #617287;
+  cursor: pointer;
+  font: inherit;
+}
+
+body[data-page="agent"] .agent-queue-chip-action:hover:not(:disabled) {
+  background: #e8eef5;
+  color: #173b5f;
+}
+
+body[data-page="agent"] .agent-queue-chip-action:disabled {
+  opacity: .28;
+  cursor: default;
+}
+
+body[data-page="agent"] .agent-failover-queue-editor {
+  justify-content: flex-start;
+}
+
+body[data-page="agent"] .agent-failover-queue-editor select {
+  width: min(280px, 100%);
+  min-height: 32px;
+  padding: 5px 28px 5px 8px;
+  border: 1px solid #d5dfeb;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--aw-ink);
+  font-size: .68rem;
+}
+
+body[data-page="agent"] .agent-failover-queue-editor [data-agent-failover-queue-save] {
+  margin-left: auto;
+}
+
+@media (max-width: 720px) {
+  body[data-page="agent"] .agent-route-card--policy { grid-column: auto; }
+  body[data-page="agent"] .agent-failover-queue-head,
+  body[data-page="agent"] .agent-failover-queue-editor { align-items: stretch; flex-wrap: wrap; }
+  body[data-page="agent"] .agent-failover-queue-editor select { width: 100%; }
+  body[data-page="agent"] .agent-failover-queue-editor [data-agent-failover-queue-save] { margin-left: 0; }
+}
+
+/* Agent database resource center: compact, database-first inventory. */
+body[data-page="agent"] .agent-resource-layout,
+body[data-page="agent"] .agent-profile-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 368px);
+  gap: 12px;
+  min-width: 0;
+  align-items: start;
+}
+
+body[data-page="agent"] .agent-resource-column,
+body[data-page="agent"] .agent-library-zone,
+body[data-page="agent"] .agent-discovery-zone,
+body[data-page="agent"] .agent-profile-list {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+body[data-page="agent"] .agent-library-zone,
+body[data-page="agent"] .agent-discovery-zone {
+  padding: 9px;
+  border: 1px solid var(--aw-line);
+  border-radius: 11px;
+  background: #f8fafc;
+}
+
+body[data-page="agent"] .agent-discovery-zone {
+  border-style: dashed;
+  background: #fbfcfe;
+}
+
+body[data-page="agent"] .agent-zone-heading,
+body[data-page="agent"] .agent-resource-identity,
+body[data-page="agent"] .agent-resource-state,
+body[data-page="agent"] .agent-resource-actions,
+body[data-page="agent"] .agent-discovery-row,
+body[data-page="agent"] .agent-profile-card,
+body[data-page="agent"] .agent-profile-target,
+body[data-page="agent"] .agent-profile-resource-group header {
+  display: flex;
+  align-items: center;
+}
+
+body[data-page="agent"] .agent-zone-heading {
+  justify-content: space-between;
+  min-height: 30px;
+  gap: 10px;
+  padding: 0 2px;
+}
+
+body[data-page="agent"] .agent-zone-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+body[data-page="agent"] .agent-zone-heading strong {
+  color: var(--aw-ink);
+  font-size: .76rem;
+}
+
+body[data-page="agent"] .agent-zone-heading small {
+  overflow: hidden;
+  color: var(--aw-muted);
+  font-size: .61rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .agent-zone-count {
+  display: grid;
+  min-width: 25px;
+  height: 22px;
+  padding: 0 6px;
+  place-items: center;
+  border: 1px solid #d7e1ed;
+  border-radius: 6px;
+  background: #fff;
+  color: #536274;
+  font: 800 .64rem/1 "IBM Plex Mono", ui-monospace, monospace;
+}
+
+body[data-page="agent"] .agent-resource-grid {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+body[data-page="agent"] .agent-resource-card {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.1fr) minmax(250px, 1fr) auto;
+  min-width: 0;
+  min-height: 62px;
+  gap: 8px 10px;
+  align-items: center;
+  padding: 8px 9px;
+  border: 1px solid #dfe5ec;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+  transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+body[data-page="agent"] .agent-resource-card:hover {
+  border-color: #afc5df;
+  box-shadow: 0 5px 14px rgb(24 50 82 / 7%);
+  transform: translateY(-1px);
+}
+
+body[data-page="agent"] .agent-resource-identity {
+  min-width: 0;
+  gap: 8px;
+}
+
+body[data-page="agent"] .agent-resource-identity > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+body[data-page="agent"] .agent-resource-identity strong,
+body[data-page="agent"] .agent-discovery-row strong,
+body[data-page="agent"] .agent-profile-card strong {
+  overflow: hidden;
+  color: var(--aw-ink);
+  font-size: .73rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .agent-resource-identity small,
+body[data-page="agent"] .agent-discovery-row small,
+body[data-page="agent"] .agent-profile-card small {
+  overflow: hidden;
+  color: var(--aw-muted);
+  font-size: .59rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .agent-resource-mark {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  place-items: center;
+  border-radius: 7px;
+  background: #e7f0fe;
+  color: #1f5eaf;
+  font-size: .67rem;
+  font-weight: 950;
+}
+
+body[data-page="agent"] .agent-resource-mark.is-skill {
+  background: #e4f5ec;
+  color: #08734e;
+}
+
+body[data-page="agent"] .agent-resource-mark.is-prompt {
+  background: #f3eafa;
+  color: #71429b;
+}
+
+body[data-page="agent"] .agent-resource-description {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  margin: -3px 0 0 35px;
+  color: var(--aw-muted);
+  font-size: .61rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .agent-resource-state {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+body[data-page="agent"] .agent-state-pill.is-library {
+  border-color: #cad7e6;
+  background: #edf2f7;
+  color: #42536a;
+}
+
+body[data-page="agent"] .agent-state-pill.is-assigned {
+  border-color: #b9d2f4;
+  background: #edf5ff;
+  color: #1e5ca8;
+}
+
+body[data-page="agent"] .agent-state-pill.is-warn {
+  border-color: #eed6a6;
+  background: #fff8e8;
+  color: #99600e;
+}
+
+body[data-page="agent"] .agent-state-pill.is-danger {
+  border-color: #efc5ca;
+  background: #fff2f3;
+  color: #ad2936;
+}
+
+body[data-page="agent"] .agent-state-pill.is-variant {
+  max-width: 145px;
+  overflow: hidden;
+  border-color: #ddd5eb;
+  background: #f7f3fb;
+  color: #66517b;
+  text-overflow: ellipsis;
+}
+
+body[data-page="agent"] .agent-resource-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+body[data-page="agent"] .agent-resource-actions .button {
+  min-height: 29px;
+  padding-inline: 7px;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .button:disabled,
+body[data-page="agent"] .agent-profile-resource:disabled {
+  opacity: .42;
+  cursor: not-allowed;
+  transform: none;
+}
+
+body[data-page="agent"] .agent-discovery-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 5px;
+}
+
+body[data-page="agent"] .agent-discovery-row {
+  min-width: 0;
+  min-height: 43px;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 7px 6px 9px;
+  border: 1px solid #dfe6ef;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--aw-ink);
+  text-align: left;
+}
+
+body[data-page="agent"] button.agent-discovery-row {
+  width: 100%;
+  cursor: pointer;
+}
+
+body[data-page="agent"] .agent-discovery-row > div,
+body[data-page="agent"] .agent-discovery-row > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+body[data-page="agent"] .agent-profile-list {
+  align-content: start;
+}
+
+body[data-page="agent"] .agent-profile-card {
+  min-width: 0;
+  min-height: 58px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 9px;
+  border: 1px solid #dfe5ec;
+  border-radius: 9px;
+  background: #fff;
+}
+
+body[data-page="agent"] .agent-profile-card > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+body[data-page="agent"] .agent-profile-card p {
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: var(--aw-muted);
+  font-size: .61rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .agent-profile-editor {
+  position: sticky;
+  top: 58px;
+}
+
+body[data-page="agent"] .agent-profile-target {
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+
+body[data-page="agent"] .agent-profile-target > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+body[data-page="agent"] .agent-profile-target strong {
+  font-size: .72rem;
+}
+
+body[data-page="agent"] .agent-profile-target small {
+  color: var(--aw-muted);
+  font-size: .59rem;
+}
+
+body[data-page="agent"] .agent-profile-resource-picker {
+  display: grid;
+  gap: 7px;
+}
+
+body[data-page="agent"] .agent-profile-resource-group {
+  display: grid;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid #e1e6ed;
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+body[data-page="agent"] .agent-profile-resource-group header {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+body[data-page="agent"] .agent-profile-resource-group header strong {
+  color: #536274;
+  font-size: .64rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+body[data-page="agent"] .agent-profile-resource-group header span {
+  color: var(--aw-faint);
+  font: 700 .58rem/1 "IBM Plex Mono", ui-monospace, monospace;
+}
+
+body[data-page="agent"] .agent-profile-resource-group > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+body[data-page="agent"] .agent-profile-resource {
+  display: grid;
+  min-width: 0;
+  min-height: 39px;
+  gap: 1px;
+  padding: 5px 7px;
+  border: 1px solid #dbe2eb;
+  border-radius: 7px;
+  background: #fff;
+  color: #59687a;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+
+body[data-page="agent"] .agent-profile-resource:hover {
+  border-color: #a9c1df;
+}
+
+body[data-page="agent"] .agent-profile-resource.is-active {
+  border-color: #79a8e7;
+  background: #eaf3ff;
+  color: #174f98;
+  box-shadow: inset 3px 0 #2166d1;
+}
+
+body[data-page="agent"] .agent-profile-resource span,
+body[data-page="agent"] .agent-profile-resource small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .agent-profile-resource span {
+  font-size: .65rem;
+  font-weight: 800;
+}
+
+body[data-page="agent"] .agent-profile-resource small {
+  color: inherit;
+  font-size: .56rem;
+  opacity: .72;
+}
+
+body[data-page="agent"] [data-agent-profile-id]:read-only {
+  background: #f0f3f7 !important;
+  color: #7b8796 !important;
+}
+
+body[data-page="agent"] button:focus-visible,
+body[data-page="agent"] input:focus-visible,
+body[data-page="agent"] select:focus-visible,
+body[data-page="agent"] textarea:focus-visible {
+  outline: 2px solid #2166d1;
+  outline-offset: 2px;
+}
+
+@media (max-width: 1180px) {
+  body[data-page="agent"] .agent-resource-card {
+    grid-template-columns: minmax(170px, 1fr) minmax(230px, 1fr);
+  }
+  body[data-page="agent"] .agent-resource-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 980px) {
+  body[data-page="agent"] .agent-resource-layout,
+  body[data-page="agent"] .agent-profile-layout {
+    grid-template-columns: 1fr;
+  }
+  body[data-page="agent"] .agent-profile-editor {
+    position: static;
+  }
+}
+
+@media (max-width: 700px) {
+  body[data-page="agent"] .agent-shell,
+  body[data-page="agent"] .agent-panel,
+  body[data-page="agent"] .agent-resource-layout,
+  body[data-page="agent"] .agent-profile-layout,
+  body[data-page="agent"] .agent-resource-column,
+  body[data-page="agent"] .agent-resource-card,
+  body[data-page="agent"] .agent-editor {
+    max-width: 100%;
+    min-width: 0;
+  }
+  body[data-page="agent"] .agent-panel {
+    gap: 10px;
+    padding: 10px;
+  }
+  body[data-page="agent"] .agent-tabs {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  body[data-page="agent"] .agent-tabs button {
+    min-width: 0;
+    flex: 1 1 30%;
+    padding-inline: 7px;
+  }
+  body[data-page="agent"] .agent-resource-card {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px;
+  }
+  body[data-page="agent"] .agent-resource-description,
+  body[data-page="agent"] .agent-resource-actions {
+    grid-column: auto;
+  }
+  body[data-page="agent"] .agent-resource-description {
+    margin-left: 35px;
+  }
+  body[data-page="agent"] .agent-resource-state {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  body[data-page="agent"] .agent-resource-state .agent-state-pill {
+    max-width: none;
+    min-width: 0;
+  }
+  body[data-page="agent"] .agent-resource-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+  body[data-page="agent"] .agent-resource-actions .button {
+    width: 100%;
+    min-height: 40px;
+    padding-inline: 5px;
+  }
+  body[data-page="agent"] .agent-resource-actions .button:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+  body[data-page="agent"] .agent-discovery-list {
+    grid-template-columns: 1fr;
+  }
+  body[data-page="agent"] .agent-discovery-row {
+    min-width: 0;
+  }
+  body[data-page="agent"] .agent-profile-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  body[data-page="agent"] .agent-profile-card .agent-resource-actions {
+    width: 100%;
+  }
+  body[data-page="agent"] .agent-profile-resource-group > div {
+    grid-template-columns: 1fr;
+  }
+  body[data-page="agent"] .agent-profile-resource {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-page="agent"] .agent-resource-card,
+  body[data-page="agent"] .agent-profile-resource {
+    transition: none;
+  }
+}
+
+/* Agent resource ordering: compact desktop controls with touch-safe mobile fallback. */
+body[data-page="agent"] .agent-resource-card,
+body[data-page="agent"] .agent-provider-row,
+body[data-page="agent"] .agent-profile-card {
+  position: relative;
+}
+
+body[data-page="agent"] .agent-resource-card {
+  grid-template-columns: auto minmax(170px, 1.1fr) minmax(240px, 1fr) auto;
+}
+
+body[data-page="agent"] .agent-provider-row {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+body[data-page="agent"] .agent-order-controls {
+  display: grid;
+  grid-template-columns: repeat(3, 23px);
+  flex: 0 0 auto;
+  gap: 2px;
+  align-items: center;
+}
+
+body[data-page="agent"] .agent-drag-handle,
+body[data-page="agent"] .agent-order-controls button {
+  display: grid;
+  width: 23px;
+  height: 27px;
+  min-width: 0;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #d8e0e9;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #617085;
+  font: 800 .69rem/1 "IBM Plex Mono", ui-monospace, monospace;
+  cursor: pointer;
+  user-select: none;
+}
+
+body[data-page="agent"] .agent-drag-handle {
+  color: #365f91;
+  cursor: grab;
+}
+
+body[data-page="agent"] .agent-drag-handle:active {
+  cursor: grabbing;
+}
+
+body[data-page="agent"] .agent-order-controls button:hover,
+body[data-page="agent"] .agent-drag-handle:hover {
+  border-color: #8fb1d9;
+  background: #edf5ff;
+  color: #174f98;
+}
+
+body[data-page="agent"] .agent-order-controls button:disabled {
+  opacity: .28;
+  cursor: default;
+}
+
+body[data-page="agent"] .agent-drag-handle:focus-visible,
+body[data-page="agent"] .agent-order-controls button:focus-visible {
+  outline: 2px solid #2166d1;
+  outline-offset: 2px;
+}
+
+body[data-page="agent"] [data-agent-order-card].is-dragging {
+  opacity: .42;
+  transform: scale(.992);
+}
+
+body[data-page="agent"] [data-agent-order-card].is-drop-before::before,
+body[data-page="agent"] [data-agent-order-card].is-drop-after::after {
+  position: absolute;
+  z-index: 2;
+  right: 5px;
+  left: 5px;
+  height: 3px;
+  border-radius: 999px;
+  background: #2166d1;
+  content: "";
+  pointer-events: none;
+}
+
+body[data-page="agent"] [data-agent-order-card].is-drop-before::before { top: -5px; }
+body[data-page="agent"] [data-agent-order-card].is-drop-after::after { bottom: -5px; }
+body[data-page="agent"] [data-agent-order-list].is-saving-order { opacity: .72; }
+
+body[data-page="agent"] .agent-resource-identity .agent-resource-description {
+  display: block;
+  max-width: 52ch;
+  margin: 0;
+  color: #607086;
+}
+
+body[data-page="agent"] .agent-provider-description {
+  max-width: 48ch;
+  color: #607086 !important;
+}
+
+body[data-page="agent"] .agent-profile-card .agent-profile-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 2px;
+}
+
+body[data-page="agent"] [data-agent-provider-id]:read-only,
+body[data-page="agent"] [data-agent-mcp-id]:read-only,
+body[data-page="agent"] [data-agent-skill-id]:read-only,
+body[data-page="agent"] [data-agent-prompt-id]:read-only,
+body[data-page="agent"] [data-agent-profile-id]:read-only {
+  background: #f0f3f7 !important;
+  color: #6f7c8c !important;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1180px) {
+  body[data-page="agent"] .agent-resource-card {
+    grid-template-columns: auto minmax(170px, 1fr) minmax(220px, 1fr);
+  }
+  body[data-page="agent"] .agent-resource-actions {
+    grid-column: 2 / -1;
+  }
+}
+
+@media (max-width: 700px) {
+  body[data-page="agent"] .agent-resource-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  body[data-page="agent"] .agent-resource-card > .agent-order-controls {
+    grid-column: auto;
+  }
+  body[data-page="agent"] .agent-resource-description,
+  body[data-page="agent"] .agent-resource-actions {
+    grid-column: auto;
+  }
+  body[data-page="agent"] .agent-provider-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  body[data-page="agent"] .agent-provider-row .agent-row-actions {
+    grid-column: auto;
+  }
+  body[data-page="agent"] .agent-order-controls {
+    grid-template-columns: repeat(3, 44px);
+    gap: 5px;
+  }
+  body[data-page="agent"] .agent-drag-handle,
+  body[data-page="agent"] .agent-order-controls button {
+    width: 44px;
+    height: 44px;
+  }
+  body[data-page="agent"] .agent-profile-card {
+    align-items: stretch;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-page="agent"] [data-agent-order-card] {
+    transition: none !important;
+  }
+}
+
+/* Provider workbench: compact CC Switch-style cards backed by native client forms. */
+body[data-page="agent"] .agent-provider-workspace {
+  grid-template-columns: minmax(0, 1fr) minmax(370px, 420px);
+}
+
+body[data-page="agent"] .agent-provider-stack {
+  align-content: start;
+}
+
+body[data-page="agent"] .agent-provider-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "order identity state"
+    "order facts facts"
+    "order actions actions";
+  min-width: 0;
+  min-height: 76px;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 8px 9px;
+}
+
+body[data-page="agent"] .agent-provider-row.is-live {
+  border-color: #9fc6ef !important;
+  background: #f8fbff !important;
+}
+
+body[data-page="agent"] .agent-provider-row > .agent-order-controls { grid-area: order; }
+body[data-page="agent"] .agent-provider-identity { grid-area: identity; }
+body[data-page="agent"] .agent-provider-facts { grid-area: facts; }
+body[data-page="agent"] .agent-provider-row-meta { grid-area: state; justify-content: flex-end; }
+body[data-page="agent"] .agent-provider-actions { grid-area: actions; }
+
+body[data-page="agent"] .agent-provider-identity {
+  align-self: stretch;
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+body[data-page="agent"] .agent-provider-identity-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+body[data-page="agent"] .agent-provider-title-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+body[data-page="agent"] .agent-provider-title-line b {
+  min-width: 0;
+}
+
+body[data-page="agent"] .agent-provider-title-line em {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid #dce4ed;
+  border-radius: 5px;
+  background: #f3f6f9;
+  color: #718096;
+  font-size: .55rem;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
+body[data-page="agent"] .agent-provider-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+  margin: 0;
+  padding: 6px 7px;
+  border: 1px solid #e8edf3;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+body[data-page="agent"] .agent-provider-facts > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 0 7px;
+  border-left: 1px solid #e3e8ee;
+}
+
+body[data-page="agent"] .agent-provider-facts > div:first-child {
+  padding-left: 2px;
+  border-left: 0;
+}
+
+body[data-page="agent"] .agent-provider-facts dt {
+  color: #98a4b2;
+  font-size: .54rem;
+  font-weight: 900;
+  letter-spacing: .08em;
+  line-height: 1.2;
+}
+
+body[data-page="agent"] .agent-provider-facts dd {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: #334155;
+  font-size: .63rem;
+  font-weight: 800;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .agent-provider-facts code {
+  display: block;
+  overflow: hidden;
+  color: #245c9d;
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-page="agent"] .agent-provider-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+body[data-page="agent"] .agent-provider-actions .button {
+  min-width: 38px;
+  min-height: 26px;
+  padding: 3px 7px;
+}
+
+body[data-page="agent"] .button--remove {
+  border-color: #f2d2a6;
+  background: #fff8eb;
+  color: #a45d08;
+}
+
+body[data-page="agent"] .button--remove:hover {
+  border-color: #e7b76e;
+  background: #fff0d6;
+}
+
+body[data-page="agent"] .agent-state-pill.is-warning {
+  border-color: #f0d9a9;
+  background: #fff9ec;
+  color: #9a6418;
+}
+
+body[data-page="agent"] .agent-provider-editor {
+  position: sticky;
+  top: 58px;
+  max-height: calc(100dvh - 76px);
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+body[data-page="agent"] .agent-provider-readonly {
+  padding: 8px 9px;
+  border: 1px solid #ead7a9;
+  border-radius: 8px;
+  background: #fff9eb;
+  color: #825918;
+  font-size: .68rem;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+body[data-page="agent"] .agent-provider-readonly[hidden],
+body[data-page="agent"] .agent-provider-fields[hidden] {
+  display: none !important;
+}
+
+body[data-page="agent"] .agent-provider-fields {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid #dce5ef;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+body[data-page="agent"] .agent-provider-fields > header {
+  display: grid;
+  gap: 1px;
+}
+
+body[data-page="agent"] .agent-provider-fields > header strong {
+  color: #34465b;
+  font-size: .69rem;
+}
+
+body[data-page="agent"] .agent-provider-fields > header small {
+  color: #8a97a7;
+  font-size: .59rem;
+  line-height: 1.35;
+}
+
+body[data-page="agent"] .agent-provider-router-options {
+  display: grid;
+  gap: 8px;
+}
+
+body[data-page="agent"] .agent-provider-router-options[open] {
+  background: #f7faff;
+}
+
+body[data-page="agent"] .agent-provider-editor[data-agent-provider-editable="false"] .agent-field input:not([data-agent-provider-settings]),
+body[data-page="agent"] .agent-provider-editor[data-agent-provider-editable="false"] .agent-field textarea:not([data-agent-provider-settings]),
+body[data-page="agent"] .agent-provider-editor[data-agent-provider-editable="false"] .agent-field select {
+  background: #f0f3f7 !important;
+  color: #6f7c8c !important;
+}
+
+body[data-page="agent"] .agent-provider-editor [data-agent-provider-settings] {
+  cursor: text;
+}
+
+@media (max-width: 1320px) {
+  body[data-page="agent"] .agent-provider-workspace {
+    grid-template-columns: minmax(0, 1fr) minmax(350px, 390px);
+  }
+  body[data-page="agent"] .agent-provider-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "order identity state"
+      "order facts facts"
+      "order actions actions";
+  }
+  body[data-page="agent"] .agent-provider-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 980px) {
+  body[data-page="agent"] .agent-provider-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  body[data-page="agent"] .agent-provider-editor {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 700px) {
+  body[data-page="agent"] .agent-provider-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "order"
+      "identity"
+      "facts"
+      "state"
+      "actions";
+    gap: 8px;
+    padding: 10px;
+  }
+  body[data-page="agent"] .agent-provider-row-meta {
+    display: flex;
+    justify-content: flex-start;
+  }
+  body[data-page="agent"] .agent-provider-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px 0;
+  }
+  body[data-page="agent"] .agent-provider-facts > div:nth-child(3) {
+    border-left: 0;
+  }
+  body[data-page="agent"] .agent-provider-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    gap: 6px;
+  }
+  body[data-page="agent"] .agent-provider-actions .button {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    padding-inline: 5px;
+  }
+  body[data-page="agent"] .agent-provider-editor .agent-field input,
+  body[data-page="agent"] .agent-provider-editor .agent-field select,
+  body[data-page="agent"] .agent-provider-editor .agent-field textarea {
+    min-height: 44px;
+    font-size: 1rem;
+  }
+  body[data-page="agent"] .agent-provider-editor .agent-editor-actions .button {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-page="agent"] .agent-provider-row,
+  body[data-page="agent"] .agent-provider-row .button {
+    transition: none !important;
+  }
 }

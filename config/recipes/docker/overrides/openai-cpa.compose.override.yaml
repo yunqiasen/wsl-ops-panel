@@ -9,6 +9,8 @@ services:
     environment:
       TZ: Asia/Shanghai
       HOST_PROJECT_PATH: /home/div/1_Project_dir/regmail-2api/资源/openai-cpa
+      NO_PROXY: host.docker.internal,127.0.0.1,localhost,172.17.0.1,sub2api
+      no_proxy: host.docker.internal,127.0.0.1,localhost,172.17.0.1,sub2api
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock

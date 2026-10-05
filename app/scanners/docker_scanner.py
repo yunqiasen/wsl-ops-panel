@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from collections.abc import Callable
 
@@ -47,20 +48,43 @@ def scan_docker_containers(*, runner: DockerCommandRunner | None = None) -> list
 
 
 def _run_docker_ps() -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    completed = subprocess.run(
         ['docker', 'ps', '-a', '--format', '{{json .}}'],
-        check=True,
-        capture_output=True,
-        text=True,
+        check=True, capture_output=True, text=True, timeout=30,
     )
+    rows = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    ids = [row['ID'] for row in rows if row.get('ID')]
+    if not ids:
+        return completed
+    # Only request labels, never the container environment or credentials.
+    inspected = subprocess.run(
+        ['docker', 'container', 'inspect', '--format', '{{json .Id}} {{json .Config.Labels}}', *ids],
+        check=False, capture_output=True, text=True, timeout=30,
+    )
+    labels_by_id = {}
+    for line in inspected.stdout.splitlines():
+        try:
+            raw_id, raw_labels = line.split(' ', 1)
+            labels_by_id[json.loads(raw_id)] = json.loads(raw_labels) or {}
+        except (ValueError, TypeError):
+            continue
+    for row in rows:
+        for full_id, labels in labels_by_id.items():
+            if full_id.startswith(row['ID']):
+                row['Labels'] = labels
+                break
+    return subprocess.CompletedProcess(completed.args, completed.returncode,
+        '\n'.join(json.dumps(row) for row in rows), completed.stderr)
 
 
-def _parse_labels(raw_labels: str) -> dict[str, str]:
+def _parse_labels(raw_labels: str | dict[str, str]) -> dict[str, str]:
+    if isinstance(raw_labels, dict):
+        return dict(raw_labels)
     labels: dict[str, str] = {}
     if not raw_labels:
         return labels
 
-    for item in raw_labels.split(','):
+    for item in re.split(r',(?=[A-Za-z0-9_.-]+=)', raw_labels):
         if '=' not in item:
             continue
         key, value = item.split('=', 1)

@@ -28,3 +28,35 @@ def test_pypi_versions_wraps_failures() -> None:
     assert info.versions == []
     assert info.source_status == 'error'
     assert 'upstream unavailable' in (info.error or '')
+
+
+def test_npm_versions_mark_missing_package_as_not_found() -> None:
+    import subprocess
+
+    service = PackageVersionService()
+
+    def missing_runner(command: list[str]) -> str:
+        raise subprocess.CalledProcessError(1, command, stderr='npm ERR! 404 Not Found')
+
+    info = service.get_node_version_info('local-only-cli', runner=missing_runner)
+
+    assert info.source_status == 'not_found'
+    assert info.versions == []
+    assert 'not found' in (info.error or '')
+
+
+def test_pypi_versions_mark_missing_package_as_not_found() -> None:
+    import httpx
+
+    service = PackageVersionService()
+
+    def missing_fetcher(package_name: str):
+        request = httpx.Request('GET', f'https://pypi.org/pypi/{package_name}/json')
+        response = httpx.Response(404, request=request)
+        raise httpx.HTTPStatusError('not found', request=request, response=response)
+
+    info = service.get_python_version_info('local-only-package', fetcher=missing_fetcher)
+
+    assert info.source_status == 'not_found'
+    assert info.versions == []
+    assert 'not found' in (info.error or '')

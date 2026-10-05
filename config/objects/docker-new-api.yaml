@@ -2,6 +2,7 @@ id: new_api
 category: docker
 type: docker_compose
 name: New API
+description: New API：AI 模型聚合与分发网关，可统一管理模型、渠道、令牌和 OpenAI 兼容接口。
 enabled: true
 config:
   project_dir: "/home/div/1_Project_dir/AI/new-api"

@@ -18,6 +18,9 @@ class DockerComposeConfig(BaseModel):
 
     project_dir: StrictStr
     compose_file: StrictStr
+    compose_project: StrictStr | None = None
+    compose_files: list[StrictStr] = Field(default_factory=list)
+    env_files: list[StrictStr] = Field(default_factory=list)
     primary_container: StrictStr | None = None
     compose_service: StrictStr | None = None
     lifecycle_strategy: StrictStr = 'compose_pull'
@@ -26,6 +29,7 @@ class DockerComposeConfig(BaseModel):
     managed_services: list[StrictStr] = Field(default_factory=list)
     ignored_services: list[StrictStr] = Field(default_factory=list)
     healthcheck_url: StrictStr | None = None
+    endpoints: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SystemdUnitConfig(BaseModel):
@@ -48,6 +52,7 @@ class ObjectDefinition(BaseModel):
     category: str
     type: str
     name: str
+    description: str = ''
     enabled: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -58,7 +63,7 @@ class ObjectDefinition(BaseModel):
             return self
 
         validated_config = config_model.model_validate(self.config)
-        self.config = validated_config.model_dump(exclude_none=True)
+        self.config = validated_config.model_dump(exclude_none=True, exclude_defaults=True)
         return self
 
 

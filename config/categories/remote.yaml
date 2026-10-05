@@ -1,0 +1,5 @@
+id: remote
+label: SSH 与配置同步
+order: 70
+description: 跨设备 SSH 节点、配置同步、远程 Node / Python / Agent 维护入口
+enabled: true

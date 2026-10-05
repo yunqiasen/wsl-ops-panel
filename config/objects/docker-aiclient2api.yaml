@@ -2,6 +2,7 @@ id: aiclient2api
 category: docker
 type: docker_compose
 name: AIClient-2-API
+description: AI 客户端接口转换服务（配置项存在但容器未部署，项目目录不存在，可能已废弃或迁移）。
 enabled: true
 config:
   project_dir: "/home/div/1_Project_dir/AI/AIClient-2-API"

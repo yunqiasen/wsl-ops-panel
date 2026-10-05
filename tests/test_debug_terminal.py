@@ -9,9 +9,8 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.core.security import COOKIE_NAME, issue_session_token
-from app.main import create_app
+from tests.app_factory import create_app
 from app.terminals.debug_terminal import DebugTerminalManager
-from app.terminals.system_terminal import SystemTerminalSink
 
 
 DEFAULT_CWD = '/home/div/1_Project_dir/AI'
@@ -67,12 +66,12 @@ def wait_for_session_status(client: TestClient, session_id: str, status: str, *,
 
 
 def test_create_list_and_delete_debug_terminal_session(tmp_path: Path, monkeypatch) -> None:
-    from app.api import terminals as terminals_api
 
     manager = make_manager(tmp_path)
-    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
 
-    client = TestClient(create_app())
+    client = TestClient(app)
     client.cookies.set(COOKIE_NAME, issue_session_token())
 
     create_response = client.post('/api/terminals/debug', json={})
@@ -81,6 +80,7 @@ def test_create_list_and_delete_debug_terminal_session(tmp_path: Path, monkeypat
     payload = create_response.json()
     assert payload['cwd'] == DEFAULT_CWD
     assert payload['shell'] == '/bin/bash'
+    assert payload['title'] is None
     assert payload['status'] == 'running'
 
     session_id = payload['id']
@@ -100,13 +100,59 @@ def test_create_list_and_delete_debug_terminal_session(tmp_path: Path, monkeypat
     assert metadata['closed_at'] is not None
 
 
-def test_system_terminal_session_is_default_bash_and_cannot_be_deleted(tmp_path: Path, monkeypatch) -> None:
-    from app.api import terminals as terminals_api
+def test_debug_terminal_runtime_sets_truecolor_env(tmp_path: Path, monkeypatch) -> None:
+    manager = make_manager(tmp_path)
+    captured_env = {}
+
+    class FakeProcess:
+        pid = 12345
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+    def fake_popen(*_args, **kwargs):
+        captured_env.update(kwargs['env'])
+        return FakeProcess()
+
+    monkeypatch.setattr('app.terminals.debug_terminal.subprocess.Popen', fake_popen)
+    monkeypatch.setattr('app.terminals.debug_terminal.os.openpty', lambda: (1, 2))
+    monkeypatch.setattr('app.terminals.debug_terminal.os.close', lambda _fd: None)
+    monkeypatch.setattr('app.terminals.debug_terminal.os.read', lambda _fd, _size: b'')
+
+    manager.create_session()
+
+    assert captured_env['COLORTERM'] == 'truecolor'
+    assert captured_env['LC_CTYPE'].endswith('UTF-8')
+
+
+def test_terminal_upload_saves_file_and_returns_absolute_path(tmp_path: Path, monkeypatch) -> None:
+
+    app = create_app()
+    app.state.terminal_upload_root = tmp_path / 'uploads'
+
+    client = TestClient(app)
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+
+    response = client.post('/api/terminals/uploads', files={'file': ('截图 1.png', b'PNGDATA', 'image/png')})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['filename'] == '截图_1.png'
+    assert payload['size'] == 7
+    assert payload['path'].startswith(str(tmp_path / 'uploads'))
+    assert Path(payload['path']).read_bytes() == b'PNGDATA'
+
+
+def test_system_terminal_session_is_readonly_log_and_cannot_be_deleted(tmp_path: Path, monkeypatch) -> None:
 
     manager = make_manager(tmp_path)
-    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
 
-    client = TestClient(create_app())
+    client = TestClient(app)
     client.cookies.set(COOKIE_NAME, issue_session_token())
 
     response = client.get('/api/terminals/debug')
@@ -115,7 +161,8 @@ def test_system_terminal_session_is_default_bash_and_cannot_be_deleted(tmp_path:
     payload = response.json()
     assert len(payload) == 1
     assert payload[0]['id'] == 'system'
-    assert payload[0]['shell'] == '/bin/bash'
+    assert payload[0]['title'] == '系统日志'
+    assert payload[0]['shell'] == 'readonly-log'
     assert payload[0]['status'] == 'running'
 
     delete_response = client.delete('/api/terminals/debug/system')
@@ -124,29 +171,27 @@ def test_system_terminal_session_is_default_bash_and_cannot_be_deleted(tmp_path:
     assert delete_response.json()['detail'] == 'system terminal cannot be closed'
 
 
-def test_system_terminal_websocket_executes_command(tmp_path: Path, monkeypatch) -> None:
-    from app.api import terminals as terminals_api
+def test_system_terminal_websocket_is_not_a_debug_shell(tmp_path: Path, monkeypatch) -> None:
 
     manager = make_manager(tmp_path)
-    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
 
-    client = TestClient(create_app())
+    client = TestClient(app)
     client.cookies.set(COOKIE_NAME, issue_session_token())
 
     with client.websocket_connect('/api/terminals/debug/system/ws') as websocket:
-        websocket.send_text(f'printf "{MARKER}\\n"\n')
-        output = receive_until_marker(websocket, MARKER)
-
-    assert MARKER in output
+        with pytest.raises(WebSocketDisconnect):
+            receive_text_with_timeout(websocket, timeout=1.0)
 
 
 def test_terminal_websocket_resize_message_is_not_written_to_shell_input(tmp_path: Path, monkeypatch) -> None:
-    from app.api import terminals as terminals_api
 
     manager = make_manager(tmp_path)
-    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
 
-    client = TestClient(create_app())
+    client = TestClient(app)
     client.cookies.set(COOKIE_NAME, issue_session_token())
     create_response = client.post('/api/terminals/debug', json={})
     session = create_response.json()
@@ -164,31 +209,68 @@ def test_terminal_websocket_resize_message_is_not_written_to_shell_input(tmp_pat
     assert delete_response.status_code == 204
 
 
-def test_system_terminal_websocket_receives_task_log_chunks(tmp_path: Path, monkeypatch) -> None:
-    from app.api import terminals as terminals_api
+def test_terminal_websocket_resize_message_updates_pty_size(tmp_path: Path, monkeypatch) -> None:
 
     manager = make_manager(tmp_path)
-    sink = SystemTerminalSink(tmp_path / 'system.log')
-    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
-    monkeypatch.setattr(terminals_api, 'system_terminal_sink', sink)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
 
-    client = TestClient(create_app())
+    client = TestClient(app)
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+    create_response = client.post('/api/terminals/debug', json={})
+    session = create_response.json()
+    session_id = session['id']
+
+    with client.websocket_connect(f'/api/terminals/debug/{session_id}/ws') as websocket:
+        websocket.send_text(json.dumps({'type': 'resize', 'cols': 132, 'rows': 33}))
+        websocket.send_text('stty size\n')
+        output = receive_until_marker(websocket, '33 132', attempts=20)
+
+    assert '33 132' in output
+
+    delete_response = client.delete(f'/api/terminals/debug/{session_id}')
+    assert delete_response.status_code == 204
+
+
+def test_debug_terminal_session_can_be_renamed(tmp_path: Path, monkeypatch) -> None:
+
+    manager = make_manager(tmp_path)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
+
+    client = TestClient(app)
+    client.cookies.set(COOKIE_NAME, issue_session_token())
+    session = client.post('/api/terminals/debug', json={}).json()
+
+    response = client.patch(f'/api/terminals/debug/{session["id"]}', json={'title': '维护窗口'})
+
+    assert response.status_code == 200
+    assert response.json()['title'] == '维护窗口'
+    assert client.get('/api/terminals/debug').json()[1]['title'] == '维护窗口'
+
+
+def test_system_terminal_cannot_be_renamed(tmp_path: Path, monkeypatch) -> None:
+
+    manager = make_manager(tmp_path)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
+
+    client = TestClient(app)
     client.cookies.set(COOKIE_NAME, issue_session_token())
 
-    with client.websocket_connect('/api/terminals/debug/system/ws') as websocket:
-        sink.write(f'{MARKER}\n')
-        output = receive_until_marker(websocket, MARKER)
+    response = client.patch('/api/terminals/debug/system', json={'title': 'x'})
 
-    assert MARKER in output
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'system terminal cannot be renamed'
 
 
 def test_debug_terminal_websocket_executes_command_and_persists_logs(tmp_path: Path, monkeypatch) -> None:
-    from app.api import terminals as terminals_api
 
     manager = make_manager(tmp_path)
-    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
 
-    client = TestClient(create_app())
+    client = TestClient(app)
     client.cookies.set(COOKIE_NAME, issue_session_token())
     create_response = client.post('/api/terminals/debug', json={})
     session = create_response.json()
@@ -210,12 +292,12 @@ def test_debug_terminal_websocket_executes_command_and_persists_logs(tmp_path: P
 
 
 def test_closed_debug_terminal_reconnect_closes_after_backlog(tmp_path: Path, monkeypatch) -> None:
-    from app.api import terminals as terminals_api
 
     manager = make_manager(tmp_path)
-    monkeypatch.setattr(terminals_api, 'debug_terminal_manager', manager)
+    app = create_app()
+    app.state.debug_terminal_manager = manager
 
-    client = TestClient(create_app())
+    client = TestClient(app)
     client.cookies.set(COOKIE_NAME, issue_session_token())
     create_response = client.post('/api/terminals/debug', json={})
     session = create_response.json()

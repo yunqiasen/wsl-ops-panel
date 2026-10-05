@@ -17,7 +17,7 @@ from uuid import uuid4
 from app.models.terminals import DebugTerminalSession
 
 DEFAULT_DEBUG_TERMINAL_CWD = Path('/home/div/1_Project_dir/AI')
-DEFAULT_DEBUG_TERMINAL_SHELL = '/bin/bash'
+DEFAULT_DEBUG_TERMINAL_SHELL = shutil.which('zsh') or '/bin/bash'
 SYSTEM_TERMINAL_ID = 'system'
 
 
@@ -41,8 +41,11 @@ class _DebugTerminalRuntime:
         master_fd, slave_fd = os.openpty()
         env = os.environ.copy()
         env.setdefault('TERM', 'xterm-256color')
-        env['PS1'] = ''
-        env['PROMPT_COMMAND'] = ''
+        env.setdefault('LANG', 'C.UTF-8')
+        env.setdefault('LC_ALL', env.get('LANG', 'C.UTF-8'))
+        env.setdefault('LC_CTYPE', env.get('LANG', 'C.UTF-8'))
+        if not env.get('COLORTERM'):
+            env['COLORTERM'] = 'truecolor'
 
         try:
             process = subprocess.Popen(
@@ -75,8 +78,13 @@ class _DebugTerminalRuntime:
     def is_closed(self) -> bool:
         return self.process.poll() is not None
 
-    def read_output_log(self) -> str:
-        return Path(self.session.output_log_path).read_text(encoding='utf-8')
+    def read_output_log(self, *, max_bytes: int = 200_000) -> str:
+        path = Path(self.session.output_log_path)
+        size = path.stat().st_size if path.exists() else 0
+        with path.open('rb') as fh:
+            if size > max_bytes:
+                fh.seek(size - max_bytes)
+            return fh.read().decode('utf-8', errors='replace')
 
     def attach(self, loop: asyncio.AbstractEventLoop) -> tuple[str, asyncio.Queue[str | None]]:
         queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -212,14 +220,20 @@ class DebugTerminalManager:
         self._sessions: dict[str, _DebugTerminalRuntime] = {}
 
     def ensure_system_session(self) -> DebugTerminalSession:
-        return self._ensure_session(
-            session_id=SYSTEM_TERMINAL_ID,
-            shell=self.default_shell,
+        return DebugTerminalSession(
+            id=SYSTEM_TERMINAL_ID,
+            title='系统日志',
+            shell='readonly-log',
             cwd=str(self.default_cwd),
+            status='running',
+            created_at=datetime.now(UTC),
+            output_log_path=str(self.base_dir / 'system.log'),
+            input_log_path=str(self.base_dir / 'system.input.log'),
+            metadata_path=str(self.base_dir / 'system.json'),
         )
 
-    def create_session(self, *, shell: str | None = None, cwd: str | None = None) -> DebugTerminalSession:
-        return self._ensure_session(shell=shell, cwd=cwd)
+    def create_session(self, *, shell: str | None = None, cwd: str | None = None, title: str | None = None) -> DebugTerminalSession:
+        return self._ensure_session(shell=shell, cwd=cwd, title=title)
 
     def _ensure_session(
         self,
@@ -227,6 +241,7 @@ class DebugTerminalManager:
         session_id: str | None = None,
         shell: str | None = None,
         cwd: str | None = None,
+        title: str | None = None,
     ) -> DebugTerminalSession:
         if session_id is not None:
             with self._lock:
@@ -240,6 +255,7 @@ class DebugTerminalManager:
         created_at = datetime.now(UTC)
         session = DebugTerminalSession(
             id=resolved_session_id,
+            title=title.strip()[:64] if title and title.strip() else None,
             shell=resolved_shell,
             cwd=str(resolved_cwd),
             status='running',
@@ -257,19 +273,33 @@ class DebugTerminalManager:
         return runtime.snapshot()
 
     def list_sessions(self) -> list[DebugTerminalSession]:
-        self.ensure_system_session()
         with self._lock:
             runtimes = list(self._sessions.values())
-        return sorted(
-            (runtime.snapshot() for runtime in runtimes),
-            key=lambda session: (session.id != SYSTEM_TERMINAL_ID, session.created_at),
-        )
+        return [
+            self.ensure_system_session(),
+            *sorted((runtime.snapshot() for runtime in runtimes), key=lambda session: session.created_at),
+        ]
 
     def get_runtime(self, session_id: str) -> _DebugTerminalRuntime | None:
         if session_id == SYSTEM_TERMINAL_ID:
-            self.ensure_system_session()
+            return None
         with self._lock:
             return self._sessions.get(session_id)
+
+    def rename_session(self, session_id: str, title: str) -> DebugTerminalSession:
+        if session_id == SYSTEM_TERMINAL_ID:
+            raise ValueError('system terminal cannot be renamed')
+        resolved_title = title.strip()
+        if not resolved_title:
+            raise ValueError('title is required')
+        with self._lock:
+            runtime = self._sessions.get(session_id)
+        if runtime is None:
+            raise KeyError(f'unknown terminal session: {session_id}')
+        with runtime._lock:
+            runtime.session.title = resolved_title[:64]
+            runtime._write_metadata()
+        return runtime.snapshot()
 
     def close_session(self, session_id: str, *, force: bool = False) -> bool:
         if session_id == SYSTEM_TERMINAL_ID and not force:

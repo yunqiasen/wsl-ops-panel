@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+{% if not selected_category or selected_category.id not in ['node', 'python'] %}
 <section class="page-hero">
   <div>
     <p class="eyebrow">Category</p>
@@ -8,11 +9,13 @@
   </div>
   <div class="hero-meta">{{ assets|length }} 个资产</div>
 </section>
+{% endif %}
 
-<section class="bulk-toolbar" data-bulk-toolbar data-category-id="{{ selected_category.id if selected_category else '' }}" hidden>
+{% if not selected_category or selected_category.id not in ['node', 'python'] %}
+<section class="bulk-toolbar" data-bulk-toolbar data-category-id="{{ selected_category.id if selected_category else '' }}">
   <div>
     <strong><span data-selected-count>0</span> 个已选</strong>
-    <small>动作会拆成任务并进入串行队列。</small>
+    <small data-bulk-hint>先点卡片右上角圆圈选择项目。动作会拆成任务并进入串行队列。</small>
     <div class="bulk-selection-actions">
       <button class="ghost-button compact-button" type="button" data-select-all-assets>全选</button>
       <button class="ghost-button compact-button" type="button" data-clear-selection>取消选择</button>
@@ -20,50 +23,245 @@
   </div>
   <div class="bulk-actions">
     {% for action in available_actions %}
-    <button class="{{ action.style }}-button" type="button" data-bulk-action="{{ action.slug }}">{{ action.label }}</button>
+    <button class="{{ action.style }}-button" type="button" data-bulk-action="{{ action.slug }}" data-action-label="{{ action.label }}">{{ action.label }}</button>
     {% endfor %}
+    {% if selected_category and selected_category.id == 'agent' %}
+    <button class="primary-button" type="button" data-agent-remote-scan>扫描选中 Agent 配置</button>
+    {% endif %}
   </div>
+  {% if selected_category and selected_category.id == 'agent' %}
+  <div class="remote-target-strip" data-remote-target-panel data-tool-type="{{ selected_category.id }}">
+    <strong>执行设备</strong>
+    <label><input type="checkbox" data-remote-target value="__local__" checked /> 当前 WSL</label>
+    {% for node in remote_nodes or [] %}
+    <label class="device-chip device-chip--{{ 'online' if node.status == 'online' else 'offline' }}" title="{{ node.last_error or node.status }}">
+      <input type="checkbox" data-remote-target value="{{ node.id }}" {{ '' if node.status == 'online' else 'disabled' }} />
+      <span class="device-dot"></span>{{ node.name }}
+    </label>
+    {% endfor %}
+    <small>Agent 扫描会按选中的设备入队。</small>
+  </div>
+  {% endif %}
   <div id="task-flash" class="bulk-flash" data-bulk-result></div>
 </section>
+{% endif %}
 
-<ul class="asset-board" data-asset-board>
-  {% for asset in assets %}
-  <li class="asset-card" data-asset-card data-asset-id="{{ asset.object_id }}" data-supported-actions="{{ asset.supports_actions|join(',') }}">
-    <button class="asset-select" type="button" aria-label="选择 {{ asset.name }}" data-asset-select="{{ asset.object_id }}"></button>
-    <div class="asset-card__top">
-      <div>
-        <a class="asset-card__title" href="{{ request.url_for('asset_detail', object_id=asset.object_id) }}">{{ asset.name }}</a>
-        <div class="asset-card__subtitle">{{ asset.object_id }} · {{ asset.category }}</div>
+{% if selected_category and selected_category.id in ['node', 'python'] %}
+<section class="package-install-panel" data-package-install-panel data-tool-type="{{ selected_category.id }}">
+  <div class="package-install-head">
+    <div>
+      <p class="eyebrow">Install Catalog</p>
+      <h2>{{ 'Node 工具安装' if selected_category.id == 'node' else 'Python 库安装' }}</h2>
+      <p>这里是工具安装目录。勾选工具后可安装、更新或删除，也可以填自定义安装命令。CLI 类工具下次启动生效；正在运行的服务需要重启对应进程。</p>
+    </div>
+  </div>
+  <div class="remote-target-strip package-target-strip" data-remote-target-panel data-tool-type="{{ selected_category.id }}">
+    <strong>执行设备</strong>
+    <label><input type="checkbox" data-remote-target value="__local__" checked /> 当前 WSL</label>
+    {% for node in remote_nodes or [] %}
+    <label class="device-chip device-chip--{{ 'online' if node.status == 'online' else 'offline' }}" title="{{ node.last_error or node.status }}">
+      <input type="checkbox" data-remote-target value="{{ node.id }}" {{ '' if node.status == 'online' else 'disabled' }} />
+      <span class="device-dot"></span>{{ node.name }}
+    </label>
+    {% endfor %}
+    <small>选择安装、更新、删除要执行到哪些设备。</small>
+  </div>
+  <div class="package-action-strip" data-package-action-strip>
+    <div>
+      <strong>选中工具操作</strong>
+      <small>先勾选下面工具卡。每张卡可以单独选版本；不选版本就是 latest。</small>
+    </div>
+    <div class="package-install-actions">
+      <button class="ghost-button compact-button" type="button" data-package-status-refresh>刷新安装状态</button>
+      <button class="primary-button compact-button" type="button" data-package-install-selected>安装/更新选中工具</button>
+      <button class="danger-button compact-button" type="button" data-package-delete-selected>删除选中工具</button>
+    </div>
+  </div>
+  <div id="task-flash" class="bulk-flash" data-bulk-result></div>
+  <div class="custom-install-row package-install-row">
+    <label>常用未安装
+      <select data-package-suggestion-select>
+        <option value="">选择常用工具后自动填命令</option>
+        {% for item in package_suggestions or [] %}
+        <option value="{{ item.name }}" data-command="{{ item.install_command }}" data-manager="{{ item.manager }}" data-description="{{ item.description }}" data-version="">{{ item.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>安装器
+      <select data-package-manager-select>
+        {% if selected_category.id == 'node' %}
+        <option value="npm" selected>npm</option>
+        <option value="pnpm">pnpm</option>
+        <option value="yarn">yarn</option>
+        <option value="bun">bun</option>
+        <option value="brew">brew</option>
+        <option value="winget">winget</option>
+        {% else %}
+        <option value="pip" selected>pip</option>
+        <option value="uv">uv</option>
+        <option value="pipx">pipx</option>
+        <option value="brew">brew</option>
+        <option value="winget">winget</option>
+        {% endif %}
+      </select>
+    </label>
+    <label>安装命令
+      <input data-install-command-input placeholder="{{ 'npm install -g pnpm 或 @openai/codex' if selected_category.id == 'node' else 'pip install fastapi 或 openai' }}" />
+    </label>
+    <label>版本
+      <select data-package-version-select disabled>
+        <option value="">选择工具后自动检测最新版</option>
+      </select>
+    </label>
+    <button class="primary-button" type="button" data-package-install-custom>安装/更新</button>
+    <aside class="package-suggestion-preview" data-package-suggestion-preview>选择工具后这里显示简介。</aside>
+  </div>
+  <div class="package-catalog-grid">
+    {% for item in package_catalog or [] %}
+    <article class="package-catalog-card" data-package-card data-package-name="{{ item.name }}"{% if item.object_id %} data-package-detail-url="/assets/{{ item.object_id }}"{% endif %}>
+      <div class="package-catalog-select">
+        <label class="package-card-check"><input type="checkbox" data-package-checkbox value="{{ item.name }}" /> <span class="visually-hidden">选择 {{ item.name }}</span></label>
+        {% if item.object_id %}<a class="package-card-title" href="/assets/{{ item.object_id }}">{{ item.name }}</a>{% else %}<strong class="package-card-title">{{ item.name }}</strong>{% endif %}
       </div>
-      <span class="status-pill status-{{ 'ok' if asset.status in ['running', 'active'] or asset.status.startswith('Up') else 'muted' }}">{{ asset.status }}</span>
+      <p>{{ item.description }}</p>
+      <div class="tag-row">
+        {% if item.current_version %}<span class="tag tag-ok">WSL {{ item.current_version }}</span>{% else %}<span class="tag tag-muted">WSL 未安装</span>{% endif %}
+        <span class="tag">安装器 {{ item.manager }}</span>
+        {% if item.installed_local %}<span class="tag {{ 'tag-ok' if item.actionable else 'tag-muted' }}">{{ '可操作' if item.actionable else '只读' }}</span>{% endif %}
+        {% if item.managed_by %}<span class="tag">{{ item.managed_by }}</span>{% endif %}
+        {% if item.blocked_reason %}<span class="tag tag-warn">{{ item.blocked_reason }}</span>{% endif %}
+      </div>
+      <div class="package-card-version-row">
+        <label>版本
+          <select data-package-card-version-select data-package-name="{{ item.name }}" disabled>
+            <option value="">勾选后加载版本</option>
+          </select>
+        </label>
+        {% if item.object_id %}<a class="ghost-button compact-button package-detail-link" href="/assets/{{ item.object_id }}">详情</a>{% endif %}
+      </div>
+      <div class="package-device-status">
+        <span class="package-device-chip status-{{ 'installed' if item.installed_local else 'missing' }}" data-package-status-device="__local__">当前 WSL：{{ '已安装' if item.installed_local else '未安装' }}</span>
+        {% for node in remote_nodes or [] %}
+        <span class="package-device-chip status-{{ 'unknown' if node.status == 'online' else 'unavailable' }}" data-package-status-device="{{ node.id }}" title="{{ node.last_error or node.status }}">{{ node.name }}：{{ '未检查' if node.status == 'online' else '不可用' }}</span>
+        {% endfor %}
+      </div>
+      {% if item.source_links %}<div class="source-chip-row">{% for label, url in item.source_links.items() %}<a class="source-chip" href="{{ url }}" target="_blank" rel="noreferrer">{{ label }}</a>{% endfor %}</div>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if not selected_category or selected_category.id not in ['node', 'python'] %}
+{% set runtime_filter_categories = ['docker', 'project', 'systemd', 'host'] %}
+<section class="category-filter-panel">
+  <label class="category-search">
+    <span>搜索端口 / 服务 / 作用</span>
+    <input type="search" data-asset-search placeholder="输入端口、项目名、PID、路径或功能说明" autocomplete="off" />
+  </label>
+  {% if selected_category and selected_category.id in runtime_filter_categories %}
+  <div class="category-runtime-filters" role="group" aria-label="运行状态筛选">
+    <button class="runtime-filter-button runtime-filter-button--running" type="button" data-runtime-filter="running" aria-pressed="false">运行中</button>
+    <button class="runtime-filter-button runtime-filter-button--stopped" type="button" data-runtime-filter="stopped" aria-pressed="false">已关闭</button>
+  </div>
+  {% endif %}
+  <div class="category-filter-meta" data-asset-search-count>{{ assets|length }} 个匹配</div>
+</section>
+
+{% set capability_labels = {
+  'versioning': '版本管理',
+  'runtime_control': '运行控制',
+  'autostart': '开机自启',
+  'cf_tunnel': 'CF 域名',
+  'wechat_notify': '微信通知',
+  'delete_control': '删除控制',
+  'repo_metadata': '仓库信息'
+} %}
+<ul class="asset-board asset-board--{{ selected_category.id if selected_category else 'all' }}" data-asset-board>
+  {% for asset in assets %}
+  {% set asset_status = asset.status|lower %}
+  {% set runtime_state = 'unknown' if '(paused)' in asset_status else 'running' if asset_status in ['running', 'active', 'listening'] or asset_status.startswith('up') else 'stopped' if asset_status in ['not running', 'inactive', 'failed', 'dead', 'stopped'] or asset_status.startswith('exited') else 'unknown' %}
+  <li class="asset-card asset-card--{{ asset.category }}" data-asset-card data-runtime-state="{{ runtime_state }}" data-card-select-toggle="{{ asset.object_id }}" data-asset-id="{{ asset.object_id }}" data-asset-name="{{ asset.name }}" data-asset-search-text="{{ asset.name }} {{ asset.object_id }} {{ asset.status }} {{ asset.metadata.description or '' }} {{ asset.metadata.service_hint or '' }} {{ asset.metadata.purpose or '' }} {{ asset.metadata.port or '' }} {{ asset.metadata.process_name or '' }} {{ asset.metadata.project_dir or '' }} {{ asset.metadata.path or '' }} {{ asset.metadata.primary_url or '' }} {{ asset.metadata.endpoint_lines or '' }} {{ asset.metadata.display_ports or '' }}" data-supported-actions="{{ asset.supports_actions|join(',') }}">
+    {% set card_description = asset.metadata.description or asset.metadata.purpose or asset.metadata.service_hint or '' %}
+    {% set discovery_label = '自动发现' if asset.metadata.discovery_source == 'runtime_discovered' else '手工纳管' %}
+    <button class="asset-select" type="button" aria-label="选择 {{ asset.name }}" data-asset-select="{{ asset.object_id }}"></button>
+    <div class="asset-card__summary">
+      <div class="asset-card__summary-main">
+        <div class="asset-card__top">
+          <div>
+            <a class="asset-card__title" href="{{ request.url_for('asset_detail', object_id=asset.object_id) }}">{{ asset.name }}</a>
+            <div class="asset-card__subtitle">{{ asset.object_id }} · {{ asset.category }}</div>
+          </div>
+          <span class="status-pill status-{{ 'ok' if asset.status in ['running', 'active'] or asset.status.startswith('Up') else 'muted' }}">{{ asset.status }}</span>
+        </div>
+        <aside class="asset-card__description-panel">
+          <small>简介说明</small>
+          <p>{{ card_description or '暂无简介。已显示目录、镜像、端口等运行信息，可进入详情页继续确认。' }}</p>
+          <div class="asset-card__description-meta">
+            <span>{{ discovery_label }}</span>
+            {% if asset.category == 'docker' and asset.metadata.image_repository %}<span>{{ asset.metadata.image_repository }}</span>{% endif %}
+            {% if asset.metadata.primary_url %}<a href="{{ asset.metadata.primary_url }}" target="_blank" rel="noreferrer">{{ asset.metadata.primary_url }}</a>{% endif %}
+          </div>
+        </aside>
+      </div>
+    </div>
+    {% set has_card_status_actions = 'update_latest' in asset.supports_actions or 'deploy_version' in asset.supports_actions or 'notify_send' in asset.supports_actions %}
+    <div class="asset-card__status-slot{{ '' if has_card_status_actions else ' is-empty' }}">
+      {% if 'update_latest' in asset.supports_actions or 'deploy_version' in asset.supports_actions %}
+      <div class="version-alert version-alert--checking" data-version-badge data-version-endpoint="/api/assets/{{ asset.object_id }}/versions" data-current-version="{{ asset.current_version or '' }}">
+        <span>版本检查</span><strong>{{ '检查中…' if not asset.latest_version else asset.latest_version }}</strong>
+      </div>
+      {% endif %}
+      {% if 'notify_send' in asset.supports_actions %}
+      <div class="card-quick-actions">
+        <button class="quick-action-button quick-action-button--notify" type="button" data-notification-edit="{{ asset.object_id }}" data-notification-name="{{ asset.name }}" data-notification-endpoint="/api/notifications/{{ asset.object_id }}">微信模板</button>
+      </div>
+      {% endif %}
     </div>
 
     {% if asset.category == 'docker' %}
-    <div class="metric-strip">
+    <div class="metric-strip metric-strip--four">
       <span><small>当前版本</small><strong>{{ asset.current_version or 'unknown' }}</strong></span>
       <span><small>运行镜像</small><strong>{{ asset.metadata.runtime_image_tag or 'unknown' }}</strong></span>
       <span><small>主容器</small><strong>{{ asset.primary_container_name or 'none' }}</strong></span>
+      <span><small>主入口</small>{% if asset.metadata.primary_url %}<a class="metric-strip__link" href="{{ asset.metadata.primary_url }}" target="_blank" rel="noreferrer">{{ asset.metadata.primary_url }}</a>{% else %}<strong>{{ asset.metadata.display_ports or 'none' }}</strong>{% endif %}</span>
     </div>
-    <div class="tag-row">
-      <span class="tag">{{ asset.metadata.lifecycle_strategy or 'compose_pull' }}</span>
-      <span class="tag">{{ asset.metadata.version_source or 'unknown' }}</span>
-      <span class="tag">{{ asset.metadata.version_source_status or asset.metadata.source_status or 'unknown' }}</span>
-      <span class="tag">{{ asset.metadata.discovery_source or 'registered' }}</span>
+    <div class="asset-card__endpoint-slot{{ '' if asset.metadata.service_endpoints else ' is-empty' }}">
+      {% if asset.metadata.service_endpoints %}
+      <div class="endpoint-summary endpoint-summary--links">
+        {% for endpoint in asset.metadata.service_endpoints[:3] %}
+        <div class="endpoint-summary__item">
+          <small>{{ endpoint.label }}</small>
+          <a href="{{ endpoint.tailscale_url }}" target="_blank" rel="noreferrer">{{ endpoint.tailscale_url }}</a>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
-    <div class="inline-version-picker" data-card-version-panel="{{ asset.object_id }}" hidden>
+    <div class="asset-card__tech-meta">
+      <span><small>更新方式</small><strong>{{ asset.metadata.lifecycle_strategy or 'compose_pull' }}</strong></span>
+      <span><small>版本来源</small><strong>{{ asset.metadata.version_source or 'unknown' }}</strong></span>
+      <span><small>检测状态</small><strong>{{ asset.metadata.version_source_status or asset.metadata.source_status or 'unknown' }}</strong></span>
+      <span><small>纳管方式</small><strong>{{ discovery_label }}</strong></span>
+    </div>
+    <div class="inline-version-picker" data-card-version-panel="{{ asset.object_id }}">
       <label>目标版本
-        <select data-card-version-select="{{ asset.object_id }}" data-version-endpoint="/api/assets/{{ asset.object_id }}/versions">
-          <option value="">版本加载中…</option>
+        <select data-card-version-select="{{ asset.object_id }}" data-version-endpoint="/api/assets/{{ asset.object_id }}/versions" disabled>
+          <option value="">选中项目后加载版本</option>
         </select>
       </label>
     </div>
-    <div class="capability-row">
+    <div class="capability-row capability-row--status">
       {% if asset.metadata.capabilities %}
         {% for key, capability in asset.metadata.capabilities.items() %}
-        <span class="tag {{ 'tag-ok' if capability.enabled else 'tag-muted' }}">{{ key }}</span>
+        <span class="capability-pill {{ 'is-enabled' if capability.enabled else 'is-disabled' }}">
+          <i aria-hidden="true"></i>
+          <strong>{{ capability_labels.get(key, key) }}</strong>
+          <small>{{ '已开启' if capability.enabled else '未开启' }}</small>
+        </span>
         {% endfor %}
       {% else %}
-        <span class="tag tag-ok">versioning</span>
+        <span class="capability-pill is-enabled"><i aria-hidden="true"></i><strong>版本管理</strong><small>已开启</small></span>
       {% endif %}
     </div>
     {% if asset.metadata.source_links %}<div class="source-chip-row">{% for label, url in asset.metadata.source_links.items() %}<a class="source-chip" href="{{ url }}" target="_blank" rel="noreferrer">{{ label }}</a>{% endfor %}</div>{% endif %}
@@ -79,10 +277,10 @@
       <span><small>版本</small><strong>{{ asset.current_version or 'unknown' }}</strong></span>
       <span><small>来源</small><strong>{{ asset.metadata.package_manager }}</strong></span>
     </div>
-    <div class="inline-version-picker" data-card-version-panel="{{ asset.object_id }}" hidden>
+    <div class="inline-version-picker" data-card-version-panel="{{ asset.object_id }}">
       <label>目标版本
-        <select data-card-version-select="{{ asset.object_id }}" data-version-endpoint="/api/assets/{{ asset.object_id }}/versions">
-          <option value="">版本加载中…</option>
+        <select data-card-version-select="{{ asset.object_id }}" data-version-endpoint="/api/assets/{{ asset.object_id }}/versions" disabled>
+          <option value="">选中项目后加载版本</option>
         </select>
       </label>
     </div>
@@ -93,9 +291,41 @@
     </div>
     {% if asset.metadata.source_links %}<div class="source-chip-row">{% for label, url in asset.metadata.source_links.items() %}<a class="source-chip" href="{{ url }}" target="_blank" rel="noreferrer">{{ label }}</a>{% endfor %}</div>{% endif %}
     {% elif asset.category == 'project' %}
-    <div class="metric-strip two">
+    <div class="metric-strip metric-strip--four">
       <span><small>类型</small><strong>{{ asset.metadata.stacks|join(', ') }}</strong></span>
       <span><small>分支</small><strong>{{ asset.metadata.git_branch or 'unknown' }}</strong></span>
+      <span><small>主入口</small>{% if asset.metadata.primary_url %}<a class="metric-strip__link" href="{{ asset.metadata.primary_url }}" target="_blank" rel="noreferrer">{{ asset.metadata.primary_url }}</a>{% else %}<strong>{{ asset.metadata.display_ports or 'none' }}</strong>{% endif %}</span>
+      <span><small>运行单元</small><strong>{{ asset.metadata.service_unit or 'none' }}</strong></span>
+    </div>
+    <div class="asset-card__endpoint-slot{{ '' if asset.metadata.service_endpoints else ' is-empty' }}">
+      {% if asset.metadata.service_endpoints %}
+      <div class="endpoint-summary endpoint-summary--links">
+        {% for endpoint in asset.metadata.service_endpoints[:3] %}
+        <div class="endpoint-summary__item">
+          <small>{{ endpoint.label }}</small>
+          <a href="{{ endpoint.tailscale_url }}" target="_blank" rel="noreferrer">{{ endpoint.tailscale_url }}</a>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="inline-version-picker" data-card-version-panel="{{ asset.object_id }}">
+      <label>目标版本
+        <select data-card-version-select="{{ asset.object_id }}" data-version-endpoint="/api/assets/{{ asset.object_id }}/versions" disabled>
+          <option value="">选中项目后加载版本</option>
+        </select>
+      </label>
+    </div>
+    <div class="capability-row capability-row--status">
+      {% if asset.metadata.capabilities %}
+        {% for key, capability in asset.metadata.capabilities.items() %}
+        <span class="capability-pill {{ 'is-enabled' if capability.enabled else 'is-disabled' }}">
+          <i aria-hidden="true"></i>
+          <strong>{{ capability_labels.get(key, key) }}</strong>
+          <small>{{ '已开启' if capability.enabled else '未开启' }}</small>
+        </span>
+        {% endfor %}
+      {% endif %}
     </div>
     {% if asset.metadata.source_links %}<div class="source-chip-row">{% for label, url in asset.metadata.source_links.items() %}<a class="source-chip" href="{{ url }}" target="_blank" rel="noreferrer">{{ label }}</a>{% endfor %}</div>{% endif %}
     <div class="path-chip">{{ asset.metadata.path }}</div>
@@ -103,13 +333,50 @@
     <div class="metric-strip two">
       <span><small>监听</small><strong>{{ asset.metadata.local_address }}:{{ asset.metadata.port }}</strong></span>
       <span><small>PID</small><strong>{{ asset.metadata.pid or 'unknown' }}</strong></span>
+      <span><small>识别</small><strong>{{ asset.metadata.service_hint or asset.metadata.process_name or 'unknown' }}</strong></span>
     </div>
-    <div class="path-chip">{{ asset.metadata.process_name or 'unknown' }}</div>
+    <div class="host-action-row">
+      <button class="ghost-button compact-button" type="button" data-host-port-action="stop" data-host-asset-id="{{ asset.object_id }}" {{ '' if 'stop' in asset.supports_actions else 'disabled' }} title="会根据识别结果停止 Docker/systemd/PID；未识别时不可直接执行">关闭端口</button>
+      <button class="ghost-button compact-button" type="button" data-host-port-action="start" data-host-asset-id="{{ asset.object_id }}" {{ '' if 'start' in asset.supports_actions else 'disabled' }} title="只有已知 Docker/systemd 服务才能开启；纯端口不能凭空开启">开启端口</button>
+    </div>
+    <div class="path-chip">{{ asset.metadata.purpose or asset.metadata.process_name or 'unknown' }}</div>
     {% elif asset.category == 'system' %}
     <div class="metric-strip">
       <span><small>版本</small><strong>{{ asset.current_version or 'unknown' }}</strong></span>
     </div>
+    <div class="tag-row">
+      <span class="tag {{ 'tag-ok' if asset.metadata.update_supported else 'tag-muted' }}">{{ '可面板更新' if asset.metadata.update_supported else '只读' }}</span>
+      {% if asset.metadata.update_note %}<span class="tag tag-muted">{{ asset.metadata.update_note }}</span>{% endif %}
+    </div>
+    <div class="inline-version-picker" data-card-version-panel="{{ asset.object_id }}">
+      <label>目标版本
+        <select data-card-version-select="{{ asset.object_id }}" data-version-endpoint="/api/assets/{{ asset.object_id }}/versions" disabled>
+          <option value="">选中项目后加载版本</option>
+        </select>
+      </label>
+    </div>
     <div class="path-chip">{{ asset.metadata.raw_output or asset.metadata.error or 'none' }}</div>
+    {% elif asset.category == 'agent' %}
+    <div class="metric-strip two">
+      <span><small>CLI 版本</small><strong>{{ asset.current_version or '未检测到' }}</strong></span>
+      <span><small>维护范围</small><strong>{{ asset.metadata.tooling_scope }}</strong></span>
+    </div>
+    <p class="asset-description">配置位置：{{ asset.metadata.config_paths }}</p>
+    <div class="tag-row">
+      <span class="tag tag-ok">配置扫描</span>
+      <span class="tag">Skill / MCP / 插件</span>
+      <span class="tag tag-muted">CLI 更新在 Node 分类</span>
+    </div>
+    {% if asset.metadata.source_links %}<div class="source-chip-row">{% for label, url in asset.metadata.source_links.items() %}<a class="source-chip" href="{{ url }}" target="_blank" rel="noreferrer">{{ label }}</a>{% endfor %}</div>{% endif %}
+    {% elif asset.category == 'remote' %}
+    <div class="metric-strip two">
+      <span><small>模块</small><strong>{{ asset.metadata.remote_kind }}</strong></span>
+      <span><small>状态</small><strong>{{ asset.status }}</strong></span>
+    </div>
+    <p class="asset-description">{{ asset.metadata.description }}</p>
+    <div class="button-row">
+      <a class="primary-button compact-button" href="{{ asset.metadata.entry_url }}">打开</a>
+    </div>
     {% else %}
     <div class="path-chip">暂无更多信息</div>
     {% endif %}
@@ -118,4 +385,45 @@
   <li class="asset-card empty-state">当前分类暂无资产</li>
   {% endfor %}
 </ul>
+
+{% endif %}
+
+<dialog class="notification-dialog" data-notification-dialog>
+  <form method="dialog" class="notification-dialog__inner">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">WeChat Notify</p>
+        <h2 data-dialog-title>编辑微信通知</h2>
+        <p>每个项目独立保存模板。没保存过会自动使用默认模板。</p>
+      </div>
+      <button class="ghost-button compact-button" type="button" data-notification-dialog-close>关闭</button>
+    </div>
+    <div class="notification-form">
+      <label class="toggle-row"><input type="checkbox" data-notification-enabled /> 启用默认通知</label>
+      <label>标题
+        <input type="text" data-notification-title placeholder="项目通知标题" />
+      </label>
+      <div class="template-helper">
+        <strong>可用变量</strong>
+        <span>{% raw %}{{ asset.name }}{% endraw %}</span>
+        <span>{% raw %}{{ asset.status }}{% endraw %}</span>
+        <span>{% raw %}{{ tailscale_url }}{% endraw %}</span>
+        <span>{% raw %}{{ cf_url }}{% endraw %}</span>
+        <span>{% raw %}{{ source_url }}{% endraw %}</span>
+        <span>{% raw %}{{ ports }}{% endraw %}</span>
+        <span>{% raw %}{{ project_dir }}{% endraw %}</span>
+      </div>
+      <label>内容模板
+        <textarea data-notification-template rows="9" placeholder="支持 {% raw %}{{ asset.name }} / {{ tailscale_url }} / {{ cf_url }} / {{ ports }}{% endraw %} 等变量"></textarea>
+      </label>
+      <div class="button-row">
+        <button class="primary-button" type="button" data-notification-save>保存模板</button>
+        <button class="ghost-button" type="button" data-notification-send>发送测试通知</button>
+        <a class="ghost-button" data-notification-detail-link href="#">打开详情页</a>
+      </div>
+      <div class="notification-preview" data-notification-preview>正在加载通知配置…</div>
+      <div class="bulk-flash" data-notification-result></div>
+    </div>
+  </form>
+</dialog>
 {% endblock %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <div>
+    <p class="eyebrow">Remote</p>
+    <h1>配置同步中心</h1>
+    <p>这里管理系统配置、代理、Shell、Git、Node/Python 源和 Agent 配置。第一批先做入口，不直接写远程配置。</p>
+  </div>
+  <a class="ghost-button" href="{{ request.url_for('category_page', category_id='remote') }}">返回 SSH 与配置同步</a>
+</section>
+
+<section class="panel">
+  <div class="section-heading">
+    <div>
+      <h2>后续同步项</h2>
+      <p>所有写入型同步都会先 dry-run、差异预览、备份，再应用。</p>
+    </div>
+  </div>
+  <div class="capability-grid">
+    <div class="capability-card is-enabled"><strong>Shell</strong><small>.zshrc / .bashrc / 环境变量</small></div>
+    <div class="capability-card is-enabled"><strong>代理</strong><small>HTTP_PROXY / Clash / npm / pip 代理</small></div>
+    <div class="capability-card is-enabled"><strong>Git</strong><small>.gitconfig / user / alias</small></div>
+    <div class="capability-card is-enabled"><strong>Agent</strong><small>AGENTS.md / CLAUDE.md / GEMINI.md / MCP / Skills</small></div>
+  </div>
+</section>
+{% endblock %}

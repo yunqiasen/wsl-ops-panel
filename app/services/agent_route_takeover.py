@@ -8,7 +8,9 @@ import re
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from app.services.agent_paths import resolve_agent_paths
 
 from app.services.agent_clients import get_agent_client
 
@@ -20,8 +22,17 @@ class RouteTakeoverError(ValueError):
 class AgentRouteTakeover:
     """Apply and restore one client's local Router endpoint transactionally."""
 
-    def __init__(self, home: Path | str, state_root: Path | str) -> None:
+    def __init__(
+        self,
+        home: Path | str,
+        state_root: Path | str,
+        *,
+        environ: Mapping[str, str] | None = None,
+        overrides: Mapping[str, Path | str] | None = None,
+    ) -> None:
         self.home = Path(home)
+        self.environ = environ
+        self.overrides = overrides
         self.state_root = Path(state_root)
         self.state_path = self.state_root / "route-takeover.json"
 
@@ -125,17 +136,22 @@ class AgentRouteTakeover:
         return result
 
     def _path(self, client_id: str) -> Path:
-        paths = {
-            "codex": self.home / ".codex" / "config.toml",
-            "claude": self.home / ".claude.json",
-            "gemini": self.home / ".gemini" / ".env",
-            "opencode": self.home / ".config" / "opencode" / "opencode.json",
-            "openclaw": self.home / ".openclaw" / "openclaw.json",
-        }
-        try:
-            return paths[client_id]
-        except KeyError as exc:
-            raise RouteTakeoverError(f"unsupported route takeover client: {client_id}") from exc
+        client = get_agent_client(client_id)
+        if client is None or "route" not in client.write_support:
+            raise RouteTakeoverError(
+                f"unsupported route takeover client: {client_id}"
+            )
+        path = resolve_agent_paths(
+            client_id,
+            self.home,
+            environ=self.environ,
+            overrides=self.overrides,
+        ).route
+        if path is None:
+            raise RouteTakeoverError(
+                f"unsupported route takeover client: {client_id}"
+            )
+        return path
 
     def _render_enabled(
         self, client_id: str, before: str, route: str
@@ -150,6 +166,8 @@ class AgentRouteTakeover:
             return _enable_opencode(before, route)
         if client_id == "openclaw":
             return _enable_openclaw(before, route)
+        if client_id == "grokbuild":
+            return _enable_grokbuild(before, route)
         raise RouteTakeoverError(f"unsupported route takeover client: {client_id}")
 
     def _restore_owned(
@@ -166,14 +184,17 @@ class AgentRouteTakeover:
             return _restore_json_owned(current, owned)
         if client_id == "gemini":
             return _restore_dotenv(current, owned)
+        if client_id == "grokbuild":
+            return _restore_grokbuild(current, owned)
         raise RouteTakeoverError(f"unsupported route takeover client: {client_id}")
 
     def _validate(self, client_id: str, content: str) -> None:
-        if client_id == "codex":
+        if client_id in {"codex", "grokbuild"}:
             try:
                 tomllib.loads(content or "")
             except tomllib.TOMLDecodeError as exc:
-                raise RouteTakeoverError("Codex TOML validation failed") from exc
+                label = "Grok Build" if client_id == "grokbuild" else "Codex"
+                raise RouteTakeoverError(f"{label} TOML validation failed") from exc
         elif client_id in {"claude", "opencode", "openclaw"}:
             try:
                 payload = json.loads(content or "{}")
@@ -270,6 +291,121 @@ def _replace_toml_table(text: str, name: str, replacement: str) -> str:
     if pattern.search(text):
         return pattern.sub(replacement.rstrip() + "\n", text, count=1)
     return text.rstrip() + "\n\n" + replacement.rstrip() + "\n"
+
+
+GROK_PROXY_TOKEN = "PROXY_MANAGED"
+
+
+def _grok_selected_profile(text: str) -> tuple[str, dict[str, Any]]:
+    try:
+        parsed = tomllib.loads(text or "")
+    except tomllib.TOMLDecodeError as exc:
+        raise RouteTakeoverError("Grok Build TOML configuration is invalid") from exc
+    models = parsed.get("models") if isinstance(parsed, dict) else None
+    model_tables = parsed.get("model") if isinstance(parsed, dict) else None
+    profile = models.get("default") if isinstance(models, dict) else None
+    selected = (
+        model_tables.get(str(profile))
+        if isinstance(profile, str) and isinstance(model_tables, dict)
+        else None
+    )
+    if not isinstance(profile, str) or not profile.strip() or not isinstance(selected, dict):
+        raise RouteTakeoverError(
+            "Grok Build custom model profile is required for route takeover"
+        )
+    if not str(selected.get("model") or "").strip() or not str(
+        selected.get("base_url") or ""
+    ).strip():
+        raise RouteTakeoverError(
+            "Grok Build custom model profile is incomplete for route takeover"
+        )
+    return profile.strip(), selected
+
+
+def _grok_section_lines(text: str, profile: str) -> tuple[list[str], int, int] | None:
+    lines = str(text or "").splitlines()
+    headers = {f"[model.{profile}]", f'[model."{profile}"]', f"[model.'{profile}']"}
+    start = next(
+        (index for index, line in enumerate(lines) if line.strip() in headers), None
+    )
+    if start is None:
+        return None
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if lines[index].strip().startswith("[")
+        ),
+        len(lines),
+    )
+    return lines, start, end
+
+
+def _grok_update_field(
+    text: str,
+    profile: str,
+    key: str,
+    value: Any,
+    *,
+    present: bool = True,
+) -> str:
+    section = _grok_section_lines(text, profile)
+    if section is None:
+        return text
+    lines, start, end = section
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    matches = [index for index in range(start + 1, end) if pattern.match(lines[index])]
+    if present:
+        rendered = f"{key} = {json.dumps(str(value), ensure_ascii=False)}"
+        if matches:
+            lines[matches[0]] = rendered
+            for index in reversed(matches[1:]):
+                lines.pop(index)
+        else:
+            lines.insert(end, rendered)
+    else:
+        for index in reversed(matches):
+            lines.pop(index)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _enable_grokbuild(before: str, route: str) -> tuple[str, dict[str, Any]]:
+    profile, selected = _grok_selected_profile(before)
+    rendered = _grok_update_field(before, profile, "base_url", route)
+    rendered = _grok_update_field(rendered, profile, "api_key", GROK_PROXY_TOKEN)
+    return rendered, {
+        "kind": "grokbuild",
+        "profile": profile,
+        "token_placeholder": GROK_PROXY_TOKEN,
+        "fields": {
+            "base_url": {
+                "old_present": "base_url" in selected,
+                "old_value": selected.get("base_url"),
+            },
+            "api_key": {
+                "old_present": "api_key" in selected,
+                "old_value": selected.get("api_key"),
+            },
+        },
+    }
+
+
+def _restore_grokbuild(current: str, owned: dict[str, Any]) -> str:
+    profile = str(owned.get("profile") or "").strip()
+    if not profile:
+        return current
+    rendered = current
+    fields = owned.get("fields") if isinstance(owned.get("fields"), dict) else {}
+    for key in ("base_url", "api_key"):
+        old = fields.get(key) if isinstance(fields.get(key), dict) else {}
+        rendered = _grok_update_field(
+            rendered,
+            profile,
+            key,
+            old.get("old_value"),
+            present=bool(old.get("old_present")),
+        )
+    return rendered
 
 
 def _enable_json_env(before: str, key: str, route: str) -> tuple[str, dict[str, Any]]:

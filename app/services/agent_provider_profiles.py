@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tomllib
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,15 +21,33 @@ class ProviderProfileError(ValueError):
 
 
 def normalize_provider_profile(
-    app_id: str, settings: dict[str, Any]
+    app_id: str,
+    settings: dict[str, Any],
+    meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     routing = settings.get("routing")
     if isinstance(routing, dict):
         source = dict(routing)
-    elif any(key in settings for key in ("base_url", "api_format", "api_key")):
+        native = settings.get("native_provider")
+        if isinstance(native, dict):
+            # 原生快照保存的是环境变量名/客户端密钥；routing 只保存
+            # 面板自己的路由字段。缺少路由字段时从原生记录补齐，避免
+            # 导入后的 Grok/Hermes Provider 在运行时丢失认证信息。
+            for key in ("env_key", "api_key"):
+                if not str(source.get(key) or "").strip() and native.get(key):
+                    source[key] = native[key]
+    elif any(key in settings for key in ("base_url", "api_format", "api_key", "env_key")):
         source = dict(settings)
     else:
-        source = _legacy_profile(app_id, settings)
+        from app.services.agent_provider_adapters import (
+            ProviderAdapterError,
+            build_runtime_profile,
+        )
+
+        try:
+            return build_runtime_profile(app_id, settings, meta)
+        except ProviderAdapterError as exc:
+            raise ProviderProfileError(str(exc)) from exc
 
     base_url = str(source.get("base_url") or "").strip()
     if not base_url:
@@ -44,6 +64,9 @@ def normalize_provider_profile(
         raise ProviderProfileError(f"unsupported auth_mode: {auth_mode}")
 
     api_key = source.get("api_key")
+    if api_key is None or not str(api_key).strip():
+        env_key = str(source.get("env_key") or "").strip()
+        api_key = os.environ.get(env_key) if env_key else None
     if api_key is not None:
         api_key = str(api_key)
     headers = source.get("headers")
@@ -69,11 +92,48 @@ def normalize_provider_profile(
         "model_map": clean_model_map,
         "full_url": bool(source.get("full_url", False)),
         "use_outbound_proxy": bool(source.get("use_outbound_proxy", True)),
+        "auto_failover": bool(source.get("auto_failover", False)),
+        "max_retries": _bounded_int(source.get("max_retries", 0), 0, 10),
+        "failure_threshold": _bounded_int(
+            source.get("failure_threshold", 3), 1, 100
+        ),
+        "cooldown_seconds": _bounded_int(
+            source.get("cooldown_seconds", 60), 0, 86400
+        ),
     }
+    fallback_values = source.get("fallbacks")
+    if isinstance(fallback_values, list):
+        fallbacks: list[dict[str, Any]] = []
+        for item in fallback_values:
+            if not isinstance(item, dict):
+                continue
+            provider_id = str(item.get("provider_id") or item.get("id") or "").strip()
+            fallback_source = dict(item)
+            fallback_source.pop("fallbacks", None)
+            fallback_source.pop("provider_id", None)
+            fallback_source.pop("id", None)
+            if not provider_id:
+                continue
+            fallback = normalize_provider_profile(app_id, fallback_source)
+            fallback["provider_id"] = provider_id
+            fallbacks.append(fallback)
+        result["fallbacks"] = fallbacks
     secret_ref = str(source.get("secret_ref") or "").strip()
     if secret_ref:
         result["secret_ref"] = secret_ref
     return result
+
+
+def _bounded_int(value: Any, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ProviderProfileError("router numeric setting must be an integer") from exc
+    if not minimum <= number <= maximum:
+        raise ProviderProfileError(
+            f"router numeric setting must be between {minimum} and {maximum}"
+        )
+    return number
 
 
 def public_runtime_provider(profile: dict[str, Any]) -> dict[str, Any]:
@@ -95,6 +155,7 @@ def _normalize_api_format(value: Any, app_id: str) -> str:
         "chat": "openai_chat",
         "chat_completions": "openai_chat",
         "responses": "openai_responses",
+        "codex_responses": "openai_responses",
         "anthropic_messages": "anthropic",
         "gemini_native": "gemini",
     }
@@ -171,12 +232,41 @@ def _legacy_profile(app_id: str, settings: dict[str, Any]) -> dict[str, Any]:
             "api_key": config.get("apiKey") or config.get("api_key"),
             "model": config.get("model"),
         }
-    if app_id == "hermes":
+    if app_id == "grokbuild":
+        config = settings.get("config")
+        try:
+            parsed = tomllib.loads(str(config or ""))
+        except tomllib.TOMLDecodeError:
+            return {}
+        models = parsed.get("models") if isinstance(parsed, dict) else None
+        model_tables = parsed.get("model") if isinstance(parsed, dict) else None
+        profile = models.get("default") if isinstance(models, dict) else None
+        selected = (
+            model_tables.get(str(profile))
+            if isinstance(profile, str) and isinstance(model_tables, dict)
+            else None
+        )
+        if not isinstance(selected, dict):
+            return {}
         return {
-            "base_url": settings.get("base_url"),
-            "api_format": settings.get("api_mode") or "openai_chat",
-            "api_key": settings.get("api_key"),
-            "model": settings.get("model"),
+            "base_url": selected.get("base_url"),
+            "api_format": selected.get("api_backend") or "openai_responses",
+            "api_key": selected.get("api_key"),
+            "env_key": selected.get("env_key"),
+            "auth_mode": "bearer",
+            "model": selected.get("model"),
+        }
+    if app_id == "hermes":
+        native = settings.get("native_provider")
+        source = native if isinstance(native, dict) else settings
+        return {
+            "base_url": source.get("base_url"),
+            "api_format": source.get("api_mode") or "openai_chat",
+            "api_key": source.get("api_key"),
+            "env_key": source.get("env_key"),
+            "model": source.get("model"),
+            "headers": source.get("headers"),
+            "auth_mode": source.get("auth_mode"),
         }
     return {}
 

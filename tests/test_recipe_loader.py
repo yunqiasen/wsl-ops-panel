@@ -152,6 +152,14 @@ def test_load_docker_recipes_reads_repo_openai_cpa_recipe_and_override() -> None
     assert recipe.healthcheck is not None
     assert recipe.healthcheck.url == 'http://127.0.0.1:8128'
     assert recipe.healthcheck.expect_status == 200
+    assert recipe.docker_build_args == {
+        'HTTP_PROXY': '{docker_bridge_proxy_url}',
+        'HTTPS_PROXY': '{docker_bridge_proxy_url}',
+        'http_proxy': '{docker_bridge_proxy_url}',
+        'https_proxy': '{docker_bridge_proxy_url}',
+        'PIP_INDEX_URL': 'https://pypi.tuna.tsinghua.edu.cn/simple',
+        'APT_MIRROR': 'http://mirrors.tuna.tsinghua.edu.cn',
+    }
     assert recipe.full_delete_paths == ['/home/div/1_Project_dir/regmail-2api/资源/openai-cpa']
 
     override_path = Path(recipe.override_file)
@@ -168,6 +176,8 @@ def test_load_docker_recipes_reads_repo_openai_cpa_recipe_and_override() -> None
                 'environment': {
                     'TZ': 'Asia/Shanghai',
                     'HOST_PROJECT_PATH': '/home/div/1_Project_dir/regmail-2api/资源/openai-cpa',
+                    'NO_PROXY': 'host.docker.internal,127.0.0.1,localhost,172.17.0.1,sub2api',
+                    'no_proxy': 'host.docker.internal,127.0.0.1,localhost,172.17.0.1,sub2api',
                 },
                 'volumes': ['./data:/app/data', '/var/run/docker.sock:/var/run/docker.sock'],
             }
@@ -216,13 +226,63 @@ def test_repo_openai_cpa_object_recipe_reference_resolves_and_matches_fields() -
     obj = next(item for item in registry.objects if item.id == 'openai_cpa')
     recipe = recipe_service.require(obj.config['recipe_id'])
 
-    assert obj.config['project_dir'] == recipe.repo_dir
+    if obj.id == 'openai_cpa':
+        assert obj.config['project_dir'] == recipe.repo_dir
     assert obj.config['compose_file'] == recipe.compose_file
     assert obj.config['compose_service'] == recipe.compose_service
     assert obj.config['primary_container'] == recipe.primary_container
     assert obj.config['lifecycle_strategy'] == recipe.lifecycle_strategy
     assert obj.config['version_source'] == recipe.version_source
 
+
+
+def test_shared_recipe_preserves_distinct_runtime_dirs(tmp_path: Path) -> None:
+    _write(tmp_path / 'categories/docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+    _write_override(tmp_path / 'recipes/docker/overrides/shared.yaml')
+    recipe_config = {
+        'lifecycle_strategy': 'compose_local_build_git_tag', 'version_source': 'git_tags',
+        'compose_file': 'docker-compose.yml', 'compose_service': 'web',
+        'primary_container': 'shared-web', 'managed_services': ['web'], 'ignored_services': [],
+    }
+    _write(tmp_path / 'recipes/docker/shared.yaml', yaml.safe_dump({
+        'id': 'shared', 'repo_dir': '/srv/source', **recipe_config,
+        'override_file': 'overrides/shared.yaml', 'local_image_repository': 'local/shared',
+        'local_image_tag_template': '{version}', 'healthcheck': {'url': 'http://127.0.0.1:8128'},
+    }))
+    for suffix in ('2', '3'):
+        _write(tmp_path / f'objects/shared-{suffix}.yaml', yaml.safe_dump({
+            'id': f'shared_{suffix}', 'category': 'docker', 'type': 'docker_compose', 'name': f'Shared {suffix}',
+            'config': {**recipe_config, 'recipe_id': 'shared', 'project_dir': f'/srv/runtime-{suffix}',
+                       'healthcheck_url': 'http://127.0.0.1:8128'},
+        }))
+    registry = load_registry(tmp_path)
+    recipe = DockerRecipeService(tmp_path).require('shared')
+    assert {obj.config['project_dir'] for obj in registry.objects} == {'/srv/runtime-2', '/srv/runtime-3'}
+    assert recipe.repo_dir == '/srv/source'
+    for obj in registry.objects:
+        for field in recipe_config:
+            assert obj.config.get(field, []) == getattr(recipe, field)
+        assert obj.config['healthcheck_url'] == recipe.healthcheck.url
+
+
+def test_repo_sub2api_object_recipe_reference_resolves_and_matches_fields() -> None:
+    config_root = Path(__file__).resolve().parents[1] / 'config'
+    registry = load_registry(config_root)
+    recipe_service = DockerRecipeService(config_root)
+
+    obj = next(item for item in registry.objects if item.id == 'sub2api')
+    recipe = recipe_service.require(obj.config['recipe_id'])
+
+    assert obj.config['project_dir'] == recipe.repo_dir
+    assert obj.config['compose_file'] == recipe.compose_file
+    assert obj.config['compose_service'] == recipe.compose_service
+    assert obj.config['primary_container'] == recipe.primary_container
+    assert obj.config['lifecycle_strategy'] == recipe.lifecycle_strategy
+    assert obj.config['version_source'] == recipe.version_source
+    assert obj.config['managed_services'] == recipe.managed_services
+    assert obj.config['ignored_services'] == recipe.ignored_services
+    assert obj.config['healthcheck_url'] == recipe.healthcheck.url
+    assert recipe.docker_build_args == {'VERSION': '{version_without_v}', 'COMMIT': '{version}'}
 
 def test_load_registry_ignores_unreferenced_invalid_recipe_when_referenced_recipe_is_valid(tmp_path: Path) -> None:
     _write(tmp_path / 'categories' / 'docker.yaml', 'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')

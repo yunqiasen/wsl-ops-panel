@@ -5,6 +5,9 @@ class ActionPlan(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     commands: list[list[str]]
+    success_commands: list[list[str]] = Field(default_factory=list)
+    retry_policy: dict[str, object] | None = None
+    command_timeout_seconds: float | None = None
     requires_sudo: bool = False
     working_dir: str | None = None
     preview_paths: list[str] = Field(default_factory=list)

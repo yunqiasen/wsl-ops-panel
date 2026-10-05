@@ -24,6 +24,18 @@ class AssetPolicyService:
 
     def _apply_node(self, asset: AssetSnapshot) -> AssetSnapshot:
         rule = self._node_rules.get(asset.name)
+        if rule and rule.managed_by == 'agent':
+            allowed_actions = rule.allowed_actions or ['update_latest', 'deploy_version']
+            return asset.model_copy(
+                update={
+                    'actionable': True,
+                    'supports_actions': allowed_actions,
+                    'managed_by': rule.managed_by,
+                    'blocked_reason': rule.blocked_reason,
+                    'policy_source': 'rules/node-packages.yaml',
+                    'metadata': {**asset.metadata, 'full_delete_paths': rule.full_delete_paths},
+                }
+            )
         if rule and (rule.protected or rule.managed_by != 'node'):
             return asset.model_copy(
                 update={

@@ -92,7 +92,7 @@ def test_local_skill_api_installs_updates_and_uninstalls_one_client(
     from fastapi.testclient import TestClient
 
     from app.core.security import COOKIE_NAME, issue_session_token
-    from app.main import create_app
+    from tests.app_factory import create_app
 
     _write_agent_category(tmp_path)
     home = tmp_path / "home"
@@ -113,6 +113,11 @@ def test_local_skill_api_installs_updates_and_uninstalls_one_client(
     )
     assert installed.status_code == 200
     assert installed.json()["verified"] is True
+    from app.services.agent_skill_store import AgentSkillStore
+
+    skill_store = AgentSkillStore(tmp_path / "data/agent")
+    assert skill_store.get("demo") is not None
+    assert skill_store.state.list_skill_assignments("__local__", "codex")[0]["skill_id"] == "demo"
 
     (source / "SKILL.md").write_text("# V2\n", encoding="utf-8")
     updated = client.post(
@@ -130,6 +135,8 @@ def test_local_skill_api_installs_updates_and_uninstalls_one_client(
     assert removed.status_code == 200
     assert removed.json()["removed"] == ["demo"]
     assert Path(removed.json()["backup_path"]).exists()
+    assert skill_store.get("demo") is not None
+    assert skill_store.state.list_skill_assignments("__local__", "codex") == []
 
 
 def test_prompt_import_apply_and_restore(tmp_path: Path) -> None:
@@ -157,7 +164,7 @@ def test_prompt_local_api_imports_applies_template_and_restores(
     from fastapi.testclient import TestClient
 
     from app.core.security import COOKIE_NAME, issue_session_token
-    from app.main import create_app
+    from tests.app_factory import create_app
     from app.services.agent_prompts import AgentPromptStore
 
     _write_agent_category(tmp_path)
@@ -185,9 +192,12 @@ def test_prompt_local_api_imports_applies_template_and_restores(
     assert applied.status_code == 200
     assert applied.json()["verified"] is True
     assert target.read_text(encoding="utf-8") == "after\n"
+    prompt_store = AgentPromptStore(tmp_path / "data/agent")
+    assert prompt_store.state.list_prompt_assignments("__local__", "codex")[0]["prompt_id"] == "default"
 
     restored = client.post(
         "/api/agent/prompts/local/restore", json={"client_id": "codex"}
     )
     assert restored.status_code == 200
     assert target.read_text(encoding="utf-8") == "before\n"
+    assert prompt_store.state.list_prompt_assignments("__local__", "codex") == []

@@ -1,0 +1,17 @@
+id: docker__deploy
+category: docker
+type: docker_compose
+name: 星海控制台后端栈
+description: 星海控制台后端栈：运行 image2api server、Redis、MySQL 等后台组件，给管理控制台和 API 提供服务。
+enabled: true
+config:
+  project_dir: "/home/div/1_Project_dir/AI/image/xinghai-studio-console/deploy"
+  compose_file: "docker-compose.yml"
+  primary_container: "image2api-server"
+  compose_service: "server"
+  endpoints:
+    - label: "API / 管理入口"
+      host_port: "18080"
+      container_port: "8080"
+      path: "/"
+      primary: true

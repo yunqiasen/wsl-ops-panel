@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from app.registry.loader import load_registry
 from app.registry.service import RegistryService
@@ -266,7 +267,7 @@ def test_load_registry_includes_repo_openai_cpa_object_config() -> None:
     registry = load_registry(config_root)
 
     obj = next(item for item in registry.objects if item.id == 'openai_cpa')
-    assert obj.name == 'openai-cpa'
+    assert obj.name == 'OpenAI-cpa'
     assert obj.config == {
         'project_dir': '/home/div/1_Project_dir/regmail-2api/资源/openai-cpa',
         'compose_file': 'docker-compose.yml',
@@ -343,3 +344,51 @@ def test_load_registry_rejects_recipe_field_drift(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match='compose_service'):
         load_registry(tmp_path)
+
+def test_load_registry_accepts_object_description(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml', 'id: docker\nlabel: Docker\n')
+    _write_registry_file(
+        tmp_path,
+        'objects',
+        'searxng.yaml',
+        'id: searxng\ncategory: docker\ntype: docker_compose\nname: SearXNG\n'
+        'description: 自部署元搜索引擎服务，提供 Web 搜索入口。\n'
+        'config:\n  project_dir: /srv/searxng\n  compose_file: docker-compose.yaml\n',
+    )
+
+    registry = load_registry(tmp_path)
+
+    assert registry.objects[0].description == '自部署元搜索引擎服务，提供 Web 搜索入口。'
+
+
+def test_registry_preserves_compose_files_primary_containers_and_endpoints(tmp_path: Path) -> None:
+    _write_registry_file(tmp_path, 'categories', 'docker.yaml',
+                         'id: docker\nlabel: Docker\norder: 10\nenabled: true\n')
+
+    expected = {
+        'cpa': ('docker-compose.local.yml', 'cli-proxy-api', '8317'),
+        'docker__check-cx': ('docker-compose.local.yml', 'check-cx-local-app', '3010'),
+        'docker__metapi': ('docker-compose.dev.yml', 'metapi', '4000'),
+        'docker__资源': ('docker-compose.8132.yml', 'openai_cpa_5_mod', '8132'),
+        'docker__deploy': ('docker-compose.yml', 'image2api-server', '18080'),
+        'docker__xinghai-image-studio-ui': ('docker-compose.yml', 'xinghai-image-studio-ui', '18100'),
+        'docker__xianyu-auto-reply-fix': ('docker-compose.yml', 'xianyu-auto-reply-fix', '9000'),
+    }
+
+    for object_id, (compose_file, primary_container, primary_port) in expected.items():
+        _write_registry_file(tmp_path, 'objects', f'{object_id}.yaml', yaml.safe_dump({
+            'id': object_id, 'category': 'docker', 'type': 'docker_compose', 'name': object_id,
+            'config': {'project_dir': f'/srv/{object_id}', 'compose_file': compose_file,
+                       'primary_container': primary_container,
+                       'endpoints': [{'name': 'web', 'host_port': primary_port, 'primary': True}]},
+        }))
+    registry = load_registry(tmp_path)
+    objects = {item.id: item for item in registry.objects}
+
+    for object_id, (compose_file, primary_container, primary_port) in expected.items():
+        obj = objects[object_id]
+        assert obj.category == 'docker'
+        assert obj.config['compose_file'] == compose_file
+        assert obj.config['primary_container'] == primary_container
+        primary = next(endpoint for endpoint in obj.config['endpoints'] if endpoint.get('primary'))
+        assert primary['host_port'] == primary_port

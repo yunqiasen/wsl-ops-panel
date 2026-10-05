@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-hero">
+  <div>
+    <p class="eyebrow">Remote</p>
+    <h1>节点中心</h1>
+    <p>保存 SSH 设备，后续 Node / Python / Agent 可选择这些设备执行远程安装、更新和同步。</p>
+  </div>
+  <a class="ghost-button" href="{{ request.url_for('category_page', category_id='remote') }}">返回 SSH 与配置同步</a>
+</section>
+
+<div class="detail-main detail-main--wide">
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>新增 SSH 节点</h2>
+        <p>支持密码或 Key。密码第一批保存在本机数据文件，后续再做加密迁移。</p>
+      </div>
+    </div>
+    <form class="remote-node-form" method="post" action="/remote/nodes">
+      <label>名称<input name="name" required placeholder="MacBook / VPS / WSL" /></label>
+      <label>主机<input name="host" required placeholder="100.x.x.x 或域名" /></label>
+      <label>端口<input name="port" type="number" value="22" min="1" max="65535" /></label>
+      <label>用户名<input name="username" required placeholder="root / div / admin" /></label>
+      <label>登录方式
+        <select name="auth_type">
+          <option value="password">密码</option>
+          <option value="key">SSH Key</option>
+        </select>
+      </label>
+      <label>密码<input name="password" type="password" autocomplete="new-password" /></label>
+      <label>Key 路径<input name="key_path" placeholder="/home/div/.ssh/id_ed25519" /></label>
+      <label>系统类型
+        <select name="os_hint">
+          <option value="auto">自动判断</option>
+          <option value="wsl">WSL</option>
+          <option value="linux">Linux</option>
+          <option value="macos">macOS</option>
+          <option value="windows">Windows</option>
+        </select>
+      </label>
+      <label>标签<input name="tags" placeholder="mac,work,codex，多标签用逗号分隔" /></label>
+      <button class="primary-button" type="submit">保存节点</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>已保存节点</h2>
+        <p>连接测试会更新状态。后续远程维护会从这里选择目标设备。</p>
+      </div>
+    </div>
+    <div class="table-list">
+      {% for node in nodes %}
+      <div class="list-row stacked">
+        <span>
+          <strong>{{ node.name }}</strong>
+          <small>{{ node.username }}@{{ node.host }}:{{ node.port }} · {{ node.auth_type }} · {{ node.os_hint }}</small>
+          {% if node.last_error %}<small class="danger-text">{{ node.last_error }}</small>{% endif %}
+        </span>
+        <span class="status-pill status-{{ 'ok' if node.status == 'online' else 'muted' }}">{{ node.status }}</span>
+        <form method="post" action="/remote/nodes/{{ node.id }}/test"><button class="ghost-button compact-button" type="submit">测试连接</button></form>
+        <form method="post" action="/remote/nodes/{{ node.id }}/delete"><button class="danger-button compact-button" type="submit">删除</button></form>
+      </div>
+      {% else %}
+      <div class="empty-state">还没有 SSH 节点。</div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

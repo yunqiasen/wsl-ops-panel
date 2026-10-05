@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 from pathlib import Path
 from threading import Thread
 from time import sleep
@@ -6,7 +7,7 @@ from time import sleep
 from fastapi.testclient import TestClient
 
 from app.core.security import COOKIE_NAME, issue_session_token
-from app.main import create_app
+from tests.app_factory import create_app
 from app.models.tasks import TaskRecord
 from app.tasks.executor import append_task_chunk
 from app.terminals.system_terminal import SystemTerminalSink, iter_sse_events
@@ -55,11 +56,31 @@ def test_terminals_page_renders_template() -> None:
     assert '/static/vendor/xterm/xterm.css' in response.text
     assert '/static/vendor/xterm/xterm.js' in response.text
     assert '/static/vendor/xterm/addon-fit.js' in response.text
+    assert '/static/vendor/xterm/addon-unicode11.js' in response.text
     assert 'data-terminal-workbench' in response.text
+    assert 'data-terminal-upload' in response.text
     assert 'data-terminal-id="system"' in response.text
     assert 'data-terminal-screen' in response.text
+    assert 'data-system-terminal-screen' in response.text
+    assert '系统日志' in response.text
+    assert '只读' in response.text
     assert '<pre class="terminal-screen"' not in response.text
     assert 'data-terminal-close' not in response.text
+
+
+def test_terminal_assets_use_cjk_mono_rendering_and_sane_eol() -> None:
+    js = Path('app/static/app.js').read_text(encoding='utf-8')
+    css = Path('app/static/app.css').read_text(encoding='utf-8')
+
+    assert 'Noto Sans Mono CJK SC' in js
+    assert 'WenQuanYi Zen Hei Mono' in js
+    assert 'Unicode11Addon' in js
+    assert 'convertEol: readOnly' in js
+    assert 'rescaleOverlappingGlyphs: true' in js
+    assert 'scheduleTerminalRefit' in js
+    assert 'ResizeObserver' in js
+    assert "document.addEventListener('visibilitychange'" in js
+    assert 'linear-gradient(rgba(255, 255, 255, 0.025) 1px' not in css
 
 
 def test_system_terminal_stream_route_returns_sse_content(tmp_path: Path, monkeypatch) -> None:
@@ -67,7 +88,8 @@ def test_system_terminal_stream_route_returns_sse_content(tmp_path: Path, monkey
 
     log_path = tmp_path / 'system.log'
     log_path.write_text('boot ok\n', encoding='utf-8')
-    monkeypatch.setattr(terminals_api, 'SYSTEM_TERMINAL_LOG_PATH', log_path)
+    app = create_app()
+    app.state.system_terminal_sink = SystemTerminalSink(log_path)
 
     original_iter = terminals_api.iter_sse_events
 
@@ -80,7 +102,7 @@ def test_system_terminal_stream_route_returns_sse_content(tmp_path: Path, monkey
 
     monkeypatch.setattr(terminals_api, 'iter_sse_events', one_event_stream)
 
-    client = TestClient(create_app())
+    client = TestClient(app)
     client.cookies.set(COOKIE_NAME, issue_session_token())
     response = client.get('/api/terminals/system/stream')
 
@@ -147,6 +169,14 @@ def test_iter_sse_events_resumes_from_last_event_id_offset(tmp_path: Path) -> No
     events.close()
 
 
+def test_iter_sse_events_emits_keepalive_when_idle(tmp_path: Path) -> None:
+    log_path = tmp_path / 'system.log'
+    events = iter_sse_events(log_path, poll_interval=0.001, idle_heartbeat=1)
+
+    assert next(events) == ': keepalive\n\n'
+    events.close()
+
+
 def test_append_task_chunk_writes_sink_and_stream_logs(tmp_path: Path) -> None:
     task = make_task(tmp_path)
     sink_path = tmp_path / 'system.log'
@@ -156,8 +186,33 @@ def test_append_task_chunk_writes_sink_and_stream_logs(tmp_path: Path) -> None:
     append_task_chunk(task, 'stderr line\n', sink=sink, stream='stderr')
 
     assert sink_path.read_text(encoding='utf-8') == (
-        '[object-1] stdout line\n'
-        '[object-1] stderr line\n'
+        'stdout line\n'
+        'stderr line\n'
     )
     assert Path(task.stdout_log_path).read_text(encoding='utf-8') == 'stdout line\n'
     assert Path(task.stderr_log_path).read_text(encoding='utf-8') == 'stderr line\n'
+
+
+def test_system_terminal_log_is_private(tmp_path: Path) -> None:
+    log_path = tmp_path / 'terminals' / 'system.log'
+    previous_umask = os.umask(0)
+    try:
+        SystemTerminalSink(log_path)
+    finally:
+        os.umask(previous_umask)
+
+    assert log_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_task_stream_logs_are_private(tmp_path: Path) -> None:
+    task = make_task(tmp_path)
+    sink = SystemTerminalSink(tmp_path / 'system.log')
+    previous_umask = os.umask(0)
+    try:
+        append_task_chunk(task, 'stdout line\n', sink=sink, stream='stdout')
+        append_task_chunk(task, 'stderr line\n', sink=sink, stream='stderr')
+    finally:
+        os.umask(previous_umask)
+
+    assert Path(task.stdout_log_path).stat().st_mode & 0o777 == 0o600
+    assert Path(task.stderr_log_path).stat().st_mode & 0o777 == 0o600

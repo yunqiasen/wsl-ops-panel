@@ -1,7 +1,8 @@
 id: openai_cpa
 category: docker
 type: docker_compose
-name: openai-cpa
+name: OpenAI-cpa
+description: OpenAI-cpa 主实例：注册系统与 Codex Manager Web 控制台，当前对应 8128 入口。
 enabled: true
 config:
   project_dir: "/home/div/1_Project_dir/regmail-2api/资源/openai-cpa"

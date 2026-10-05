@@ -12,21 +12,21 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 from app.models.assets import AssetSnapshot
+from app.services.endpoints import DEFAULT_TAILSCALE_IP, format_ports_for_display, service_urls
 from app.services.source_links import source_url_from_links
 
-DEFAULT_TAILSCALE_IP = '100.126.43.55'
 DEFAULT_TEMPLATE = (
     '📌 {{ asset.name }}\n'
     '状态：{{ asset.status }}\n'
-    'TS：{{ tailscale_url }}\n'
+    '首选TS：{{ primary_url }}\n'
     'CF：{{ cf_url }}\n'
+    '端点：\n{{ endpoint_lines }}\n'
     '来源：{{ source_url }}\n'
     '路径：{{ project_dir }}\n'
-    '端口：{{ ports }}\n'
+    '原始端口：{{ ports }}\n'
     '时间：{{ updated_at }}'
 )
 _TOKEN_RE = re.compile(r"TOKEN=['\"]([^'\"]+)['\"]")
-_PORT_RE = re.compile(r'(?:0\.0\.0\.0|127\.0\.0\.1|\[?::\]?|localhost)?[:]?(\d{2,5})(?:->|/tcp|/udp|\b)')
 
 
 class ProjectNotificationConfig(BaseModel):
@@ -133,48 +133,21 @@ def asset_to_notification_json(asset: AssetSnapshot) -> str:
 
 def _notification_context(asset: AssetSnapshot, *, tailscale_ip: str) -> dict[str, str]:
     ports = str(asset.metadata.get('ports') or '')
-    port = _extract_public_port(ports)
-    cf_url = _read_cf_url(asset)
+    urls = service_urls(asset, tailscale_ip=tailscale_ip)
     source_links = asset.metadata.get('source_links') if isinstance(asset.metadata.get('source_links'), dict) else {}
     return {
         'asset.name': asset.name,
         'asset.status': asset.status,
-        'tailscale_url': f'http://{tailscale_ip}:{port}' if port else '',
-        'cf_url': cf_url or '',
+        'primary_url': urls['primary_url'],
+        'tailscale_url': urls['tailscale_url'],
+        'cf_url': urls['cf_url'],
+        'endpoint_lines': urls['endpoint_lines'],
         'source_url': source_url_from_links(source_links) or str(asset.metadata.get('git_remote_url') or ''),
         'image_repository': str(asset.metadata.get('image_repository') or ''),
         'project_dir': str(asset.metadata.get('project_dir') or asset.metadata.get('path') or ''),
-        'ports': ports,
+        'ports': format_ports_for_display(ports),
         'updated_at': datetime.now(UTC).astimezone().strftime('%Y-%m-%d %H:%M:%S %Z'),
     }
-
-
-def _read_cf_url(asset: AssetSnapshot) -> str | None:
-    capabilities = asset.metadata.get('capabilities')
-    if isinstance(capabilities, dict):
-        cf = capabilities.get('cf_tunnel')
-        if isinstance(cf, dict):
-            current_url = cf.get('current_url')
-            if isinstance(current_url, str) and current_url.strip():
-                return current_url.strip()
-            domain_file = cf.get('domain_file')
-            if isinstance(domain_file, str):
-                path = Path(domain_file)
-                if path.exists():
-                    return path.read_text(encoding='utf-8', errors='replace').strip() or None
-    return None
-
-
-def _extract_public_port(ports: str) -> str | None:
-    if not ports:
-        return None
-    if '->' in ports:
-        left = ports.split('->', 1)[0]
-        match = re.search(r':(\d{2,5})$', left.strip())
-        if match:
-            return match.group(1)
-    match = _PORT_RE.search(ports)
-    return match.group(1) if match else None
 
 
 def _send_pushplus(payload: bytes) -> None:

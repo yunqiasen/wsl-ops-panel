@@ -2,19 +2,17 @@ import asyncio
 import json
 from contextlib import suppress
 from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, Body, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.core.security import is_authenticated_websocket, require_authenticated_request
-from app.models.terminals import DebugTerminalCreateRequest, DebugTerminalSession
-from app.terminals.debug_terminal import DebugTerminalManager
-from app.terminals.system_terminal import SystemTerminalSink, iter_sse_events
+from app.models.terminals import DebugTerminalCreateRequest, DebugTerminalSession, DebugTerminalUpdateRequest, TerminalUploadResponse
+from app.terminals.system_terminal import iter_sse_events
 
 router = APIRouter(prefix='/api/terminals', tags=['terminals'])
-SYSTEM_TERMINAL_LOG_PATH = Path('data/terminals/system.log')
-debug_terminal_manager = DebugTerminalManager()
-system_terminal_sink = SystemTerminalSink(SYSTEM_TERMINAL_LOG_PATH)
+_MAX_TERMINAL_UPLOAD_SIZE = 25 * 1024 * 1024
 
 
 @router.get('/system/stream')
@@ -22,7 +20,7 @@ def stream_system_terminal(request: Request) -> StreamingResponse:
     require_authenticated_request(request)
     last_event_id = request.headers.get('last-event-id')
     return StreamingResponse(
-        iter_sse_events(SYSTEM_TERMINAL_LOG_PATH, last_event_id=last_event_id),
+        iter_sse_events(request.app.state.system_terminal_sink.path, last_event_id=last_event_id),
         media_type='text/event-stream',
     )
 
@@ -31,9 +29,10 @@ def stream_system_terminal(request: Request) -> StreamingResponse:
 def create_debug_terminal(request: Request, payload: DebugTerminalCreateRequest | None = Body(default=None)) -> DebugTerminalSession:
     require_authenticated_request(request)
     try:
-        return debug_terminal_manager.create_session(
+        return request.app.state.debug_terminal_manager.create_session(
             shell=payload.shell if payload else None,
             cwd=payload.cwd if payload else None,
+            title=payload.title if payload else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -42,14 +41,25 @@ def create_debug_terminal(request: Request, payload: DebugTerminalCreateRequest 
 @router.get('/debug', response_model=list[DebugTerminalSession])
 def list_debug_terminals(request: Request) -> list[DebugTerminalSession]:
     require_authenticated_request(request)
-    return debug_terminal_manager.list_sessions()
+    return request.app.state.debug_terminal_manager.list_sessions()
+
+
+@router.patch('/debug/{session_id}', response_model=DebugTerminalSession)
+def update_debug_terminal(session_id: str, payload: DebugTerminalUpdateRequest, request: Request) -> DebugTerminalSession:
+    require_authenticated_request(request)
+    try:
+        return request.app.state.debug_terminal_manager.rename_session(session_id, payload.title)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail='debug terminal session not found') from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete('/debug/{session_id}', status_code=204)
 def delete_debug_terminal(session_id: str, request: Request) -> Response:
     require_authenticated_request(request)
     try:
-        closed = debug_terminal_manager.close_session(session_id)
+        closed = request.app.state.debug_terminal_manager.close_session(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not closed:
@@ -57,8 +67,35 @@ def delete_debug_terminal(session_id: str, request: Request) -> Response:
     return Response(status_code=204)
 
 
-def close_all_terminal_sessions() -> None:
-    debug_terminal_manager.close_all()
+def close_all_terminal_sessions(app) -> None:
+    app.state.debug_terminal_manager.close_all()
+
+
+@router.post('/uploads', response_model=TerminalUploadResponse)
+async def upload_terminal_file(request: Request, file: UploadFile) -> TerminalUploadResponse:
+    require_authenticated_request(request)
+    original_name = Path(file.filename or 'upload.bin').name
+    safe_name = _safe_upload_name(original_name)
+    upload_dir = request.app.state.terminal_upload_root / uuid4().hex[:12]
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / safe_name
+
+    size = 0
+    with target.open('wb') as fh:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > _MAX_TERMINAL_UPLOAD_SIZE:
+                target.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail='file is too large')
+            fh.write(chunk)
+
+    path = str(target.resolve())
+    return TerminalUploadResponse(
+        filename=safe_name,
+        path=path,
+        size=size,
+        message=f'已上传：{path}',
+    )
 
 
 @router.websocket('/debug/{session_id}/ws')
@@ -67,7 +104,8 @@ async def debug_terminal_ws(websocket: WebSocket, session_id: str) -> None:
         await websocket.close(code=4401)
         return
 
-    runtime = debug_terminal_manager.get_runtime(session_id)
+    runtime = websocket.app.state.debug_terminal_manager.get_runtime(session_id)
+    system_terminal_sink = websocket.app.state.system_terminal_sink
     await websocket.accept()
     if runtime is None:
         await websocket.close(code=4404)
@@ -155,3 +193,9 @@ def _handle_terminal_control_message(runtime, chunk: str) -> bool:
     if isinstance(cols, int) and isinstance(rows, int):
         runtime.resize(cols=cols, rows=rows)
     return True
+
+
+def _safe_upload_name(filename: str) -> str:
+    cleaned = ''.join(ch if ch.isalnum() or ch in '.-_+' else '_' for ch in filename.strip())
+    cleaned = cleaned.strip('._')
+    return cleaned[:160] or 'upload.bin'

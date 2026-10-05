@@ -45,6 +45,17 @@ def transform_request(
         return TransformResult(_responses_to_chat_request(body), _ENDPOINTS[target])
     if source == "openai_chat" and target == "openai_responses":
         return TransformResult(_chat_to_responses_request(body), _ENDPOINTS[target])
+    if source == "gemini" and target == "openai_chat":
+        return TransformResult(_gemini_to_chat_request(body), _ENDPOINTS[target])
+    if source == "gemini" and target == "openai_responses":
+        return TransformResult(
+            _chat_to_responses_request(_gemini_to_chat_request(body)),
+            _ENDPOINTS[target],
+        )
+    if target == "gemini" and source == "openai_chat":
+        return _chat_to_gemini_result(body)
+    if target == "gemini" and source == "openai_responses":
+        return _chat_to_gemini_result(_responses_to_chat_request(body))
     raise UnsupportedProtocolTransform(f"unsupported protocol transform: {source} -> {target}")
 
 
@@ -67,24 +78,26 @@ def transform_response(
         return _chat_to_responses_response(_anthropic_to_chat_response(body))
     if source == "openai_responses" and target == "anthropic":
         return _chat_to_anthropic_response(_responses_to_chat_response(body))
+    if source == "gemini" and target == "openai_chat":
+        return _gemini_to_chat_response(body)
+    if source == "gemini" and target == "openai_responses":
+        return _chat_to_responses_response(_gemini_to_chat_response(body))
+    if target == "gemini" and source == "openai_chat":
+        return _chat_to_gemini_response(body)
+    if target == "gemini" and source == "openai_responses":
+        return _chat_to_gemini_response(_responses_to_chat_response(body))
     raise UnsupportedProtocolTransform(f"unsupported protocol transform: {source} -> {target}")
 
 
 def transform_sse(
     source_format: str, target_format: str, chunks: Iterable[bytes]
 ) -> list[bytes]:
-    source = _format(source_format)
-    target = _format(target_format)
-    incoming = list(chunks)
-    if source == target:
-        return incoming
-    if {source, target} <= {"openai_chat", "anthropic"}:
-        return _transform_chat_anthropic_sse(source, target, incoming)
-    if {source, target} <= {"openai_chat", "openai_responses"}:
-        return _transform_chat_responses_sse(source, target, incoming)
-    if {source, target} <= {"anthropic", "openai_responses"}:
-        return _transform_chat_anthropic_sse(source, target, incoming)
-    raise UnsupportedProtocolTransform(f"unsupported protocol transform: {source} -> {target}")
+    transformer = SseTransformer(source_format, target_format)
+    result: list[bytes] = []
+    for chunk in chunks:
+        result.extend(transformer.feed(chunk))
+    result.extend(transformer.finish())
+    return result
 
 
 def _format(value: str) -> str:
@@ -236,6 +249,375 @@ def _chat_to_responses_request(body: dict[str, Any]) -> dict[str, Any]:
     return _without_none(result)
 
 
+
+def _gemini_to_chat_request(body: dict[str, Any]) -> dict[str, Any]:
+    """Convert a Gemini GenerateContent request to OpenAI Chat shape."""
+    messages: list[dict[str, Any]] = []
+    system_instruction = body.get("systemInstruction")
+    system = (
+        _text_content(system_instruction.get("parts"))
+        if isinstance(system_instruction, dict)
+        else ""
+    )
+    if system:
+        messages.append({"role": "system", "content": system})
+    for item in body.get("contents") or []:
+        if not isinstance(item, dict):
+            continue
+        role = "assistant" if item.get("role") in {"model", "assistant"} else "user"
+        content_parts: list[dict[str, Any]] = []
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        message_signature: str | None = None
+        tool_calls: list[dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
+        for part in item.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("text") is not None:
+                text = str(part.get("text") or "")
+                if part.get("thought") is True:
+                    reasoning_parts.append(text)
+                    message_signature = _gemini_thought_signature(part) or message_signature
+                else:
+                    text_parts.append(text)
+                    content_parts.append({"type": "text", "text": text})
+                    message_signature = _gemini_thought_signature(part) or message_signature
+            media = _gemini_inline_data_to_openai(part)
+            if media is not None:
+                content_parts.append(media)
+            function_call = part.get("functionCall")
+            if isinstance(function_call, dict):
+                tool_call = {
+                    "id": function_call.get("id"),
+                    "type": "function",
+                    "function": {
+                        "name": function_call.get("name"),
+                        "arguments": json.dumps(
+                            function_call.get("args") or {}, ensure_ascii=False
+                        ),
+                    },
+                }
+                signature = _gemini_thought_signature(part)
+                if signature:
+                    tool_call["extra_content"] = _google_signature(signature)
+                tool_calls.append(tool_call)
+            function_response = part.get("functionResponse")
+            if isinstance(function_response, dict):
+                tool_result = {
+                    "role": "tool",
+                    "tool_call_id": function_response.get("id"),
+                    "name": function_response.get("name"),
+                    "content": _json_text(function_response.get("response") or {}),
+                }
+                tool_results.append(_without_none(tool_result))
+        if tool_results:
+            messages.extend(tool_results)
+            continue
+        has_media = any(part.get("type") != "text" for part in content_parts)
+        content_value: str | list[dict[str, Any]] | None
+        if has_media:
+            content_value = content_parts
+        else:
+            content_value = "".join(text_parts)
+        message: dict[str, Any] = {
+            "role": role,
+            "content": content_value,
+        }
+        if reasoning_parts:
+            message["reasoning_content"] = "".join(reasoning_parts)
+        if message_signature:
+            message["extra_content"] = _google_signature(message_signature)
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+            if not message["content"]:
+                message["content"] = None
+        if message["content"] or reasoning_parts or tool_calls:
+            messages.append(message)
+    generation = body.get("generationConfig")
+    generation = generation if isinstance(generation, dict) else {}
+    result: dict[str, Any] = {
+        "model": body.get("model"),
+        "messages": messages,
+    }
+    for source_key, target_key in {
+        "maxOutputTokens": "max_tokens",
+        "temperature": "temperature",
+        "topP": "top_p",
+        "stopSequences": "stop",
+    }.items():
+        if source_key in generation:
+            result[target_key] = copy.deepcopy(generation[source_key])
+    tools = _gemini_tools_to_chat(body.get("tools"))
+    if tools:
+        result["tools"] = tools
+    return _without_none(result)
+
+
+def _chat_to_gemini_result(body: dict[str, Any]) -> TransformResult:
+    model = str(body.get("model") or "")
+    if not model:
+        raise UnsupportedProtocolTransform("Gemini requests require a model")
+    stream = bool(body.get("stream"))
+    method = "streamGenerateContent?alt=sse" if stream else "generateContent"
+    return TransformResult(
+        _chat_to_gemini_request(body),
+        f"/v1beta/models/{model}:{method}",
+    )
+
+
+def _chat_to_gemini_request(body: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    contents: list[dict[str, Any]] = []
+    system_parts: list[dict[str, str]] = []
+    messages = [
+        message for message in body.get("messages") or [] if isinstance(message, dict)
+    ]
+    tool_names = _chat_tool_name_map(messages)
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = message.get("content")
+        if role == "system":
+            text = _text_content(content)
+            if text:
+                system_parts.append({"text": text})
+            continue
+        gemini_role = "model" if role == "assistant" else "user"
+        parts: list[dict[str, Any]] = []
+        message_signature = _openai_thought_signature(message)
+        reasoning = str(message.get("reasoning_content") or "")
+        if reasoning:
+            thought_part: dict[str, Any] = {"text": reasoning, "thought": True}
+            if message_signature:
+                thought_part["thoughtSignature"] = message_signature
+            parts.append(thought_part)
+        parts.extend(_openai_content_to_gemini_parts(content))
+        if message_signature and not reasoning and parts:
+            parts[0].setdefault("thoughtSignature", message_signature)
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function") or {}
+            if not isinstance(function, dict):
+                continue
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                args = {}
+            call_part: dict[str, Any] = {
+                "functionCall": {
+                    "id": call.get("id"),
+                    "name": function.get("name"),
+                    "args": args,
+                }
+            }
+            signature = _openai_thought_signature(call)
+            if signature:
+                call_part["thoughtSignature"] = signature
+            parts.append(call_part)
+        if role == "tool":
+            call_id = message.get("tool_call_id")
+            parts = [
+                {
+                    "functionResponse": {
+                        "id": call_id,
+                        "name": message.get("name")
+                        or tool_names.get(str(call_id or ""))
+                        or "tool",
+                        "response": _chat_tool_response(message.get("content")),
+                    }
+                }
+            ]
+        if parts:
+            contents.append({"role": gemini_role, "parts": parts})
+    if system_parts:
+        result["systemInstruction"] = {"parts": system_parts}
+    result["contents"] = contents
+    generation: dict[str, Any] = {}
+    for source_key, target_key in {
+        "max_tokens": "maxOutputTokens",
+        "temperature": "temperature",
+        "top_p": "topP",
+        "stop": "stopSequences",
+    }.items():
+        if source_key in body:
+            generation[target_key] = copy.deepcopy(body[source_key])
+    if generation:
+        result["generationConfig"] = generation
+    tools = _chat_tools_to_gemini(body.get("tools"))
+    if tools:
+        result["tools"] = tools
+    return result
+
+
+def _gemini_inline_data_to_openai(part: dict[str, Any]) -> dict[str, Any] | None:
+    value = part.get("inlineData")
+    if not isinstance(value, dict):
+        value = part.get("inline_data")
+    if not isinstance(value, dict):
+        return None
+    data = value.get("data")
+    if not data:
+        return None
+    mime_type = value.get("mimeType") or value.get("mime_type") or "application/octet-stream"
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime_type};base64,{data}"},
+    }
+
+
+def _gemini_thought_signature(part: dict[str, Any]) -> str | None:
+    for key in ("thoughtSignature", "thought_signature"):
+        value = part.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _google_signature(signature: str) -> dict[str, Any]:
+    return {"google": {"thought_signature": signature}}
+
+
+def _json_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _chat_tool_name_map(messages: list[dict[str, Any]]) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            call_id = call.get("id")
+            function = call.get("function") or {}
+            if call_id and isinstance(function, dict) and function.get("name"):
+                names[str(call_id)] = str(function["name"])
+    return names
+
+
+def _openai_thought_signature(value: dict[str, Any]) -> str | None:
+    direct = value.get("thoughtSignature") or value.get("thought_signature")
+    if direct:
+        return str(direct)
+    for container in (value.get("extra_content"), value.get("extraContent")):
+        if not isinstance(container, dict):
+            continue
+        google = container.get("google")
+        if isinstance(google, dict):
+            signature = google.get("thought_signature") or google.get("thoughtSignature")
+            if signature:
+                return str(signature)
+    function = value.get("function")
+    if isinstance(function, dict):
+        return _openai_thought_signature(function)
+    return None
+
+
+def _openai_content_to_gemini_parts(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"text": content}] if content else []
+    if isinstance(content, dict):
+        content = [content]
+    if isinstance(content, list):
+        parts: list[dict[str, Any]] = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append({"text": item})
+                continue
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            if kind in {"text", "input_text", "output_text"}:
+                text = item.get("text")
+                if text:
+                    parts.append({"text": str(text)})
+                continue
+            if kind in {"image_url", "input_image"} or "image_url" in item:
+                image = item.get("image_url") or item.get("imageUrl")
+                url = image.get("url") if isinstance(image, dict) else image
+                inline = _data_url_to_gemini(url)
+                if inline is not None:
+                    parts.append(inline)
+                continue
+            if item.get("text") is not None:
+                parts.append({"text": str(item["text"])})
+        return parts
+    if content is None:
+        return []
+    return [{"text": str(content)}]
+
+
+def _data_url_to_gemini(url: Any) -> dict[str, Any] | None:
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return None
+    header, separator, data = url[5:].partition(",")
+    if not separator or not data:
+        return None
+    mime_type, _, encoding = header.partition(";")
+    if encoding.lower() != "base64" or not mime_type:
+        return None
+    return {"inlineData": {"mimeType": mime_type, "data": data}}
+
+
+def _chat_tool_response(content: Any) -> dict[str, Any]:
+    if isinstance(content, dict):
+        return copy.deepcopy(content)
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        if parsed is not None:
+            return {"result": parsed}
+        return {"result": content}
+    if content is None:
+        return {}
+    return {"result": copy.deepcopy(content)}
+
+
+def _gemini_tools_to_chat(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for group in value or []:
+        if not isinstance(group, dict):
+            continue
+        for declaration in group.get("functionDeclarations") or []:
+            if not isinstance(declaration, dict):
+                continue
+            result.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": declaration.get("name"),
+                        "description": declaration.get("description"),
+                        "parameters": declaration.get("parameters") or {},
+                    },
+                }
+            )
+    return result
+
+
+def _chat_tools_to_gemini(value: Any) -> list[dict[str, Any]]:
+    declarations: list[dict[str, Any]] = []
+    for tool in value or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function") if tool.get("type") == "function" else tool
+        if not isinstance(function, dict):
+            continue
+        declarations.append(
+            {
+                "name": function.get("name"),
+                "description": function.get("description"),
+                "parameters": function.get("parameters") or {},
+            }
+        )
+    return [{"functionDeclarations": declarations}] if declarations else []
+
 def _anthropic_messages_to_chat(messages: list[Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for message in messages:
@@ -317,6 +699,173 @@ def _chat_message_to_anthropic(message: dict[str, Any]) -> dict[str, Any]:
         )
     return {"role": "assistant" if role == "assistant" else "user", "content": blocks or [{"type": "text", "text": ""}]}
 
+
+
+def _gemini_to_chat_response(body: dict[str, Any]) -> dict[str, Any]:
+    candidate = (body.get("candidates") or [{}])[0]
+    content = candidate.get("content") if isinstance(candidate, dict) else {}
+    parts = content.get("parts") if isinstance(content, dict) else []
+    message = _gemini_response_parts_to_chat(parts)
+    finish_reason = str(candidate.get("finishReason") or "").upper()
+    finish = {
+        "STOP": "stop",
+        "MAX_TOKENS": "length",
+        "SAFETY": "content_filter",
+    }.get(finish_reason)
+    if message.get("tool_calls"):
+        finish = "tool_calls"
+    usage = _gemini_usage_to_chat(body.get("usageMetadata"))
+    if message.get("tool_calls") and not message.get("content"):
+        message["content"] = None
+    if not message.get("content") and not message.get("tool_calls"):
+        message.setdefault("content", "")
+    return {
+        "id": body.get("responseId") or body.get("id"),
+        "object": "chat.completion",
+        "model": body.get("modelVersion") or body.get("model"),
+        "choices": [
+            {"index": candidate.get("index", 0), "message": message, "finish_reason": finish}
+        ],
+        "usage": usage,
+    }
+
+
+def _gemini_response_parts_to_chat(parts: Any) -> dict[str, Any]:
+    text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    images: list[dict[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
+    thought_signature: str | None = None
+    for part in parts or []:
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if text is not None:
+            text_value = str(text or "")
+            signature = _gemini_thought_signature(part)
+            if part.get("thought") is True:
+                reasoning_parts.append(text_value)
+                thought_signature = signature or thought_signature
+            else:
+                text_parts.append(text_value)
+        media = _gemini_inline_data_to_openai(part)
+        if media is not None:
+            images.append(media)
+        function_call = part.get("functionCall")
+        if isinstance(function_call, dict):
+            call: dict[str, Any] = {
+                "id": function_call.get("id"),
+                "type": "function",
+                "function": {
+                    "name": function_call.get("name"),
+                    "arguments": json.dumps(
+                        function_call.get("args") or {}, ensure_ascii=False
+                    ),
+                },
+            }
+            signature = _gemini_thought_signature(part)
+            if signature:
+                call["extra_content"] = _google_signature(signature)
+            tool_calls.append(call)
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(text_parts),
+    }
+    if reasoning_parts:
+        message["reasoning_content"] = "".join(reasoning_parts)
+    if thought_signature:
+        message["extra_content"] = _google_signature(thought_signature)
+    if images:
+        message["images"] = images
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return message
+
+
+def _gemini_usage_to_chat(value: Any) -> dict[str, Any]:
+    usage = value if isinstance(value, dict) else {}
+    prompt_tokens = _as_int(usage.get("promptTokenCount"))
+    if "candidatesTokenCount" in usage:
+        completion_tokens = _as_int(usage.get("candidatesTokenCount"))
+    else:
+        completion_tokens = max(_as_int(usage.get("totalTokenCount")) - prompt_tokens, 0)
+    total_tokens = _as_int(usage.get("totalTokenCount"))
+    if not total_tokens:
+        total_tokens = prompt_tokens + completion_tokens
+    result: dict[str, Any] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+    cached_tokens = _as_int(usage.get("cachedContentTokenCount"))
+    thoughts_tokens = _as_int(usage.get("thoughtsTokenCount"))
+    if cached_tokens:
+        result["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+    if thoughts_tokens:
+        result["completion_tokens_details"] = {"reasoning_tokens": thoughts_tokens}
+    return result
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _chat_to_gemini_response(body: dict[str, Any]) -> dict[str, Any]:
+    choice = (body.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    parts: list[dict[str, Any]] = []
+    text = _text_content(message.get("content"))
+    if text:
+        parts.append({"text": text})
+    for image in message.get("images") or []:
+        if isinstance(image, dict):
+            inline = _openai_content_to_gemini_parts(image)
+            parts.extend(inline)
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        try:
+            args = json.loads(function.get("arguments") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            args = {}
+        call_part: dict[str, Any] = {
+            "functionCall": {
+                "id": call.get("id"),
+                "name": function.get("name"),
+                "args": args,
+            }
+        }
+        signature = _openai_thought_signature(call)
+        if signature:
+            call_part["thoughtSignature"] = signature
+        parts.append(call_part)
+    finish = {
+        "stop": "STOP",
+        "length": "MAX_TOKENS",
+        "tool_calls": "STOP",
+        "content_filter": "SAFETY",
+    }.get(choice.get("finish_reason"), "STOP")
+    usage = body.get("usage") or {}
+    return {
+        "responseId": body.get("id"),
+        "modelVersion": body.get("model"),
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": parts},
+                "finishReason": finish,
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": usage.get("prompt_tokens", 0),
+            "candidatesTokenCount": usage.get("completion_tokens", 0),
+            "totalTokenCount": usage.get(
+                "total_tokens",
+                usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
+            ),
+        },
+    }
 
 def _chat_to_anthropic_response(body: dict[str, Any]) -> dict[str, Any]:
     choice = (body.get("choices") or [{}])[0]
@@ -700,6 +1249,357 @@ def _without_none(
 def _responses_status_to_finish(status: Any) -> str:
     return {"completed": "stop", "incomplete": "length"}.get(str(status), "stop")
 
+
+
+class SseTransformer:
+    """Incrementally transform complete SSE events without buffering a stream."""
+
+    def __init__(self, source_format: str, target_format: str) -> None:
+        self.source = _format(source_format)
+        self.target = _format(target_format)
+        if self.source != self.target and not (
+            self.source in _FORMATS and self.target in _FORMATS
+        ):
+            raise UnsupportedProtocolTransform(
+                f"unsupported protocol transform: {self.source} -> {self.target}"
+            )
+        self._buffer = bytearray()
+        self._started = False
+        self._content_started = False
+        self._finished = False
+        self._finish_emitted = False
+
+    def feed(self, chunk: bytes) -> list[bytes]:
+        if self.source == self.target:
+            return [chunk]
+        if not chunk:
+            return []
+        self._buffer.extend(chunk)
+        result: list[bytes] = []
+        while True:
+            block = self._take_block()
+            if block is None:
+                break
+            event, data = _parse_sse_block(block)
+            if data is None:
+                continue
+            result.extend(self._convert(event, data))
+        return result
+
+    def finish(self) -> list[bytes]:
+        if self.source == self.target or self._finished:
+            return []
+        result: list[bytes] = []
+        if self._buffer.strip():
+            event, data = _parse_sse_block(bytes(self._buffer))
+            self._buffer.clear()
+            if data is not None:
+                result.extend(self._convert(event, data))
+        if not self._finish_emitted:
+            result.extend(self._convert("", "[DONE]"))
+        return result
+
+    def _take_block(self) -> bytes | None:
+        raw = bytes(self._buffer)
+        candidates = [
+            (raw.find(b"\n\n"), 2),
+            (raw.find(b"\r\n\r\n"), 4),
+        ]
+        candidates = [(index, size) for index, size in candidates if index >= 0]
+        if not candidates:
+            return None
+        index, size = min(candidates, key=lambda item: item[0])
+        block = raw[:index]
+        del self._buffer[: index + size]
+        return block
+
+    def _convert(self, event: str, data: str) -> list[bytes]:
+        if data.strip() == "[DONE]":
+            return self._finish()
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(payload, dict):
+            return []
+        if self.source == "gemini":
+            kind, value = _gemini_sse_to_chat(payload)
+        elif self.source == "anthropic":
+            kind, value = _anthropic_sse_to_chat(event, payload)
+        elif self.source == "openai_responses":
+            kind, value = _responses_sse_to_chat(event, payload)
+        else:
+            kind, value = _openai_chat_sse_to_chat(payload)
+        if kind == "done":
+            return self._finish()
+        if self.target == "openai_chat":
+            return _chat_sse_to_openai(value)
+        if self.target == "anthropic":
+            return self._chat_sse_to_anthropic(kind, value)
+        if self.target == "openai_responses":
+            return _chat_sse_to_responses(kind, value)
+        if self.target == "gemini":
+            return _chat_sse_to_gemini(kind, value)
+        return []
+
+    def _finish(self) -> list[bytes]:
+        if self._finish_emitted:
+            return []
+        self._finish_emitted = True
+        self._finished = True
+        result: list[bytes] = []
+        if self.target == "anthropic":
+            if not self._started:
+                result.append(
+                    _sse(
+                        "message_start",
+                        {
+                            "type": "message_start",
+                            "message": {
+                                "id": "",
+                                "type": "message",
+                                "role": "assistant",
+                                "model": "",
+                                "content": [],
+                                "usage": {"input_tokens": 0, "output_tokens": 0},
+                            },
+                        },
+                    )
+                )
+                self._started = True
+            if self._content_started:
+                result.append(
+                    _sse(
+                        "content_block_stop",
+                        {"type": "content_block_stop", "index": 0},
+                    )
+                )
+            result.append(
+                _sse(
+                    "message_stop",
+                    {"type": "message_stop"},
+                )
+            )
+            return result
+        if self.target == "openai_chat":
+            return [b"data: [DONE]\n\n"]
+        if self.target == "openai_responses":
+            return [
+                _sse(
+                    "response.completed",
+                    {"type": "response.completed", "response": {"status": "completed"}},
+                )
+            ]
+        return []
+
+    def _chat_sse_to_anthropic(self, kind: str, value: dict[str, Any]) -> list[bytes]:
+        result: list[bytes] = []
+        if not self._started:
+            result.append(
+                _sse(
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": value.get("id", ""),
+                            "type": "message",
+                            "role": "assistant",
+                            "model": value.get("model", ""),
+                            "content": [],
+                            "usage": {"input_tokens": 0, "output_tokens": 0},
+                        },
+                    },
+                )
+            )
+            self._started = True
+        text = value.get("text")
+        if text:
+            if not self._content_started:
+                result.append(
+                    _sse(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": 0,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    )
+                )
+                self._content_started = True
+            result.append(
+                _sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": text},
+                    },
+                )
+            )
+        if kind == "finish":
+            reason = value.get("finish_reason")
+            result.append(
+                _sse(
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {
+                            "stop_reason": {
+                                "stop": "end_turn",
+                                "length": "max_tokens",
+                                "tool_calls": "tool_use",
+                            }.get(reason, reason),
+                            "stop_sequence": None,
+                        },
+                        "usage": value.get("usage", {}),
+                    },
+                )
+            )
+        return result
+
+
+def _parse_sse_block(block: bytes) -> tuple[str, str | None]:
+    event = ""
+    data_lines: list[str] = []
+    for line in block.replace(b"\r\n", b"\n").split(b"\n"):
+        if line.startswith(b"event:"):
+            event = line[6:].lstrip().decode("utf-8", errors="replace")
+        elif line.startswith(b"data:"):
+            data_lines.append(line[5:].lstrip().decode("utf-8", errors="replace"))
+    return event, "\n".join(data_lines) if data_lines else None
+
+
+def _openai_chat_sse_to_chat(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    choices = payload.get("choices") or []
+    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+    delta = choice.get("delta") or {}
+    return (
+        "finish" if choice.get("finish_reason") else "delta",
+        {
+            "id": payload.get("id", ""),
+            "model": payload.get("model", ""),
+            "text": delta.get("content") or "",
+            "tool_calls": delta.get("tool_calls") or [],
+            "finish_reason": choice.get("finish_reason"),
+            "usage": payload.get("usage") or {},
+        },
+    )
+
+
+def _anthropic_sse_to_chat(
+    event: str, payload: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    event_type = str(payload.get("type") or event)
+    if event_type == "message_stop":
+        return "done", {}
+    if event_type == "message_delta":
+        delta = payload.get("delta") or {}
+        return "finish", {"finish_reason": delta.get("stop_reason"), "usage": payload.get("usage") or {}}
+    delta = payload.get("delta") or {}
+    return "delta", {
+        "id": (payload.get("message") or {}).get("id", ""),
+        "model": (payload.get("message") or {}).get("model", ""),
+        "text": delta.get("text") or "",
+        "finish_reason": None,
+        "usage": payload.get("usage") or {},
+    }
+
+
+def _responses_sse_to_chat(
+    event: str, payload: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    event_type = str(payload.get("type") or event)
+    if event_type in {"response.completed", "response.done"}:
+        response = payload.get("response") or {}
+        return "finish", {"finish_reason": "stop", "usage": response.get("usage") or {}}
+    if event_type.endswith("output_text.delta") or event_type == "response.output_text.delta":
+        return "delta", {"text": payload.get("delta") or ""}
+    if payload.get("delta") is not None:
+        return "delta", {"text": _text_content(payload.get("delta"))}
+    return "delta", {"text": ""}
+
+
+def _gemini_sse_to_chat(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    candidate = (payload.get("candidates") or [{}])[0]
+    if not isinstance(candidate, dict):
+        return "delta", {"text": ""}
+    content = candidate.get("content") or {}
+    parts = content.get("parts") if isinstance(content, dict) else []
+    message = _gemini_response_parts_to_chat(parts)
+    value: dict[str, Any] = {
+        "id": payload.get("responseId", ""),
+        "model": payload.get("modelVersion", ""),
+        "text": message.get("content", ""),
+        "reasoning_content": message.get("reasoning_content", ""),
+        "images": message.get("images") or [],
+        "tool_calls": message.get("tool_calls") or [],
+        "extra_content": message.get("extra_content"),
+        "usage": _gemini_usage_to_chat(payload.get("usageMetadata")),
+    }
+    reason = candidate.get("finishReason")
+    kind = "finish" if reason else "delta"
+    value["finish_reason"] = (
+        "tool_calls"
+        if value["tool_calls"]
+        else "stop"
+        if reason == "STOP"
+        else "length"
+        if reason == "MAX_TOKENS"
+        else "content_filter"
+        if reason in {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT"}
+        else None
+    )
+    return kind, value
+
+
+def _chat_sse_to_openai(value: dict[str, Any]) -> list[bytes]:
+    delta: dict[str, Any] = {}
+    if value.get("text"):
+        delta["content"] = value["text"]
+    if value.get("reasoning_content"):
+        delta["reasoning_content"] = value["reasoning_content"]
+    if value.get("images"):
+        delta["images"] = value["images"]
+    if value.get("tool_calls"):
+        delta["tool_calls"] = value["tool_calls"]
+    if value.get("extra_content"):
+        delta["extra_content"] = value["extra_content"]
+    choice: dict[str, Any] = {"index": 0, "delta": delta}
+    if value.get("finish_reason"):
+        choice["finish_reason"] = value["finish_reason"]
+    result: dict[str, Any] = {
+        "id": value.get("id", ""),
+        "model": value.get("model", ""),
+        "choices": [choice],
+    }
+    if value.get("usage"):
+        result["usage"] = value["usage"]
+    return [_json_sse(result)]
+
+
+def _chat_sse_to_responses(kind: str, value: dict[str, Any]) -> list[bytes]:
+    if kind == "finish":
+        return [
+            _sse(
+                "response.completed",
+                {"type": "response.completed", "response": {"status": "completed"}},
+            )
+        ]
+    return [
+        _sse(
+            "response.output_text.delta",
+            {"type": "response.output_text.delta", "delta": value.get("text", "")},
+        )
+    ]
+
+
+def _chat_sse_to_gemini(kind: str, value: dict[str, Any]) -> list[bytes]:
+    candidate: dict[str, Any] = {"content": {"role": "model", "parts": []}}
+    if value.get("text"):
+        candidate["content"]["parts"].append({"text": value["text"]})
+    if kind == "finish":
+        candidate["finishReason"] = value.get("finish_reason") or "STOP"
+    return [_json_sse({"candidates": [candidate]})]
 
 def _transform_chat_anthropic_sse(
     source: str, target: str, chunks: list[bytes]

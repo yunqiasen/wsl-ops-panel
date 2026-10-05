@@ -74,3 +74,21 @@ def test_grokbuild_and_hermes_declare_verified_write_capabilities() -> None:
         "skills",
         "prompts",
     }
+
+
+def test_cc_switch_capability_matrix_excludes_unimplemented_openclaw_and_desktop_features() -> None:
+    """UI 能力必须等于真实可写能力，不能展示后端不执行的按钮。"""
+    from app.services.agent_mcp import SUPPORTED_WRITE_APPS
+    from app.services.agent_mcp_adapters import CLIENT_PATHS
+
+    by_id = {item.id: item for item in AGENT_CLIENTS}
+
+    assert by_id["openclaw"].features == ("providers", "route", "prompts")
+    assert by_id["openclaw"].write_support == ("providers", "route", "prompts")
+    assert by_id["openclaw"].mcp_path is None
+    assert by_id["openclaw"].skill_dir is None
+    assert "openclaw" not in SUPPORTED_WRITE_APPS
+    assert "openclaw" not in CLIENT_PATHS
+
+    assert by_id["claude-desktop"].features == ()
+    assert by_id["claude-desktop"].write_support == ()

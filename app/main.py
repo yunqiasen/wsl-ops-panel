@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.agent import router as agent_router
@@ -17,7 +17,6 @@ from app.api.overview import router as overview_router
 from app.api.settings import router as settings_router
 from app.api.tasks import router as tasks_router
 from app.api.terminals import close_all_terminal_sessions, router as terminals_router
-from app.api.terminals import system_terminal_sink
 from app.core.ui import TEMPLATES, build_page_context, page_login_redirect
 from app.models.assets import AssetSnapshot, DockerContainerSnapshot
 from app.models.registry import RegistrySnapshot
@@ -37,16 +36,20 @@ from app.services.remote_nodes import (
 from app.tasks.queue import GlobalTaskQueue
 from app.tasks.store import SQLiteTaskStore, TaskStore
 from app.tasks.worker import SerialTaskWorker
+from app.services.state_store import resolve_state_db_path
+from app.terminals.debug_terminal import DebugTerminalManager
+from app.terminals.system_terminal import SystemTerminalSink
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     worker = app.state.task_worker
+    app.state.task_queue.recover_on_startup()
     worker.start()
     try:
         yield
     finally:
-        close_all_terminal_sessions()
+        close_all_terminal_sessions(app)
         worker.stop()
 
 
@@ -80,7 +83,8 @@ def create_app(
         name="static",
     )
 
-    config_root = Path(config_root)
+    config_root = Path(config_root).resolve()
+    data_root = resolve_state_db_path(config_root).parent
     docker_version_service = DockerVersionService()
     runtime_services = _build_runtime_services(
         config_root,
@@ -96,12 +100,15 @@ def create_app(
     registry_service = runtime_services.registry_service
     docker_recipe_service = runtime_services.docker_recipe_service
     asset_service = runtime_services.asset_service
-    queue_store = task_store or SQLiteTaskStore()
-    task_queue = GlobalTaskQueue(queue_store)
-    task_queue.recover_on_startup()
+    queue_store = task_store if task_store is not None else SQLiteTaskStore(data_root / "tasks.sqlite3")
+    task_queue = GlobalTaskQueue(queue_store, operations_root=data_root / "operations")
+    system_terminal_sink = SystemTerminalSink(data_root / "terminals/system.log")
     task_worker = SerialTaskWorker(queue=task_queue, sink=system_terminal_sink)
 
     app.state.config_root = config_root
+    app.state.data_root = data_root
+    app.state.debug_terminal_manager = DebugTerminalManager(base_dir=data_root / "terminals")
+    app.state.terminal_upload_root = data_root / "uploads/terminals"
     app.state.docker_scanner = docker_scanner
     app.state.systemd_scanner = systemd_scanner
     app.state.node_scanner = node_scanner
@@ -130,8 +137,9 @@ def create_app(
     app.state.system_terminal_sink = system_terminal_sink
 
     @app.api_route("/healthz", methods=["GET", "HEAD"])
-    def healthcheck() -> dict[str, str]:
-        return {"status": "ok"}
+    def healthcheck() -> JSONResponse:
+        healthy = app.state.task_worker.is_alive
+        return JSONResponse({"status": "ok" if healthy else "degraded"}, status_code=200 if healthy else 503)
 
     @app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request) -> HTMLResponse:

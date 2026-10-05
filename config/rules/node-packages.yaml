@@ -1,21 +1,21 @@
 packages:
   - name: "@openai/codex"
-    managed_by: agent_cli
-    protected: true
-    blocked_reason: 保留给 agent cli
+    managed_by: agent
+    allowed_actions: [update_latest, deploy_version]
+    blocked_reason: 保留给 Agent 专项维护
   - name: "@anthropic-ai/claude-code"
-    managed_by: agent_cli
-    protected: true
-    blocked_reason: 保留给 agent cli
+    managed_by: agent
+    allowed_actions: [update_latest, deploy_version]
+    blocked_reason: 保留给 Agent 专项维护
   - name: "@google/gemini-cli"
-    managed_by: agent_cli
-    protected: true
-    blocked_reason: 保留给 agent cli
+    managed_by: agent
+    allowed_actions: [update_latest, deploy_version]
+    blocked_reason: 保留给 Agent 专项维护
   - name: "@jackwener/opencli"
-    managed_by: agent_cli
-    protected: true
-    blocked_reason: 保留给 agent cli
+    managed_by: agent
+    allowed_actions: [update_latest, deploy_version]
+    blocked_reason: 保留给 Agent 专项维护
   - name: "@qingchencloud/openclaw-zh"
-    managed_by: agent_cli
-    protected: true
-    blocked_reason: 保留给 agent cli
+    managed_by: agent
+    allowed_actions: [update_latest, deploy_version]
+    blocked_reason: 保留给 Agent 专项维护

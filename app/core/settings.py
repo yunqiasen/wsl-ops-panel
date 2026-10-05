@@ -17,6 +17,6 @@ class PanelConfig(BaseModel):
     auth: PanelAuthConfig
 
 
-def load_panel_config() -> PanelConfig:
-    raw = yaml.safe_load(Path('config/panel.yaml').read_text())
+def load_panel_config(config_root: Path | str = Path('config')) -> PanelConfig:
+    raw = yaml.safe_load((Path(config_root) / 'panel.yaml').read_text())
     return PanelConfig.model_validate(raw)

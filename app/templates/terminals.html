@@ -3,15 +3,16 @@
 <link rel="stylesheet" href="/static/vendor/xterm/xterm.css" />
 {% endblock %}
 {% block script_extra %}
-<script defer src="/static/vendor/xterm/xterm.js"></script>
-<script defer src="/static/vendor/xterm/addon-fit.js"></script>
+<script defer src="/static/vendor/xterm/xterm.js?v={{ asset_version }}"></script>
+<script defer src="/static/vendor/xterm/addon-fit.js?v={{ asset_version }}"></script>
+<script defer src="/static/vendor/xterm/addon-unicode11.js?v={{ asset_version }}"></script>
 {% endblock %}
 {% block content %}
 <section class="page-hero terminal-hero">
   <div>
     <p class="eyebrow">Terminal</p>
     <h1>终端工作台</h1>
-    <p>真实 PTY 终端。系统 bash 常驻，任务日志会进入这里。</p>
+    <p>第一个窗口是只读系统日志。点 + 新建的窗口才是真实 bash / zsh 终端。</p>
   </div>
 </section>
 
@@ -19,14 +20,54 @@
   <div class="terminal-main">
     <div class="terminal-toolbar">
       <div>
-        <h2>系统终端</h2>
-        <p>支持 ANSI、光标、复制粘贴和多实例。</p>
+        <h2>系统日志</h2>
+        <p>任务执行过程、成功和报错会持续输出到这里。</p>
       </div>
-      <button class="primary-button terminal-create" id="create-debug-terminal" type="button" aria-label="新建终端">+ 新终端</button>
+      <div class="terminal-toolbar-actions">
+        <label class="ghost-button terminal-upload-button" for="terminal-upload-input">上传图片 / 文件</label>
+        <input id="terminal-upload-input" class="visually-hidden" type="file" data-terminal-upload />
+        <button class="primary-button terminal-create" id="create-debug-terminal" type="button" aria-label="新建终端">+ 新终端</button>
+      </div>
     </div>
+    <div class="terminal-upload-status" data-terminal-upload-status hidden></div>
     <div id="terminal-viewports" class="terminal-viewports">
       <section class="terminal-pane is-active" data-terminal-pane data-terminal-id="system">
-        <div class="terminal-screen" data-terminal-screen aria-label="system terminal"></div>
+        <div class="terminal-pane-header">
+          <span data-terminal-pane-title>系统日志</span>
+          <small>默认显示事件流，需要排错时切到原始输出</small>
+        </div>
+        <div class="system-log-workspace" data-system-log-workspace data-log-view-mode="events">
+          <section class="system-log-panel is-active" data-log-view-panel="events" aria-label="可视化系统日志">
+            <div class="system-log-head">
+              <div>
+                <strong>事件流</strong>
+                <small>按任务分组，把命令输出翻成易懂步骤</small>
+              </div>
+              <div class="system-log-actions">
+                <button class="system-log-view-button is-active" type="button" data-log-view="events">事件流</button>
+                <button class="system-log-view-button" type="button" data-log-view="raw">原始输出</button>
+                <button class="system-log-chip is-active" type="button" data-log-filter="all">全部 <span data-system-log-stat="total">0</span></button>
+                <button class="system-log-chip" type="button" data-log-filter="error">错误 <span data-system-log-stat="error">0</span></button>
+                <button class="system-log-chip" type="button" data-log-filter="success">成功 <span data-system-log-stat="success">0</span></button>
+                <button class="system-log-chip" type="button" data-log-filter="command">命令 <span data-system-log-stat="command">0</span></button>
+              </div>
+            </div>
+            <div class="system-log-search-row">
+              <input type="search" data-system-log-search placeholder="筛选日志：项目名 / 动作 / 端口 / 报错内容" autocomplete="off" />
+              <button class="ghost-button compact-button" type="button" data-log-autoscroll="true">自动滚动：开</button>
+            </div>
+            <div class="system-log-feed" data-system-log-feed aria-live="polite">
+              <article class="system-log-empty">等待系统日志输出…</article>
+            </div>
+          </section>
+          <section class="system-raw-panel" data-log-view-panel="raw" aria-label="原始终端输出" hidden>
+            <div class="system-raw-title">
+              <div><strong>原始输出</strong><small>保留完整终端颜色和命令上下文</small></div>
+              <button class="system-log-view-button" type="button" data-log-view="events">返回事件流</button>
+            </div>
+            <div class="terminal-screen terminal-screen--system" data-terminal-screen data-system-terminal-screen aria-label="system terminal"></div>
+          </section>
+        </div>
       </section>
     </div>
   </div>
@@ -35,7 +76,8 @@
     <div id="debug-terminals" class="terminal-tabs">
       <button class="terminal-tab is-active" type="button" data-terminal-tab data-terminal-id="system">
         <span class="terminal-tab-icon">▸</span>
-        <span class="terminal-tab-title">系统 bash</span>
+        <span class="terminal-tab-title">系统日志</span>
+        <span class="terminal-tab-badge">只读</span>
       </button>
     </div>
   </aside>

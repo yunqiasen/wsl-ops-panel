@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.core.security import COOKIE_NAME, issue_session_token
-from app.main import create_app
+from tests.app_factory import create_app
 from app.scanners.host_process_scanner import parse_listening_socket
 from app.scanners.node_scanner import parse_npm_package
 from app.scanners.python_scanner import parse_pip_package
@@ -67,6 +67,18 @@ def test_parse_system_version_output() -> None:
     assert asset.name == 'docker'
     assert asset.current_version == '27.5.1'
     assert asset.category == 'system'
+
+
+def test_system_scanner_exposes_apt_as_safe_check_asset() -> None:
+    asset = parse_version_output('apt_packages', '12 packages can be upgraded. Run apt list --upgradable to see them.')
+
+    assert asset.name == 'APT / 系统软件包'
+    assert asset.category == 'system'
+    assert asset.current_version == '12 upgradable'
+    assert asset.supports_actions == ['update_latest']
+    assert asset.metadata['update_command'] == 'sudo apt update && apt list --upgradable'
+    assert asset.metadata['upgrade_command'] == 'sudo apt upgrade -y'
+    assert asset.metadata['update_note'] == '面板内默认只刷新软件包索引并列出可升级项，不直接执行 apt upgrade -y。'
 
 
 def test_readonly_category_pages_and_detail_render_assets(tmp_path: Path) -> None:
@@ -153,3 +165,13 @@ def test_node_and_python_pages_show_policy_badges_and_block_reasons(tmp_path: Pa
     python_page = client.get('/categories/python')
     assert '可操作' in python_page.text
     assert 'fastapi' in python_page.text
+
+
+def test_host_socket_enrichment_identifies_known_port_and_docker_owner() -> None:
+    asset = parse_listening_socket('LISTEN 0 128 0.0.0.0:8317 0.0.0.0:* users:(("docker-proxy",pid=1234,fd=7))')
+
+    assert asset.metadata['service_hint'] == 'CPA / CLIProxyAPI'
+    assert asset.metadata['port_action'] == 'docker'
+    assert asset.metadata['purpose'] == 'CPA API / CLIProxyAPI 网页与 API 入口'
+    assert asset.metadata['target_asset_id'] == 'cpa'
+    assert asset.metadata['target_container_name'] == 'cli-proxy-api'

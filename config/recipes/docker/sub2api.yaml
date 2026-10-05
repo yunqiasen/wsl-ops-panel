@@ -1,0 +1,20 @@
+id: sub2api
+lifecycle_strategy: compose_local_build_git_tag
+version_source: git_tags
+repo_dir: /home/div/1_Project_dir/AI/sub2api
+compose_file: docker-compose.yml
+compose_service: sub2api
+primary_container: sub2api
+override_file: overrides/sub2api.compose.override.yaml
+managed_services: [sub2api]
+ignored_services: [postgres, redis]
+local_image_repository: local/sub2api
+local_image_tag_template: "{version}-wsl"
+docker_build_args:
+  VERSION: "{version_without_v}"
+  COMMIT: "{version}"
+healthcheck:
+  url: http://127.0.0.1:8420/health
+  expect_status: 200
+full_delete_paths:
+  - /home/div/1_Project_dir/AI/sub2api

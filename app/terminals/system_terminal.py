@@ -1,4 +1,6 @@
 import json
+import codecs
+import os
 from collections.abc import Iterator
 from collections.abc import Callable
 from pathlib import Path
@@ -14,11 +16,13 @@ class SystemTerminalSink:
         self._listeners: list[Callable[[str], None]] = []
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
+        self.path.chmod(0o600)
 
     def write(self, chunk: str) -> None:
         with self._lock:
             with self.path.open('a', encoding='utf-8') as fh:
                 fh.write(chunk)
+            self.path.chmod(0o600)
         self._notify(chunk)
 
     def add_listener(self, listener: Callable[[str], None]) -> None:
@@ -60,23 +64,50 @@ def _format_sse_event(*, chunk: str, offset: int) -> str:
     return f'id: {offset}\ndata: {payload}\n\n'
 
 
-def iter_sse_events(path: Path, *, last_event_id: str | None = None, poll_interval: float = 0.1) -> Iterator[str]:
+def iter_sse_events(
+    path: Path,
+    *,
+    last_event_id: str | None = None,
+    poll_interval: float = 0.1,
+    idle_heartbeat: int = 150,
+    initial_tail_bytes: int = 200_000,
+) -> Iterator[str]:
     offset = _parse_last_event_id(last_event_id)
+    if last_event_id is None and path.exists():
+        offset = max(path.stat().st_size - initial_tail_bytes, 0)
+    idle_ticks = 0
+    identity = None
+    decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
 
     while True:
-        if path.exists():
-            file_size = path.stat().st_size
-            if file_size < offset:
-                offset = 0
-
-            with path.open('rb') as fh:
+        try:
+            fh = path.open('rb')
+        except FileNotFoundError:
+            fh = None
+        if fh is not None:
+            with fh:
+                stat = os.fstat(fh.fileno())
+                current_identity = (stat.st_dev, stat.st_ino)
+                if (identity is not None and identity != current_identity) or stat.st_size < offset:
+                    offset = 0
+                    decoder.reset()
+                identity = current_identity
                 fh.seek(offset)
                 chunk = fh.read()
                 next_offset = fh.tell()
-
             if chunk:
-                yield _format_sse_event(chunk=chunk.decode('utf-8'), offset=next_offset)
+                text = decoder.decode(chunk, final=False)
                 offset = next_offset
+                # SSE IDs acknowledge only complete characters, so reconnects can
+                # replay a partial trailing character without loss.
+                acknowledged = offset - len(decoder.getstate()[0])
+                idle_ticks = 0
+                if text:
+                    yield _format_sse_event(chunk=text, offset=acknowledged)
                 continue
 
+        idle_ticks += 1
+        if idle_ticks >= idle_heartbeat:
+            idle_ticks = 0
+            yield ': keepalive\n\n'
         sleep(poll_interval)

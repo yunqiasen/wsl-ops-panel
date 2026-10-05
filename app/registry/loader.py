@@ -113,7 +113,6 @@ def _ensure_recipe_fields_match(
     object_path: Path,
 ) -> None:
     comparisons = [
-        ('project_dir', obj.config.get('project_dir'), getattr(recipe, 'repo_dir')),
         ('compose_file', obj.config.get('compose_file'), getattr(recipe, 'compose_file')),
         ('compose_service', obj.config.get('compose_service'), getattr(recipe, 'compose_service')),
         ('primary_container', obj.config.get('primary_container'), getattr(recipe, 'primary_container')),
