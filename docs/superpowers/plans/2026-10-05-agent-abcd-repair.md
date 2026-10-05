@@ -76,3 +76,5 @@ Python 使用源码副本、临时 HOME/数据库，writer 在临时客户端目
 修复前既有 `config/notifications/projects.yaml`、`.ccg/`、`artifacts/` 和 `agent-audit-20260713-130739.md` 保留原状，不属于此次修复。
 
 2026-10-05 审查补修：共享 Provider/Router 原生写锁、排除独立 MCP 引起的误漂移、修复 Gemini 无 ID 工具合并；全量增至 661 项。经暂存区独立回归后提交，随后按用户批准进行本地受控加载。
+
+本地加载完成：代码 `5a1cffe`，面板/Router 受控重启与本机/Tailscale 健康检查通过，正式 UI 只读核验通过；详见 `docs/abcd-verification-20261005.md`。

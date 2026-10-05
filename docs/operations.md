@@ -450,3 +450,7 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 - 审查补修后隔离全量 **661 项**、前端 **45 项**、原始 **5 条**复现及 Chromium **8 类**交互断言通过；本地加载记录另列。详见 [ABCD 修复记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/superpowers/plans/2026-10-05-agent-abcd-repair.md)。
 
 - 审查补修：Provider 与 Router 接管共用原生写锁；MCP 独立配置段不算 Provider 漂移；Gemini 无 ID 的不同工具调用分配独立身份。[审查记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-abcd-20261005.md)。
+
+### ABCD 本地加载结果
+
+代码 `5a1cffe` 已加载：面板与 Router 受控重启，本机/Tailscale 健康检查通过；正式浏览器验证 5 个实际检测到的客户端，页面无 JavaScript 错误。37 个业务容器、原生客户端配置和 Provider/Router 数据前后不变。[验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/abcd-verification-20261005.md)。
