@@ -4,46 +4,28 @@ from collections.abc import Callable
 
 from app.models.assets import AssetSnapshot
 from app.scanners._ids import make_encoded_asset_id
+from app.services.host_ownership import attach_owner, inspect_containers
 
 HostProcessCommandRunner = Callable[[], subprocess.CompletedProcess[str]]
 _PROCESS_RE = re.compile(r'"(?P<name>[^"]+)"(?:,pid=(?P<pid>\d+))?')
 KNOWN_PORTS: dict[str, dict[str, str]] = {
-    '8317': {'service_hint': 'CPA / CLIProxyAPI', 'purpose': 'CPA API / CLIProxyAPI 网页与 API 入口', 'owner_type': 'docker', 'target_container_name': 'cli-proxy-api'},
-    '11451': {'service_hint': 'CPA / CLIProxyAPI', 'purpose': 'CPA 附加监听端口', 'owner_type': 'docker', 'target_container_name': 'cli-proxy-api'},
-    '51121': {'service_hint': 'CPA / CLIProxyAPI', 'purpose': 'CPA 附加监听端口', 'owner_type': 'docker', 'target_container_name': 'cli-proxy-api'},
-    '54545': {'service_hint': 'CPA / CLIProxyAPI', 'purpose': 'CPA 附加监听端口', 'owner_type': 'docker', 'target_container_name': 'cli-proxy-api'},
-    '8128': {'service_hint': 'openai-cpa', 'purpose': 'openai-cpa 注册系统页面', 'owner_type': 'docker', 'target_container_name': 'wenfxl_codex_manager'},
-    '45345': {'service_hint': 'regmail UI', 'purpose': 'regmail UI 页面', 'owner_type': 'docker'},
-    '8420': {'service_hint': 'Sub2API', 'purpose': 'Sub2API OpenAI 兼容接口', 'owner_type': 'docker', 'target_container_name': 'sub2api'},
-    '38217': {'service_hint': 'New API', 'purpose': 'New API 管理后台与模型转发入口', 'owner_type': 'docker', 'target_container_name': 'new-api'},
-    '39281': {'service_hint': 'SearXNG', 'purpose': 'SearXNG 搜索服务入口', 'owner_type': 'docker', 'target_container_name': 'searxng'},
-    '8312': {'service_hint': 'image2api', 'purpose': 'image2api / chatgpt2api 入口', 'owner_type': 'docker', 'target_container_name': 'image2api'},
-    '8328': {'service_hint': 'WSL Ops Panel', 'purpose': 'WSL 维护更新管理面板', 'owner_type': 'systemd'},
-    '8228': {'service_hint': 'freemail-proxy', 'purpose': 'freemail 反代入口', 'owner_type': 'docker', 'target_container_name': 'freemail-proxy'},
-    '8787': {'service_hint': 'ip-convert-static', 'purpose': 'IP 转换静态页面', 'owner_type': 'docker', 'target_container_name': 'ip-convert-static'},
-    '7890': {'service_hint': 'Clash / Mihomo', 'purpose': '本地代理 HTTP/SOCKS 入口', 'owner_type': 'process'},
-    '2222': {'service_hint': 'SSH', 'purpose': 'SSH 远程登录入口', 'owner_type': 'systemd'},
-    '50222': {'service_hint': 'Tailscale SSH', 'purpose': 'Tailscale SSH / WSL 远程访问入口', 'owner_type': 'systemd'},
+    '8317': {'service_hint': 'CPA / CLIProxyAPI', 'purpose': 'CPA API / CLIProxyAPI 网页与 API 入口'},
+    '11451': {'service_hint': 'CPA / CLIProxyAPI', 'purpose': 'CPA 附加监听端口'},
+    '51121': {'service_hint': 'CPA / CLIProxyAPI', 'purpose': 'CPA 附加监听端口'},
+    '54545': {'service_hint': 'CPA / CLIProxyAPI', 'purpose': 'CPA 附加监听端口'},
+    '8128': {'service_hint': 'openai-cpa', 'purpose': 'openai-cpa 注册系统页面'},
+    '45345': {'service_hint': 'regmail UI', 'purpose': 'regmail UI 页面'},
+    '8420': {'service_hint': 'Sub2API', 'purpose': 'Sub2API OpenAI 兼容接口'},
+    '38217': {'service_hint': 'New API', 'purpose': 'New API 管理后台与模型转发入口'},
+    '39281': {'service_hint': 'SearXNG', 'purpose': 'SearXNG 搜索服务入口'},
+    '8312': {'service_hint': 'image2api', 'purpose': 'image2api / chatgpt2api 入口'},
+    '8328': {'service_hint': 'WSL Ops Panel', 'purpose': 'WSL 维护更新管理面板'},
+    '8228': {'service_hint': 'freemail-proxy', 'purpose': 'freemail 反代入口'},
+    '8787': {'service_hint': 'ip-convert-static', 'purpose': 'IP 转换静态页面'},
+    '7890': {'service_hint': 'Clash / Mihomo', 'purpose': '本地代理 HTTP/SOCKS 入口'},
+    '2222': {'service_hint': 'SSH', 'purpose': 'SSH 远程登录入口'},
+    '50222': {'service_hint': 'Tailscale SSH', 'purpose': 'Tailscale SSH / WSL 远程访问入口'},
 }
-DOCKER_PORT_TO_ASSET: dict[str, str] = {
-    '8317': 'cpa',
-    '11451': 'cpa',
-    '51121': 'cpa',
-    '54545': 'cpa',
-    '8128': 'openai_cpa',
-    '8420': 'sub2api',
-    '38217': 'new_api',
-    '39281': 'searxng',
-    '8312': 'docker__image2api',
-    '8228': 'docker__freemail-proxy',
-    '8787': 'docker__ip-转换',
-}
-SYSTEMD_PORT_TO_UNIT: dict[str, str] = {
-    '8328': 'wsl-ops-panel.service',
-    '2222': 'ssh.service',
-    '50222': 'tailscaled.service',
-}
-
 
 
 def parse_listening_socket(raw: str) -> AssetSnapshot:
@@ -69,9 +51,9 @@ def parse_listening_socket(raw: str) -> AssetSnapshot:
             'process_name': process_name,
             'pid': pid,
             **enrichment,
-            'target_asset_id': DOCKER_PORT_TO_ASSET.get(port) if enrichment.get('owner_type') == 'docker' else None,
-            'target_container_name': enrichment.get('target_container_name') if enrichment.get('owner_type') == 'docker' else None,
-            'target_unit_name': SYSTEMD_PORT_TO_UNIT.get(port) if enrichment.get('owner_type') == 'systemd' else None,
+            'target_asset_id': None,
+            'target_container_name': None,
+            'target_unit_name': None,
             'raw': raw,
         },
     )
@@ -92,7 +74,13 @@ def scan_host_processes(*, runner: HostProcessCommandRunner | None = None) -> li
             assets.append(parse_listening_socket(stripped))
         except ValueError:
             continue
-    return assets
+    containers = []
+    if any(a.metadata.get('process_name') == 'docker-proxy' for a in assets):
+        try:
+            containers = inspect_containers()
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            pass
+    return [attach_owner(asset, containers=containers) for asset in assets]
 
 
 def _run_ss() -> subprocess.CompletedProcess[str]:
@@ -101,6 +89,7 @@ def _run_ss() -> subprocess.CompletedProcess[str]:
         check=True,
         capture_output=True,
         text=True,
+        timeout=10,
     )
 
 
@@ -127,13 +116,11 @@ def _parse_process_info(value: str) -> tuple[str | None, int | None]:
 
 def _enrich_port(port: str, process_name: str | None) -> dict[str, str]:
     known = KNOWN_PORTS.get(port, {})
-    owner_type = known.get('owner_type')
-    if not owner_type and process_name:
-        owner_type = 'docker' if process_name == 'docker-proxy' else 'process'
+    owner_type = 'unknown' if not process_name or process_name == 'docker-proxy' else 'process'
     return {
         'service_hint': known.get('service_hint', process_name or f'port:{port}'),
         'purpose': known.get('purpose', '未知端口。可通过 PID / systemd / docker 进一步确认。'),
-        'owner_type': owner_type or 'unknown',
-        'port_action': owner_type or 'unknown',
-        'target_container_name': known.get('target_container_name', ''),
+        'owner_type': owner_type,
+        'port_action': owner_type,
+        'target_container_name': '',
     }

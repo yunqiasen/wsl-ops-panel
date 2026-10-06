@@ -139,6 +139,8 @@ class AssetService:
             for asset in assets:
                 if asset.object_id == object_id:
                     return self._enrich_detail_asset(asset)
+        if object_id.startswith(('project__', 'host__')):
+            return None
         cached = self._state_store.get_asset_snapshot(object_id)
         return self._enrich_detail_asset(cached) if cached is not None else None
 
@@ -174,7 +176,7 @@ class AssetService:
                         errors[asset.object_id] = f'资产详情读取失败 ({type(exc).__name__})'
                     pending.remove(asset.object_id)
         for object_id in pending:
-            if object_id.startswith('docker__') or object_id in objects:
+            if object_id.startswith(('docker__', 'project__', 'host__')) or object_id in objects:
                 continue
             try:
                 cached = self._state_store.get_asset_snapshot(object_id)

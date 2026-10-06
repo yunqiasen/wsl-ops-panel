@@ -290,9 +290,14 @@ def _build_adapter(request: Request, object_id: str, asset: AssetSnapshot) -> Ac
             full_delete_paths=list(asset.metadata.get('full_delete_paths', [])),
         )
     if asset.category == 'system':
-        return SystemInfrastructureAdapter(name=asset.name, current_version=asset.current_version)
+        system_key = asset.metadata.get('system_key')
+        return SystemInfrastructureAdapter(
+            name=system_key if isinstance(system_key, str) and system_key else asset.name,
+            current_version=asset.current_version,
+        )
     if asset.category == 'host':
         return HostPortAdapter(
+            owner_snapshot=asset.metadata.get('owner_snapshot'),
             port=str(asset.metadata.get('port') or ''),
             owner_type=asset.metadata.get('owner_type') if isinstance(asset.metadata.get('owner_type'), str) else None,
             target_asset_id=asset.metadata.get('target_asset_id')
@@ -313,6 +318,7 @@ def _build_adapter(request: Request, object_id: str, asset: AssetSnapshot) -> Ac
             raise HTTPException(status_code=400, detail='project path is required for project actions')
         cf = asset.metadata.get('capabilities', {}).get('cf_tunnel', {}) if isinstance(asset.metadata.get('capabilities'), dict) else {}
         return ProjectAdapter(
+            service_targets=asset.metadata.get('service_targets'),
             project_dir=project_dir,
             current_version=asset.current_version or _project_current_version(asset),
             git_remote_url=asset.metadata.get('git_remote_url') if isinstance(asset.metadata.get('git_remote_url'), str) else None,

@@ -4,7 +4,7 @@
   <div>
     <p class="eyebrow">Remote Ops</p>
     <h1>SSH 与配置同步</h1>
-    <p>SSH 只是连接底座。这里主要负责系统配置扫描、同步前检查和跨设备 dry-run。Node / Python / Agent 的安装更新放回各自分类操作。</p>
+    <p>这里管理 SSH 连接、配置状态扫描和配置追加。Node / Python 包操作放回各自分类；Agent 原生配置由当前 WSL 的 Agent 工作台管理。</p>
   </div>
   <div class="remote-hero__count">
     <strong>{{ remote_nodes|length }}</strong>
@@ -68,7 +68,7 @@
     <div>
       <p class="eyebrow">Config Workflow</p>
       <h2>系统配置同步中心</h2>
-      <p>先用“快速追加一行”处理常见配置；复杂修改再进模块编辑草稿。Windows 不适用的配置会自动跳过。</p>
+      <p>“快速追加一行”会实际写入选中的设备；编辑草稿只保存在面板，草稿不会自动应用。Windows 不适用的配置会自动跳过。</p>
     </div>
   </div>
 
@@ -87,8 +87,8 @@
       </div>
       <div class="config-sync-step">
         <span>3</span>
-        <strong>扫描 / dry-run</strong>
-        <small>先看差异和状态，后续再做安全应用。</small>
+        <strong>扫描配置状态</strong>
+        <small>只检查文件状态；完整内容差异合并尚未实现。</small>
       </div>
     </div>
 
@@ -99,7 +99,7 @@
       </div>
       <label>配置文件
         <select name="module_id" form="config-apply-form" data-config-apply-module>
-          {% for module in config_modules or [] %}
+          {% for module in config_modules or [] if module.append_supported %}
           <option value="{{ module.id }}" data-compatible="{{ module.compatible_os }}" {{ 'selected' if module.id == 'zshrc' else '' }}>{{ module.label }} · {{ module.path }}</option>
           {% endfor %}
         </select>
@@ -127,7 +127,7 @@
       </div>
       <div class="config-sync-runbar">
         <strong><span data-config-selected-count>0</span> 个配置已选</strong>
-        <button class="primary-button" type="submit">扫描选中配置 / dry-run</button>
+        <button class="primary-button" type="submit">扫描选中配置状态</button>
       </div>
     </div>
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 from app.scanners.project_scanner import scan_projects
 
@@ -21,7 +22,7 @@ def test_scan_projects_detects_git_node_and_python_projects(tmp_path: Path) -> N
 
     assert len(assets) == 1
     asset = assets[0]
-    assert asset.object_id == 'project__my-tool'
+    assert asset.object_id == 'project__my-tool__' + hashlib.sha256(str(app_dir.resolve()).encode()).hexdigest()[:16]
     assert asset.category == 'project'
     assert asset.name == 'my-tool'
     assert asset.status == 'present'
@@ -125,7 +126,7 @@ def test_scan_projects_can_include_nested_ai_project(tmp_path: Path) -> None:
 
     assets = scan_projects(roots=[root, ai])
 
-    assert any(asset.object_id == 'project__wsl-ops-panel' for asset in assets)
+    assert any(asset.object_id == 'project__wsl-ops-panel__' + hashlib.sha256(str(panel.resolve()).encode()).hexdigest()[:16] for asset in assets)
 
 def test_scan_projects_reads_package_description(tmp_path: Path) -> None:
     project = tmp_path / 'node-tool'
@@ -151,7 +152,7 @@ def test_scan_projects_can_scan_an_explicit_project_root_itself(tmp_path: Path) 
 
     assets = scan_projects(roots=[project])
 
-    assert [asset.object_id for asset in assets] == ['project__webclone']
+    assert [asset.object_id for asset in assets] == ['project__webclone__' + hashlib.sha256(str(project.resolve()).encode()).hexdigest()[:16]]
     assert assets[0].metadata['path'] == str(project)
     assert assets[0].metadata['description'] == '网站离线归档 CLI'
 
@@ -186,7 +187,7 @@ def test_scan_projects_detects_related_user_systemd_units(tmp_path: Path) -> Non
         command_runner=runner,
     )
 
-    assert [asset.object_id for asset in assets] == ['project__oai-cpa-tools']
+    assert [asset.object_id for asset in assets] == ['project__oai-cpa-tools__' + hashlib.sha256(str(project.resolve()).encode()).hexdigest()[:16]]
     asset = assets[0]
     assert asset.status == 'active'
     assert asset.metadata['service_unit'] == 'oai-cpa-tools.service'
@@ -228,7 +229,7 @@ def test_parent_project_keeps_its_direct_unit_and_does_not_absorb_nested_project
         command_runner=lambda command, timeout=1.0: 'active\n',
     )
 
-    assert [asset.object_id for asset in assets] == ['project__regmail-2api']
+    assert [asset.object_id for asset in assets] == ['project__regmail-2api__' + hashlib.sha256(str(parent.resolve()).encode()).hexdigest()[:16]]
     assert assets[0].metadata['service_unit'] == 'regmail-ui.service'
     assert assets[0].metadata['service_units'] == ['regmail-ui.service']
     assert assets[0].metadata['service_scope'] == 'system'

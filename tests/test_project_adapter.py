@@ -19,7 +19,8 @@ def test_project_adapter_plans_safe_delete_and_full_delete() -> None:
 
     assert delete.commands == [['true']]
     assert delete.preview_paths == ['/srv/wsl-ops-panel']
-    assert full_delete.commands == [['rm', '-rf', '/srv/wsl-ops-panel']]
+    assert full_delete.commands[0][2] == 'app.services.project_lifecycle'
+    assert full_delete.commands[0][-1] == 'full_delete'
     assert full_delete.preview_paths == ['/srv/wsl-ops-panel']
 
 

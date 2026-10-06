@@ -159,14 +159,16 @@ def test_bulk_cf_action_continues_after_skipping_asset_without_cf_control(tmp_pa
     assert [task.object_id for task in store.list_all()] == ['cpa']
 
 
-def test_asset_level_start_endpoint_enqueues_host_port_plan(tmp_path: Path) -> None:
+def test_asset_level_stop_endpoint_enqueues_verified_host_plan(tmp_path: Path) -> None:
     (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
     (tmp_path / 'categories' / 'host.yaml').write_text('id: host\nlabel: 宿主机进程\norder: 80\nenabled: true\n', encoding='utf-8')
     (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
 
     from app.scanners.host_process_scanner import parse_listening_socket
 
-    host_asset = parse_listening_socket('LISTEN 0 128 0.0.0.0:8317 0.0.0.0:* users:(("docker-proxy",pid=1234,fd=7))')
+    from tests.test_host_project_fixes import RAW, proc_at, docker_item
+    from app.services.host_ownership import attach_owner
+    host_asset = attach_owner(parse_listening_socket(RAW), containers=[docker_item()], proc_root=proc_at(tmp_path))
     store = InMemoryTaskStore()
     client = TestClient(create_app(config_root=tmp_path, host_process_scanner=lambda: [host_asset], task_store=store))
     client.cookies.set(COOKIE_NAME, issue_session_token())
@@ -176,11 +178,13 @@ def test_asset_level_start_endpoint_enqueues_host_port_plan(tmp_path: Path) -> N
     assert response.status_code == 202
     payload = response.json()
     assert payload['task']['action'] == 'stop'
-    assert payload['plan']['commands'] == [['docker', 'stop', 'cli-proxy-api']]
-    assert 'cli-proxy-api' in payload['plan']['preview_objects']
+    command = payload['plan']['commands'][0]
+    assert command[2:5] == ['app.tools.host_port_control', 'stop', '--snapshot']
+    assert 'actual-owner' in command[5]
+    assert payload['plan']['commands'] != [['docker', 'stop', 'cli-proxy-api']]
 
 
-def test_host_port_endpoint_uses_container_name_for_runtime_discovered_port(tmp_path: Path) -> None:
+def test_host_port_endpoint_rejects_unverified_fixed_port_hint(tmp_path: Path) -> None:
     (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
     (tmp_path / 'categories' / 'host.yaml').write_text('id: host\nlabel: 宿主机进程\norder: 80\nenabled: true\n', encoding='utf-8')
     (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
@@ -194,9 +198,8 @@ def test_host_port_endpoint_uses_container_name_for_runtime_discovered_port(tmp_
 
     response = client.post(f'/api/assets/{host_asset.object_id}/actions/start')
 
-    assert response.status_code == 202
-    payload = response.json()
-    assert payload['plan']['commands'] == [['docker', 'start', 'image2api']]
+    assert response.status_code == 400
+    assert store.list_all() == []
 
 
 def test_bulk_project_update_uses_project_adapter(tmp_path: Path) -> None:

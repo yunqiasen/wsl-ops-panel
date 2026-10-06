@@ -97,7 +97,7 @@ def scan_system_infrastructure(
                     metadata={'command': command, **SYSTEM_UPDATE_METADATA.get(name, {})},
                 )
             )
-        except (subprocess.CalledProcessError, ValueError) as exc:
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
             assets.append(
                 AssetSnapshot(
                     object_id=make_encoded_asset_id('system', name),
@@ -111,4 +111,4 @@ def scan_system_infrastructure(
 
 
 def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=True, capture_output=True, text=True)
+    return subprocess.run(command, check=True, capture_output=True, text=True, timeout=10)

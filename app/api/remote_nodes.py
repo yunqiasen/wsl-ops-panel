@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import base64
+import shlex
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -19,6 +21,7 @@ from app.services.config_sync import (
     remote_config_scan_command,
     save_config_draft,
 )
+from app.services.asset_policies import AssetPolicyService
 from app.services.package_catalog import parse_install_request, record_package_history
 from app.services.package_versions import PackageVersionService
 
@@ -281,6 +284,16 @@ def queue_remote_package_action(
         raise HTTPException(status_code=400, detail="unsupported package action")
     if package_action != "scan" and not package_name:
         raise HTTPException(status_code=400, detail="package_name is required")
+    policy_service = AssetPolicyService(request.app.state.config_root)
+    if package_action != "scan":
+        allowed, reason = policy_service.check_package_action(
+            tool_type, package_name, package_action, version=version.strip(),
+        )
+        if not allowed:
+            request.app.state.system_terminal_sink.write(
+                f"{package_name}: 面板策略 - {reason}，已跳过\n"
+            )
+            return RedirectResponse(url="/categories/remote", status_code=303)
     tasks = []
     for node_id in node_ids:
         node = _get_remote_node(request, node_id)
@@ -291,6 +304,8 @@ def queue_remote_package_action(
             version.strip(),
             windows=_is_windows_node(node),
         )
+        remote_command = _guard_package_shell(policy_service, tool_type, package_action,
+                                              [package_name], remote_command, windows=_is_windows_node(node))
         command = request.app.state.remote_ssh_service.build_command(
             node, remote_command
         )
@@ -515,35 +530,60 @@ def api_queue_package_install(
     if not payload.node_ids:
         raise HTTPException(status_code=400, detail="node_ids is required")
 
+    policy_service = AssetPolicyService(request.app.state.config_root)
     tasks: list[str] = []
     skipped: list[str] = []
     if install_command and payload.package_action == "install_or_update":
-        for node_id in payload.node_ids:
-            task_label = _safe_task_suffix("-".join(package_names[:2]))
-            if node_id == "__local__":
-                command = ["bash", "-lc", install_command]
-                object_id = f"local__{payload.tool_type}__{task_label}"
-            else:
-                node = _get_remote_node(request, node_id)
-                if node.status != "online":
-                    skipped.append(
-                        f"{node.name}: SSH 未连接，跳过 {', '.join(package_names)}"
-                    )
-                    continue
-                command = request.app.state.remote_ssh_service.build_command(
-                    node, install_command
-                )
-                object_id = f"remote__{node.id}__{payload.tool_type}__{task_label}"
-            task = request.app.state.task_queue.enqueue(
-                object_id,
-                f"{payload.tool_type}_{payload.package_action}",
-                requested_version=",".join(version_map.values()) or None,
-                plan=ActionPlan(commands=[command], command_timeout_seconds=180),
+        # custom_command: check each parsed package name against the same policy
+        blocked_packages: list[tuple[str, str | None]] = []
+        for pkg in package_names:
+            ok, reason = policy_service.check_package_action(
+                payload.tool_type, pkg, payload.package_action, version=version_map.get(pkg, ""),
             )
-            tasks.append(task.id)
+            if not ok:
+                blocked_packages.append((pkg, reason))
+        if blocked_packages:
+            for pkg, reason in blocked_packages:
+                skipped.append(f"{pkg}: 面板策略 - {reason}")
+        else:
+            for node_id in payload.node_ids:
+                task_label = _safe_task_suffix("-".join(package_names[:2]))
+                if node_id == "__local__":
+                    command = ["bash", "-lc", _guard_package_shell(policy_service, payload.tool_type, payload.package_action,
+                                                            package_names, install_command, pip_only=True)]
+                    object_id = f"local__{payload.tool_type}__{task_label}"
+                else:
+                    node = _get_remote_node(request, node_id)
+                    if node.status != "online":
+                        skipped.append(
+                            f"{node.name}: SSH 未连接，跳过 {', '.join(package_names)}"
+                        )
+                        continue
+                    command = request.app.state.remote_ssh_service.build_command(
+                        node, _guard_package_shell(policy_service, payload.tool_type, payload.package_action,
+                                                   package_names, install_command, windows=_is_windows_node(node), pip_only=True)
+                    )
+                    object_id = f"remote__{node.id}__{payload.tool_type}__{task_label}"
+                task = request.app.state.task_queue.enqueue(
+                    object_id,
+                    f"{payload.tool_type}_{payload.package_action}",
+                    requested_version=",".join(version_map.values()) or None,
+                    plan=ActionPlan(commands=[command], command_timeout_seconds=180),
+                )
+                tasks.append(task.id)
     else:
+        # Pre-check all packages against policy (per-package, not per-node)
+        allowed_packages: list[str] = []
+        for package_name in package_names:
+            ok, reason = policy_service.check_package_action(
+                payload.tool_type, package_name, payload.package_action, version=version_map.get(package_name, ""),
+            )
+            if not ok:
+                skipped.append(f"{package_name}: 面板策略 - {reason}")
+            else:
+                allowed_packages.append(package_name)
         for node_id in payload.node_ids:
-            for package_name in package_names:
+            for package_name in allowed_packages:
                 version = version_map.get(package_name, "").strip()
                 if node_id == "__local__":
                     command = _local_package_command(
@@ -564,6 +604,8 @@ def api_queue_package_install(
                         version,
                         windows=_is_windows_node(node),
                     )
+                    remote_command = _guard_package_shell(policy_service, payload.tool_type, payload.package_action,
+                                                          [package_name], remote_command, windows=_is_windows_node(node))
                     command = request.app.state.remote_ssh_service.build_command(
                         node, remote_command
                     )
@@ -572,7 +614,9 @@ def api_queue_package_install(
                     object_id,
                     f"{payload.tool_type}_{payload.package_action}",
                     requested_version=version or None,
-                    plan=ActionPlan(commands=[command], command_timeout_seconds=180),
+                    plan=ActionPlan(commands=([_python_absence_command([package_name], interpreter=command[0])]
+                                               if node_id == "__local__" and policy_service.install_only(payload.tool_type, package_name, payload.package_action)
+                                               else []) + [command], command_timeout_seconds=180),
                 )
                 tasks.append(task.id)
     if tasks and payload.package_action == "install_or_update":
@@ -647,17 +691,28 @@ def api_queue_remote_package_bulk(
     if not payload.node_ids:
         raise HTTPException(status_code=400, detail="node_ids is required")
 
+    policy_service = AssetPolicyService(request.app.state.config_root)
     tasks: list[str] = []
     skipped: list[str] = []
+    # Pre-check all packages against policy (per-package, not per-node)
+    allowed_packages: list[str] = []
+    for package_name in package_names:
+        ok, reason = policy_service.check_package_action(
+            payload.tool_type, package_name, payload.package_action, version=payload.version_map.get(package_name, ""),
+        )
+        if not ok:
+            skipped.append(f"{package_name}: 面板策略 - {reason}")
+        else:
+            allowed_packages.append(package_name)
     for node_id in payload.node_ids:
         node = _get_remote_node(request, node_id)
         if node.status != "online":
             skipped.extend(
                 f"{node.name}: SSH 未连接，跳过 {package_name}"
-                for package_name in package_names
+                for package_name in allowed_packages
             )
             continue
-        for package_name in package_names:
+        for package_name in allowed_packages:
             version = payload.version_map.get(package_name, "").strip()
             remote_command = _remote_package_command(
                 payload.tool_type,
@@ -666,6 +721,8 @@ def api_queue_remote_package_bulk(
                 version,
                 windows=_is_windows_node(node),
             )
+            remote_command = _guard_package_shell(policy_service, payload.tool_type, payload.package_action,
+                                                  [package_name], remote_command, windows=_is_windows_node(node))
             command = request.app.state.remote_ssh_service.build_command(
                 node, remote_command
             )
@@ -727,6 +784,48 @@ def api_queue_remote_agent_bulk(
         f"Agent 配置扫描任务已入队：{len(tasks)} 个\n"
     )
     return RemoteQueuedResponse(queued_count=len(tasks), tasks=tasks, skipped=skipped)
+
+
+def _python_absence_command(names: list[str], *, interpreter: str = 'python3',
+                            pip_launcher: str | None = None) -> list[str]:
+    if pip_launcher:
+        # pip may belong to a different environment from the guard's Python.
+        script = "import json,re,subprocess\n"
+        script += f"result = subprocess.run([{pip_launcher!r}, 'list', '--format=json'], capture_output=True, text=True, check=True)\n"
+        script += "normalize = lambda name: re.sub(r'[-_.]+', '-', name).lower()\n"
+        script += "installed = {normalize(p['name']) for p in json.loads(result.stdout)}\n"
+        script += f"for name in {names!r}:\n if normalize(name) in installed: raise SystemExit('白名单外包已安装，跳过更新：' + name)\n"
+    else:
+        script = "import importlib.metadata as m\n"
+        script += f"for name in {names!r}:\n"
+        script += " try: m.version(name)\n except m.PackageNotFoundError: continue\n raise SystemExit('白名单外包已安装，跳过更新：' + name)\n"
+    encoded = base64.b64encode(script.encode()).decode('ascii')
+    return [interpreter, '-c', f"import base64;exec(base64.b64decode('{encoded}'))"]
+
+
+def _guard_package_shell(policy: AssetPolicyService, tool_type: str, action: str,
+                         names: list[str], command: str, *, windows: bool = False,
+                         pip_only: bool = False) -> str:
+    guarded = [name for name in names if policy.install_only(tool_type, name, action)]
+    if not guarded:
+        return command
+    interpreter = 'python' if windows else 'python3'
+    pip_launcher = None
+    if pip_only:
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            return command
+        if not words or not (words[0] in {'pip', 'pip3'} or words[:3] in
+                              [['python', '-m', 'pip'], ['python3', '-m', 'pip']]):
+            return command
+        if words[:3] in [['python', '-m', 'pip'], ['python3', '-m', 'pip']]:
+            interpreter = words[0]
+        else:
+            pip_launcher = words[0]
+    guard = _python_absence_command(guarded, interpreter=interpreter, pip_launcher=pip_launcher)
+    prefix = ' '.join(_cmd_arg(word, windows=windows) for word in guard)
+    return f'{prefix} && {command}'
 
 
 def _tool_type_label(tool_type: str) -> str:

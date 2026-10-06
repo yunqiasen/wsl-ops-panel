@@ -82,6 +82,10 @@ def get_actions_for_assets(category_id: str, assets: list[AssetSnapshot]) -> lis
 def enrich_asset_capabilities(asset: AssetSnapshot) -> AssetSnapshot:
     category_actions = CATEGORY_ACTIONS.get(asset.category, [])
     existing_actions = list(asset.supports_actions)
+    if asset.category == 'host':
+        existing_actions = []
+    if asset.category == 'project' and not _has_systemd_unit(asset):
+        existing_actions = [a for a in existing_actions if a not in {'start', 'stop', 'restart', 'autostart_enable', 'autostart_disable'}]
     inferred_actions = _infer_actions(asset, category_actions)
     merged_actions = _ordered_unique([*existing_actions, *inferred_actions], category_actions)
 
@@ -99,6 +103,9 @@ def _infer_actions(asset: AssetSnapshot, category_actions: list[str]) -> list[st
     if asset.category == 'system':
         return [action for action in category_actions if action in set(asset.supports_actions)]
     if asset.category == 'host':
+        snapshot = asset.metadata.get('owner_snapshot')
+        if not isinstance(snapshot, dict) or not snapshot.get('start_time'):
+            return []
         owner_type = asset.metadata.get('owner_type')
         target_unit_name = asset.metadata.get('target_unit_name')
         target_container_name = asset.metadata.get('target_container_name')
@@ -120,7 +127,7 @@ def _infer_actions(asset: AssetSnapshot, category_actions: list[str]) -> list[st
         return actions
     if asset.category == 'project':
         actions = [action for action in category_actions if action in {'update_latest', 'deploy_version', 'delete', 'full_delete'}]
-        if _has_runtime_hint(asset):
+        if _has_systemd_unit(asset):
             actions.extend(['start', 'stop', 'restart', 'autostart_enable', 'autostart_disable'])
         actions.extend(_supported_cf_actions(asset))
         if _has_web_surface(asset):
@@ -191,13 +198,13 @@ def _build_capabilities(
     return capabilities
 
 
-def _has_runtime_hint(asset: AssetSnapshot) -> bool:
-    web_ui = asset.metadata.get('web_ui')
-    return bool(
-        asset.metadata.get('service_unit')
-        or asset.metadata.get('start_command')
-        or (isinstance(web_ui, dict) and web_ui.get('enabled') is True)
-    )
+def _has_systemd_unit(asset: AssetSnapshot) -> bool:
+    """Only a detected systemd unit provides executable runtime control.
+
+    A package.json start script or web UI alone does not guarantee the panel
+    can start/stop the service — only systemd gives us that control path.
+    """
+    return bool(asset.metadata.get('service_unit') or asset.metadata.get('service_units') or asset.metadata.get('service_targets'))
 
 
 def _has_web_surface(asset: AssetSnapshot) -> bool:

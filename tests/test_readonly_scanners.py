@@ -167,11 +167,11 @@ def test_node_and_python_pages_show_policy_badges_and_block_reasons(tmp_path: Pa
     assert 'fastapi' in python_page.text
 
 
-def test_host_socket_enrichment_identifies_known_port_and_docker_owner() -> None:
+def test_host_socket_known_port_is_only_a_display_hint() -> None:
     asset = parse_listening_socket('LISTEN 0 128 0.0.0.0:8317 0.0.0.0:* users:(("docker-proxy",pid=1234,fd=7))')
 
     assert asset.metadata['service_hint'] == 'CPA / CLIProxyAPI'
-    assert asset.metadata['port_action'] == 'docker'
+    assert asset.metadata['port_action'] == 'unknown'
     assert asset.metadata['purpose'] == 'CPA API / CLIProxyAPI 网页与 API 入口'
-    assert asset.metadata['target_asset_id'] == 'cpa'
-    assert asset.metadata['target_container_name'] == 'cli-proxy-api'
+    assert asset.metadata['target_asset_id'] is None
+    assert asset.metadata['target_container_name'] is None

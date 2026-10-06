@@ -15,6 +15,10 @@ class TaskStore(Protocol):
 
     def list_all(self) -> list[TaskRecord]: ...
 
+    def list_recent(self, *, limit: int = 120) -> list[TaskRecord]: ...
+
+    def count_statuses(self) -> dict[str, int]: ...
+
     def mark_running_as_interrupted(self) -> None: ...
 
     def get(self, task_id: str) -> TaskRecord: ...
@@ -52,6 +56,18 @@ class InMemoryTaskStore:
 
     def list_all(self) -> list[TaskRecord]:
         return [task.model_copy(deep=True) for task in self._items]
+
+    def list_recent(self, *, limit: int = 120) -> list[TaskRecord]:
+        if limit < 0:
+            raise ValueError('limit must be non-negative')
+        return [task.model_copy(deep=True) for task in reversed(self._items[-limit:])] if limit else []
+
+    def count_statuses(self) -> dict[str, int]:
+        counts = _empty_status_counts()
+        for task in self._items:
+            counts[task.status] += 1
+        counts['total'] = len(self._items)
+        return counts
 
     def mark_running_as_interrupted(self) -> None:
         for task in self._items:
@@ -167,6 +183,26 @@ class SQLiteTaskStore:
             ).fetchall()
         return [TaskRecord.model_validate(dict(row)) for row in rows]
 
+    def list_recent(self, *, limit: int = 120) -> list[TaskRecord]:
+        if limit < 0:
+            raise ValueError('limit must be non-negative')
+        with self._lock:
+            rows = self._connection.execute(
+                'SELECT * FROM tasks ORDER BY rowid DESC LIMIT ?', (limit,),
+            ).fetchall()
+        return [TaskRecord.model_validate(dict(row)) for row in rows]
+
+    def count_statuses(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._connection.execute(
+                'SELECT status, COUNT(*) AS count FROM tasks GROUP BY status',
+            ).fetchall()
+        counts = _empty_status_counts()
+        for row in rows:
+            counts[row['status']] = row['count']
+            counts['total'] += row['count']
+        return counts
+
     def mark_running_as_interrupted(self) -> None:
         now = datetime.now(UTC).isoformat()
         with self._lock:
@@ -231,3 +267,7 @@ class SQLiteTaskStore:
         if row is None:
             return None
         return TaskRecord.model_validate(dict(row))
+
+
+def _empty_status_counts() -> dict[str, int]:
+    return dict(queued=0, running=0, succeeded=0, failed=0, interrupted=0, total=0)

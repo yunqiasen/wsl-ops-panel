@@ -78,10 +78,10 @@ def remote_config_scan_command(module_id: str, *, windows: bool = False) -> str 
 
 def config_apply_command(module_id: str, operation: str, content: str, *, windows: bool = False) -> str | None:
     definition = get_config_definition(module_id)
-    if definition is None or operation != 'append_line':
+    if definition is None or not definition.editable or operation != 'append_line':
         return None
     line = content.strip('\r\n')
-    if not line:
+    if not line or '\n' in line or '\r' in line or '\x00' in line:
         return None
     if windows:
         if 'windows' not in definition.compatible_os:
@@ -167,6 +167,7 @@ def _module_payload(definition: ConfigModuleDefinition) -> dict[str, Any]:
         'compatible_os': ','.join(definition.compatible_os),
         'requires_sudo': definition.requires_sudo,
         'editable': definition.editable and exists and path.is_file(),
+        'append_supported': definition.editable,
         'exists': exists,
         'status': '存在' if exists else '未创建',
         'updated_at': updated_at,
@@ -226,32 +227,122 @@ def _windows_path(path: str) -> str:
 
 
 def _unix_append_line_command(path: str, line: str) -> str:
-    quoted_path = _sq(path)
-    quoted_line = _sq(line)
-    return (
-        f'p={quoted_path}; eval "target=$p"; '
-        'case "$target" in /*) ;; *) target="$HOME/${target#~/}" ;; esac; '
-        'mkdir -p "$(dirname "$target")"; '
-        'ts="$(date +%Y%m%d%H%M%S)"; [ -f "$target" ] && cp "$target" "$target.wsl-ops-bak-$ts" || true; '
-        'tmp="$(mktemp)"; [ -f "$target" ] && cat "$target" > "$tmp" || :; '
-        f'grep -qxF {quoted_line} "$tmp" 2>/dev/null || printf "%s\\n" {quoted_line} >> "$tmp"; '
-        'mv "$tmp" "$target"; printf "applied %s\\n" "$target"'
-    )
+    # Only POSIX shell and standard file tools are required on the target.
+    script = r'''set -eu
+umask 077
+target=__PATH__
+line=__LINE__
+case "$target" in '~/'*) target="$HOME/${target#\~/}" ;; esac
+# Follow final symlinks without GNU-only readlink -f, retaining the link itself.
+links=0
+while [ -L "$target" ]; do
+    links=$((links + 1))
+    [ "$links" -le 40 ] || { echo 'configuration symlink loop' >&2; exit 1; }
+    link=$(readlink "$target")
+    case "$link" in /*) target="$link" ;; *) target="$(dirname "$target")/$link" ;; esac
+done
+parent=$(dirname "$target")
+mkdir -p "$parent"
+parent=$(CDPATH='' cd -P "$parent" && pwd)
+target="$parent/$(basename "$target")"
+lock="$target.wsl-ops-lock"
+mkdir "$lock" || { echo 'configuration is busy or directory is not writable' >&2; exit 1; }
+trap 'rm -f "$lock/next" "$lock/expected"; rmdir "$lock"' 0
+trap 'exit 1' 1 2 15
+tmp="$lock/next"
+existed=0
+if [ -e "$target" ]; then
+    [ -f "$target" ] && [ -r "$target" ] && [ -w "$target" ] || {
+        echo 'configuration must be a readable writable regular file' >&2; exit 1;
+    }
+    existed=1
+    backup=$(mktemp "$target.wsl-ops-bak-XXXXXX")
+    cp -p "$target" "$backup"
+    cp -p "$target" "$tmp"
+    chmod 600 "$backup"
+else
+    : > "$tmp"
+fi
+if grep -qxF -e "$line" "$tmp"; then
+    printf 'unchanged %s\n' "$target"
+    exit 0
+else
+    result=$?
+    [ "$result" -eq 1 ] || exit "$result"
+fi
+if [ -s "$tmp" ] && [ -n "$(tail -c 1 "$tmp")" ]; then
+    printf '\n' >> "$tmp"
+fi
+printf '%s\n' "$line" >> "$tmp"
+cp -p "$tmp" "$lock/expected"
+if [ "$existed" -eq 1 ]; then
+    cmp -s "$target" "$backup" || { echo 'configuration changed during append' >&2; exit 1; }
+else
+    [ ! -e "$target" ] && [ ! -L "$target" ] || { echo 'configuration appeared during append' >&2; exit 1; }
+fi
+mv -f "$tmp" "$target"
+cmp -s "$target" "$lock/expected" || { echo 'configuration verification failed; backup retained' >&2; exit 1; }
+printf 'applied %s\n' "$target"
+'''
+    return script.replace('__PATH__', _sq(path)).replace('__LINE__', _sq(line))
 
 
 def _windows_append_line_command(definition: ConfigModuleDefinition, line: str) -> str:
-    path_expr = "$PROFILE" if definition.id == 'powershell_profile' else f"'{_windows_path(definition.path)}'"
-    script = f'''
-$p = {path_expr}
-$dir = Split-Path -Parent $p
-if ($dir -and -not (Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir -Force | Out-Null }}
-$ts = Get-Date -Format yyyyMMddHHmmss
-if (Test-Path $p) {{ Copy-Item $p ($p + '.wsl-ops-bak-' + $ts) -Force; $c = Get-Content $p -ErrorAction SilentlyContinue }} else {{ $c = @() }}
-$line = '{line.replace("'", "''")}'
-if ($c -notcontains $line) {{ $c += $line }}
-Set-Content -Path $p -Value $c -Encoding UTF8
-Write-Output "applied $p"
+    relative = definition.path.removeprefix('~/').replace('/', '\\').replace("'", "''")
+    path_expr = "$PROFILE" if definition.id == 'powershell_profile' else f"(Join-Path $env:USERPROFILE '{relative}')"
+    script = r'''$ErrorActionPreference = 'Stop'
+$tmp = $null
+$lockStream = $null
+try {
+    $p = __PATH__
+    $line = __LINE__
+    $dir = Split-Path -Parent $p
+    if (-not (Test-Path -LiteralPath $dir)) { [IO.Directory]::CreateDirectory($dir) | Out-Null }
+    $lockPath = $p + '.wsl-ops-lock'
+    $lockStream = [IO.File]::Open($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $exists = Test-Path -LiteralPath $p
+    $original = [byte[]]@()
+    $content = ''
+    $encoding = New-Object Text.UTF8Encoding($false, $true)
+    if ($exists) {
+        if (Test-Path -LiteralPath $p -PathType Container) { throw 'target is a directory' }
+        if ((Get-Item -LiteralPath $p).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'linked configuration requires direct target selection' }
+        $original = [IO.File]::ReadAllBytes($p)
+        $stream = New-Object IO.MemoryStream(,$original)
+        $reader = New-Object IO.StreamReader($stream, $encoding, $true)
+        try { $content = $reader.ReadToEnd(); $encoding = $reader.CurrentEncoding } finally { $reader.Dispose() }
+    }
+    if (($content -split '\r\n|\n|\r') -ccontains $line) { Write-Output "unchanged $p"; exit 0 }
+    $newline = "`n"
+    if ($content.Contains("`r`n") -or $content.Length -eq 0) { $newline = "`r`n" }
+    $suffix = ''
+    if ($content.Length -gt 0 -and -not ($content.EndsWith("`n") -or $content.EndsWith("`r"))) { $suffix = $newline }
+    $suffix += $line + $newline
+    $expected = [byte[]]($original + $encoding.GetBytes($suffix))
+    $tmp = Join-Path $dir ('.wsl-ops-tmp-' + [Guid]::NewGuid().ToString('N'))
+    [IO.File]::WriteAllBytes($tmp, $expected)
+    if ($exists) {
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($p)) -cne [Convert]::ToBase64String($original)) { throw 'configuration changed during append' }
+        do { $backup = $p + '.wsl-ops-bak-' + [Guid]::NewGuid().ToString('N') } while (Test-Path -LiteralPath $backup)
+        [IO.File]::Replace($tmp, $p, $backup)
+    } else {
+        [IO.File]::Move($tmp, $p)
+    }
+    $tmp = $null
+    if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($p)) -cne [Convert]::ToBase64String($expected)) { throw 'configuration verification failed; backup retained' }
+    Write-Output "applied $p"
+} catch {
+    [Console]::Error.WriteLine('configuration append failed: ' + $_.Exception.Message)
+    exit 1
+} finally {
+    try {
+        if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-Item -LiteralPath $tmp -Force }
+    } finally {
+        if ($lockStream) { $lockStream.Dispose(); [IO.File]::Delete($lockPath) }
+    }
+}
 '''
+    script = script.replace('__PATH__', path_expr).replace('__LINE__', "'" + line.replace("'", "''") + "'")
     encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
     return f'powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}'
 

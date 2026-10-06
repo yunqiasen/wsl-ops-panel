@@ -27,17 +27,16 @@ def tasks_page(request: Request) -> HTMLResponse:
     if redirect is not None:
         return redirect
 
-    tasks = list(reversed(request.app.state.task_store.list_all()))
-    visible_tasks = tasks[:120]
+    visible_tasks = request.app.state.task_store.list_recent(limit=120)
     task_items = [_build_task_item(task) for task in visible_tasks]
     context = build_page_context(
         request,
         title='任务中心',
         active_page='tasks',
-        tasks=tasks,
+        tasks=visible_tasks,
         task_items=task_items,
         shown_task_count=len(visible_tasks),
-        task_stats=_count_task_statuses(tasks),
+        task_stats=request.app.state.task_store.count_statuses(),
     )
     return TEMPLATES.TemplateResponse(request, 'tasks.html', context)
 
@@ -98,18 +97,20 @@ def _public_plan(task: TaskRecord) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)[-8000:]
 
 
-def _count_task_statuses(tasks: list[TaskRecord]) -> dict[str, int]:
-    counts = {'queued': 0, 'running': 0, 'succeeded': 0, 'failed': 0, 'interrupted': 0, 'total': len(tasks)}
-    for task in tasks:
-        counts[task.status] = counts.get(task.status, 0) + 1
-    return counts
-
-
 def _read_text_excerpt(path: Path, *, max_chars: int = 4000) -> str:
-    if not path.exists():
+    if max_chars <= 0:
         return ''
-    content = path.read_text(encoding='utf-8', errors='replace')
-    return content[-max_chars:]
+    # Four bytes per code point plus a partial leading character; bound I/O,
+    # not just the rendered output. Seeking avoids reading historical logs.
+    max_bytes = max_chars * 4 + 3
+    try:
+        with path.open('rb') as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - max_bytes))
+            content = fh.read(max_bytes)
+    except OSError:
+        return ''
+    return content.decode('utf-8', errors='replace')[-max_chars:]
 
 
 def _plan_steps(plan_text: str) -> list[str]:

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import shutil
@@ -37,11 +38,18 @@ def scan_projects(
     requested_roots = list(roots) if roots is not None else [root] if root is not None else list(DEFAULT_PROJECT_ROOTS)
     unit_roots = tuple(Path(item) for item in (systemd_unit_roots or DEFAULT_SYSTEMD_UNIT_ROOTS))
     runtime_units = _detect_project_systemd_units(unit_roots, command_runner or _run_command)
-    assets_by_id: dict[str, AssetSnapshot] = {}
+    # Collect all assets, deduplicating by resolved path (same project found
+    # from overlapping roots is not a collision).
+    seen_paths: set[str] = set()
+    all_assets: list[AssetSnapshot] = []
     for item in requested_roots:
         for asset in _scan_project_root(Path(item), runtime_units=runtime_units):
-            assets_by_id.setdefault(asset.object_id, asset)
-    return list(assets_by_id.values())
+            path_key = str(Path(asset.metadata['path']).resolve())
+            if path_key in seen_paths:
+                continue
+            seen_paths.add(path_key)
+            all_assets.append(asset)
+    return all_assets
 
 
 def _scan_project_root(root_path: Path, *, runtime_units: list[dict[str, object]]) -> list[AssetSnapshot]:
@@ -96,7 +104,7 @@ def _scan_project_path(path: Path, *, runtime_units: list[dict[str, object]]) ->
         metadata['display_ports'] = port
         metadata['primary_public_port'] = port
     return AssetSnapshot(
-        object_id=f'project__{_slugify(path.name)}',
+        object_id=f'project__{_slugify(path.resolve().name)}__{hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:16]}',
         category='project',
         name=path.name,
         status=str(runtime.get('status') or 'present'),
@@ -146,7 +154,7 @@ def _build_project_capabilities(path: Path, *, web_ui: dict[str, object], runtim
             'supported_actions': ['cf_create', 'cf_refresh', 'cf_disable'] if cftunnel_script.exists() else [],
         },
         'wechat_notify': {'enabled': False},
-        'runtime_control': {'enabled': has_service_unit or bool(web_ui.get('enabled'))},
+        'runtime_control': {'enabled': has_service_unit},
         'autostart': {'enabled': has_service_unit},
     }
 
@@ -218,18 +226,14 @@ def _runtime_for_project(path: Path, runtime_units: list[dict[str, object]]) -> 
         score = 0
         if unit_project_dir.startswith(resolved + '/'):
             score += 30
-        if resolved in exec_start:
+        if re.search(r"(?:^|[=\s])" + re.escape(resolved) + r"(?:/|[\s;}]|$)", exec_start):
             score += 50
-        unit_name = str(payload.get('service_unit') or '')
-        if unit_name.removesuffix('.service') == path.name:
-            score += 100
         if score:
+            if str(payload.get('service_unit') or '').removesuffix('.service') == path.name:
+                score += 100
             related_matches.append((score, payload))
 
-    if direct_matches:
-        selected = [(200, payload) for payload in direct_matches]
-    else:
-        selected = related_matches
+    selected = [(200, payload) for payload in direct_matches] if direct_matches else related_matches
     if not selected:
         return {}
 
@@ -238,6 +242,8 @@ def _runtime_for_project(path: Path, runtime_units: list[dict[str, object]]) -> 
     primary['service_units'] = sorted(
         {str(payload.get('service_unit')) for _, payload in selected if payload.get('service_unit')}
     )
+    primary['service_targets'] = [dict(name=payload['service_unit'], scope=payload.get('service_scope', 'system'))
+                                  for _, payload in selected if payload.get('service_unit')]
     return primary
 
 def _detect_default_url_path(path: Path) -> str:

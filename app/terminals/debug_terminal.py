@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import fcntl
 import json
 import os
@@ -138,24 +139,30 @@ class _DebugTerminalRuntime:
             self._finalize(self.process.poll())
 
     def _read_loop(self) -> None:
+        # A PTY read can split any UTF-8 code point; retain bytes per session.
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
         while True:
             master_fd = self._master_fd
             if master_fd is None:
-                return
-
+                break
             try:
                 data = os.read(master_fd, 4096)
+            except InterruptedError:
+                continue
             except OSError:
-                return
-
+                break
             if not data:
-                return
+                break
+            self._append_output(decoder.decode(data))
+        self._append_output(decoder.decode(b'', final=True))
 
-            text = data.decode('utf-8', errors='replace')
-            with self._io_lock:
-                with Path(self.session.output_log_path).open('a', encoding='utf-8') as fh:
-                    fh.write(text)
-                self._broadcast(text)
+    def _append_output(self, text: str) -> None:
+        if not text:
+            return
+        with self._io_lock:
+            with Path(self.session.output_log_path).open('a', encoding='utf-8') as fh:
+                fh.write(text)
+            self._broadcast(text)
 
     def _wait_loop(self) -> None:
         exit_code = self.process.wait()
