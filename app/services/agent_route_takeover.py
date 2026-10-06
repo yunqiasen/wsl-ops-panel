@@ -10,6 +10,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.services.agent_native_lock import exclusive_file_lock
 from app.services.agent_paths import resolve_agent_paths
 
 from app.services.agent_clients import get_agent_client
@@ -20,7 +21,11 @@ class RouteTakeoverError(ValueError):
 
 
 class AgentRouteTakeover:
-    """Apply and restore one client's local Router endpoint transactionally."""
+    """Apply/restore native files and the shared recovery journal under one lock.
+
+    Lock order: controller lifecycle -> native client -> recovery journal.
+    Journal operations never acquire either outer lock.
+    """
 
     def __init__(
         self,
@@ -37,6 +42,10 @@ class AgentRouteTakeover:
         self.state_path = self.state_root / "route-takeover.json"
 
     def enable(self, client_id: str, route_url: str) -> dict[str, Any]:
+        with exclusive_file_lock(self.state_root / ".route-takeover.lock"):
+            return self._enable(client_id, route_url)
+
+    def _enable(self, client_id: str, route_url: str) -> dict[str, Any]:
         client = get_agent_client(client_id)
         if client is None or "route" not in client.write_support:
             raise RouteTakeoverError(f"unsupported route takeover client: {client_id}")
@@ -81,6 +90,10 @@ class AgentRouteTakeover:
         }
 
     def disable(self, client_id: str) -> dict[str, Any]:
+        with exclusive_file_lock(self.state_root / ".route-takeover.lock"):
+            return self._disable(client_id)
+
+    def _disable(self, client_id: str) -> dict[str, Any]:
         records = self._read_state()
         record = records.get(client_id)
         if not isinstance(record, dict):
@@ -120,6 +133,10 @@ class AgentRouteTakeover:
         }
 
     def status(self) -> dict[str, dict[str, Any]]:
+        with exclusive_file_lock(self.state_root / ".route-takeover.lock"):
+            return self._status()
+
+    def _status(self) -> dict[str, dict[str, Any]]:
         records = self._read_state()
         result: dict[str, dict[str, Any]] = {}
         for client_id, record in records.items():

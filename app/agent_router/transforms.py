@@ -889,7 +889,10 @@ def _chat_to_anthropic_response(body: dict[str, Any]) -> dict[str, Any]:
             }
         )
     finish = choice.get("finish_reason")
-    stop_reason = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use"}.get(finish, finish)
+    stop_reason = {
+        "stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use",
+        "content_filter": "refusal",
+    }.get(finish, finish)
     usage = body.get("usage") or {}
     result: dict[str, Any] = {
         "id": body.get("id"),
@@ -951,33 +954,39 @@ def _anthropic_to_chat_response(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _responses_to_chat_response(body: dict[str, Any]) -> dict[str, Any]:
-    messages: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
     for item in body.get("output") or []:
         if not isinstance(item, dict):
             continue
         if item.get("type") == "message":
-            text = _text_content(item.get("content"))
-            message: dict[str, Any] = {"role": item.get("role", "assistant"), "content": text}
-            messages.append(message)
+            text_parts.append(_text_content(item.get("content")))
         elif item.get("type") == "function_call":
-            messages.append(
+            tool_calls.append(
                 {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": item.get("call_id") or item.get("id"),
-                            "type": "function",
-                            "function": {
-                                "name": item.get("name"),
-                                "arguments": item.get("arguments", "{}"),
-                            },
-                        }
-                    ],
+                    "id": item.get("call_id") or item.get("id"),
+                    "type": "function",
+                    "function": {
+                        "name": item.get("name"),
+                        "arguments": item.get("arguments", "{}"),
+                    },
                 }
             )
-    if not messages and body.get("output_text") is not None:
-        messages = [{"role": "assistant", "content": body.get("output_text") or ""}]
+    if not text_parts and body.get("output_text") is not None:
+        text_parts.append(str(body.get("output_text") or ""))
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "\n".join(text_parts) if text_parts else None if tool_calls else "",
+    }
+    finish = _responses_status_to_finish(body.get("status"))
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+        if body.get("status") in (None, "completed"):
+            finish = "tool_calls"
+    if body.get("status") == "incomplete":
+        details = body.get("incomplete_details") or {}
+        if details.get("reason") == "content_filter":
+            finish = "content_filter"
     usage = body.get("usage") or {}
     return {
         "id": body.get("id"),
@@ -986,8 +995,8 @@ def _responses_to_chat_response(body: dict[str, Any]) -> dict[str, Any]:
         "choices": [
             {
                 "index": 0,
-                "message": messages[0] if messages else {"role": "assistant", "content": ""},
-                "finish_reason": _responses_status_to_finish(body.get("status")),
+                "message": message,
+                "finish_reason": finish,
             }
         ],
         "usage": {

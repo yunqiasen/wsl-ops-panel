@@ -14,6 +14,7 @@ from app.services.agent_clients import AGENT_CLIENTS
 from app.services.agent_provider_adapters import (
     ADDITIVE_PROVIDER_APPS,
     EXCLUSIVE_PROVIDER_APPS,
+    PROVIDER_RESOURCE_SECTIONS,
     build_provider_form,
     read_provider_records,
     summarize_provider,
@@ -1045,7 +1046,7 @@ def _default_icon_color(app_id: str) -> str | None:
 
 
 def _provider_snapshot_helpers() -> str:
-    """Helpers for native TOML/YAML snapshots when credentials are excluded."""
+    """Native snapshots preserve independent target resources and credential policy."""
     return r"""
 def snapshot_secret_key(key):
     lowered = str(key).lower()
@@ -1114,9 +1115,13 @@ def merge_snapshot_values(incoming, existing):
 
 def toml_key(value):
     raw = str(value)
-    return raw if raw.replace('-', '').replace('_', '').isalnum() else json.dumps(raw, ensure_ascii=False)
+    import re
+    return raw if re.fullmatch(r'[A-Za-z0-9_-]+', raw) else json.dumps(raw, ensure_ascii=False)
 
 def toml_scalar(value):
+    import datetime
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
     if isinstance(value, bool):
         return 'true' if value else 'false'
     if isinstance(value, (int, float)):
@@ -1143,25 +1148,28 @@ def toml_dump_table(table, prefix=()):
         lines.extend(toml_dump_table(value, (*prefix, str(key))).splitlines())
     return '\n'.join(lines)
 
-def apply_grok_snapshot(path, incoming_text, write_secrets):
+def preserve_target_resources(incoming, existing):
+    # Provider snapshots never own MCP install/uninstall intent, even legacy ones.
+    result = copy.deepcopy(incoming)
+    for key in resource_sections:
+        result.pop(key, None)
+        if key in existing:
+            result[key] = copy.deepcopy(existing[key])
+    return result
+
+def apply_toml_snapshot(path, incoming_text, write_secrets):
     import tomllib
     try:
         incoming = tomllib.loads(str(incoming_text or ''))
+        existing = tomllib.loads(path.read_text(encoding='utf-8') or '') if path.exists() else {}
     except tomllib.TOMLDecodeError as exc:
-        raise SystemExit('Grok Build snapshot TOML parse failed: %s' % exc) from exc
-    if not isinstance(incoming, dict):
-        raise SystemExit('Grok Build snapshot must be a TOML table')
-    if write_secrets:
-        rendered = str(incoming_text or '')
-    else:
-        existing = {}
-        if path.exists():
-            try:
-                loaded = tomllib.loads(path.read_text(encoding='utf-8') or '')
-                existing = loaded if isinstance(loaded, dict) else {}
-            except tomllib.TOMLDecodeError as exc:
-                raise SystemExit('existing Grok Build config TOML parse failed: %s' % exc) from exc
-        rendered = toml_dump_table(merge_snapshot_values(incoming, existing)).rstrip() + '\n'
+        raise SystemExit('%s snapshot/target TOML parse failed: %s' % (app_id, exc)) from exc
+    config = incoming
+    if not write_secrets:
+        merge = merge_snapshot_values if app_id == 'grokbuild' else merge_preserving_existing_secrets
+        config = merge(incoming, existing)
+    config = preserve_target_resources(config, existing)
+    rendered = str(incoming_text or '') if config == incoming else toml_dump_table(config).rstrip() + '\n'
     tomllib.loads(rendered or '')
     write_text(path, rendered)
 
@@ -1191,6 +1199,7 @@ payload = json.loads(base64.b64decode({encoded_payload!r}).decode('utf-8'))
 provider = payload.get('provider') or {{}}
 write_secrets = bool(payload.get('write_secrets'))
 app_id = provider.get('app_id')
+resource_sections = {PROVIDER_RESOURCE_SECTIONS!r}.get(app_id, set())
 settings = provider.get('settings_config') or {{}}
 routing = settings.get('routing') or {{}}
 home = pathlib.Path.home()
@@ -1308,6 +1317,9 @@ def without_secrets(value, key_hint=''):
 
 def is_secret_key(key):
     lowered = str(key).lower()
+    # Native auth switches and environment variable names contain no credential.
+    if app_id == 'codex' and lowered in ('requires_openai_auth', 'bearer_token_env_var'):
+        return False
     return any(marker in lowered for marker in secret_markers)
 
 def merge_preserving_existing_secrets(incoming, existing):
@@ -1575,7 +1587,7 @@ def hermes_apply_routing(path, provider, settings, routing, write_secrets):
 
 if app_id == 'codex':
     if 'config' in settings:
-        write_text(client_config('codex', 'config.toml'), settings.get('config') or '')
+        apply_toml_snapshot(client_config('codex', 'config.toml'), settings.get('config') or '', write_secrets)
     else:
         path = client_config('codex', 'config.toml')
         config_text = path.read_text(encoding='utf-8') if path.exists() else ''
@@ -1625,6 +1637,7 @@ elif app_id == 'gemini':
     if isinstance(native_config, dict):
         current = read_json(settings_path)
         gemini_settings = native_config if write_secrets else merge_preserving_existing_secrets(native_config, current)
+        gemini_settings = preserve_target_resources(gemini_settings, current)
         write_json(settings_path, gemini_settings)
     native_env = settings.get('env')
     if isinstance(native_env, dict):
@@ -1698,7 +1711,7 @@ elif app_id == 'openclaw':
 elif app_id == 'grokbuild':
     path = client_config('grokbuild', 'config.toml')
     if 'config' in settings:
-        apply_grok_snapshot(path, settings.get('config') or '', write_secrets)
+        apply_toml_snapshot(path, settings.get('config') or '', write_secrets)
     else:
         backup(path)
         grok_apply_routing(path, provider, settings, routing, write_secrets)

@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import httpx
 
-from app.services.agent_native_lock import native_client_lock
+from app.services.agent_native_lock import exclusive_file_lock, native_client_lock
 from app.services.agent_route_takeover import AgentRouteTakeover
 from app.services.agent_router_config import AgentRouterConfigStore
 
@@ -53,13 +53,17 @@ class AgentRouterController:
         return self._lifecycle("restart")
 
     def stop(self, *, restore_clients: bool = False) -> dict[str, Any]:
+        with exclusive_file_lock(self.store.data_root / ".router-control.lock"):
+            return self._stop(restore_clients=restore_clients)
+
+    def _stop(self, *, restore_clients: bool) -> dict[str, Any]:
         active = sorted(self.takeover.status())
         if active and not restore_clients:
             raise ActiveTakeoverError(active)
         restored: list[str] = []
         if restore_clients:
             for client_id in active:
-                self.disable_takeover(client_id)
+                self._disable_takeover(client_id)
                 restored.append(client_id)
         result = self._lifecycle("stop")
         result["restored_clients"] = restored
@@ -99,6 +103,11 @@ class AgentRouterController:
         }
 
     def enable_takeover(self, client_id: str) -> dict[str, Any]:
+        # Cover the DB flag as well as the journal across controller instances.
+        with exclusive_file_lock(self.store.data_root / ".router-control.lock"):
+            return self._enable_takeover(client_id)
+
+    def _enable_takeover(self, client_id: str) -> dict[str, Any]:
         with native_client_lock(self.store.data_root, client_id):
             health = self._health_probe()
             if str(health.get("status") or "") != "ok":
@@ -114,6 +123,10 @@ class AgentRouterController:
             return {"takeover": self.takeover.status(), "result": result}
 
     def disable_takeover(self, client_id: str) -> dict[str, Any]:
+        with exclusive_file_lock(self.store.data_root / ".router-control.lock"):
+            return self._disable_takeover(client_id)
+
+    def _disable_takeover(self, client_id: str) -> dict[str, Any]:
         with native_client_lock(self.store.data_root, client_id):
             result = self.takeover.disable(client_id)
             self.store.set_takeover(client_id, False)

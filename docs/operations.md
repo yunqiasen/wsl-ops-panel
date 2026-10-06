@@ -454,3 +454,10 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 ### ABCD 本地加载结果
 
 代码 `5a1cffe` 已加载：面板与 Router 受控重启，本机/Tailscale 健康检查通过；正式浏览器验证 5 个实际检测到的客户端，页面无 JavaScript 错误。37 个业务容器、原生客户端配置和 Provider/Router 数据前后不变。[验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/abcd-verification-20261005.md)。
+
+## 2026-10-05：Agent 后续三类缺陷
+
+- Provider 快照写入保留目标客户端当前 MCP，不复活旧快照里的 MCP；覆盖 Codex / Gemini / Grok Build，异步激活和 Profile 同步均验证。关闭 Provider 密钥写入不改变 MCP 自身凭证。
+- 非流式 Responses 转 Chat 聚合全部文本和工具，保留调用身份与结束原因；该中间转换也服务于 Anthropic/Gemini 输出。
+- Router 共享恢复 journal 的完整事务使用跨线程/进程文件锁；Controller 同时串行化接管标记与停止恢复。锁顺序：控制锁 → 客户端锁 → journal 锁。
+- 隔离初验全量 **729 项**、专项 **68 项**、前端 **45 项**和 Chromium **8 类**交互通过。2026-10-06 门禁确认后完成双轴审查，并补修 Anthropic 非流式结束标记兼容问题；提交与正式加载结果另记。[修复与验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/remaining-fixes-verification-20261005.md)。
