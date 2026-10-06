@@ -21,7 +21,7 @@
 - [x] 系统扫描：每条命令 10 秒超时，单工具异常不丢失其他工具；动作使用固定键而非显示名称。
 - [x] 文档：11 模块职责、当前能力及兼容性说明与代码对齐。
 - [x] 全量回归、前端回归、Ruff、diff 检查及原始场景复验。
-- [x] 用户已确认并完成一次 `code-review`；有效发现已补修并复验，按本轮授权提交；本地加载另行确认。
+- [x] 用户已确认并完成一次 `code-review`；有效发现已补修并复验，按本轮授权提交；后续本地加载已获批准并完成，见文末验收记录。
 
 ## 诊断过程
 
@@ -76,4 +76,4 @@
 
 最终隔离全量 **832 passed，74.29s**；前端 **45 passed**；原始场景当前执行路径 **8 passed**；Ruff、JS 语法、diff 检查通过。较审查前增加 8 条回归。Windows 只验证生成脚本，未计为真机运行。
 
-[双轴审查及交付门禁](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-all-modules-20261006.md)。本轮提交范围不含用户原有通知配置及未跟踪材料；无 push、重启或本地加载。
+[双轴审查及交付门禁](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-all-modules-20261006.md)。本轮提交范围不含用户原有通知配置及未跟踪材料。后续用户已明确批准推送和加载，均已完成：[正式验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/all-modules-load-verification-20261006.md)。

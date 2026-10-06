@@ -463,7 +463,7 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 
 代码 `da8cc31` 已提交并通过受控短重启加载；暂存区独立快照 **731 项**、前端 **45 项**通过。本机/Tailscale/Router 健康正常，正式浏览器验证 5 个实际客户端、无页面错误；**38 个业务容器、客户端原生配置及 Provider/Router 数据保持不变**。未推送。[验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/remaining-verification-20261006.md)。
 
-## 2026-10-06：全模块审查修复（审查补修完成、尚未加载）
+## 2026-10-06：全模块审查修复（已推送并完成本地加载）
 
 - **Host**：固定端口表只作说明。运行项来自进程开始时间、cgroup 和 Docker inspect；执行前重新确认监听地址、端口、PID 及目标。Docker 回到已有生命周期检查，systemd 按真实作用域操作；独立进程使用内核进程句柄，避免 PID 重用。当前独立 Python 缺少 `pidfd` 封装时通过 libc 兼容。归属不完整的 docker-proxy、容器 cgroup、其他 UID 的用户服务仅观察，不直接发送进程信号。已停止监听仍会离开列表，不新增停止项历史。
 - **Project**：自动发现编号始终包含规范路径摘要，不再随同名项目增减变化。显式注册编号不变；旧自动发现链接需刷新，旧编号/删除标记不模糊迁移。过期 Project/Host 卡片不从缓存恢复为操作对象。启动条件只认可实际运行项；保留每个 unit 的 user/system 作用域。
@@ -473,6 +473,8 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 - **任务/终端**：任务页只取最近 120 条，状态计数覆盖全库；每份日志按字节限额取末尾再解码。PTY 按每个会话持续解码 UTF-8，再落盘和广播，保留跨块的中文与 emoji。
 - **系统/页面说明**：系统扫描每条命令 10 秒上限，一项出错不影响其他项，动作按固定键而非显示名分发。设置重载不等于代码热加载；草稿与扫描不等于应用；手动终端命令不计入队列。11 模块职责见 README。
 
-本节描述工作区代码行为，不代表正式服务已升级。原始复现、兼容性说明和验收结果：[全模块修复记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/superpowers/plans/2026-10-06-all-module-repair.md)。
+本节代码 `1cc3a2b` 已于用户批准后推送并完成面板短重启加载；Router 和业务容器未重启。原始复现、兼容性说明和验收结果：[全模块修复记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/superpowers/plans/2026-10-06-all-module-repair.md)。
 
 正式审查及补修详情：[双轴审查记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-all-modules-20261006.md)。
+
+加载验收：隔离 **832 项**、前端 **45 项**通过；本机/Tailscale/Router 健康均 200，11 模块正式页面正常，38 个业务容器及配置保持不变。[推送与加载记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/all-modules-load-verification-20261006.md)。
