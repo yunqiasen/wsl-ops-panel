@@ -461,3 +461,7 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 - 非流式 Responses 转 Chat 聚合全部文本和工具，保留调用身份与结束原因；该中间转换也服务于 Anthropic/Gemini 输出。
 - Router 共享恢复 journal 的完整事务使用跨线程/进程文件锁；Controller 同时串行化接管标记与停止恢复。锁顺序：控制锁 → 客户端锁 → journal 锁。
 - 隔离初验全量 **729 项**、专项 **68 项**、前端 **45 项**和 Chromium **8 类**交互通过。2026-10-06 门禁确认后完成双轴审查，并补修 Anthropic 非流式结束标记兼容问题；提交与正式加载结果另记。[修复与验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/remaining-fixes-verification-20261005.md)。
+
+### 后续修复本地加载结果（2026-10-06）
+
+代码 `da8cc31` 已提交并通过受控短重启加载；暂存区独立快照 **731 项**、前端 **45 项**通过。本机/Tailscale/Router 健康正常，正式浏览器验证 5 个实际客户端、无页面错误；**38 个业务容器、客户端原生配置及 Provider/Router 数据保持不变**。未推送。[验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/remaining-verification-20261006.md)。
