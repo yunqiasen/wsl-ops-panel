@@ -29,6 +29,10 @@
     states.set(element.dataset.cfObject, status);
     element.dataset.cfStatus = status.state;
     element.querySelector('[data-cf-state]').textContent = labels[status.state] || '待核验';
+    const managementLabel = {external: '外部管理', external_hint: '外部线索'}[status.management] || '';
+    const management = element.querySelector('[data-cf-management]');
+    management.hidden = !managementLabel;
+    management.textContent = managementLabel + (managementLabel && status.reason ? `：${status.reason}` : '');
     const url = currentUrl(status);
     const link = element.querySelector('[data-cf-url]');
     link.textContent = url;

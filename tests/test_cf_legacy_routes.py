@@ -148,3 +148,30 @@ def test_explicit_close_of_an_unrecorded_old_unit_does_not_start_or_probe_the_so
         assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_script_only_clues_are_shown_without_enqueuing_the_foreground_script(
+    tmp_path, monkeypatch
+):
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    runtime = FakeTunnelRuntime()
+    panel.app.state.cf_service.runtime = runtime
+    panel.app.state.cf_service.legacy_unit_roots = []
+    script = panel.project / "scripts/cftunnel-start.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\necho foreground-script-fixture\n")
+    status = panel.client.get("/api/assets/web/cf").json()
+    assert status["management"] == "external_hint"
+    assert status["capable"] is False
+    assert status["current_url"] is None
+    assert panel.client.get("/api/assets/web/cf/targets").status_code == 400
+    result = panel.client.post("/api/bulk/actions/cf-create", json={"asset_ids": ["web"]}).json()
+    assert result["queued_count"] == 0
+    assert panel.store.list_all() == []
+    assert runtime.resources == {}
+    assert observed.requests == []
+    page = panel.client.get("/categories/docker")
+    assert page.status_code == 200
+    assert "外部线索" in page.text
+    assert "缺少可核验 systemd 管理对象" in page.text

@@ -1,7 +1,9 @@
 {% set cf = asset.metadata.cf %}
+{% set cf_management = {'external': '外部管理', 'external_hint': '外部线索'}.get(cf.management, '') %}
 {% set cf_labels = {'off': '已关闭', 'starting': '开启中', 'online': '在线', 'stopping': '关闭中', 'error': '异常'} %}
 <section class="cf-access" data-cf-object="{{ asset.object_id }}" data-cf-status="{{ cf.state }}" aria-label="CF 公网访问">
   <div class="cf-access__heading"><span>CF 访问</span><strong data-cf-state aria-live="polite">{{ cf_labels.get(cf.state, '待核验') }}</strong></div>
+  <small data-cf-management{% if not cf_management %} hidden{% endif %}>{{ cf_management }}{% if cf_management and cf.reason %}：{{ cf.reason }}{% endif %}</small>
   <div class="cf-access__link">
     <a data-cf-url{% if cf.current_url %} href="{{ cf.current_url }}"{% else %} hidden{% endif %} target="_blank" rel="noreferrer">{{ cf.current_url or '' }}</a>
     <button type="button" class="ghost-button compact-button" data-cf-copy{% if not cf.current_url %} disabled{% endif %}>复制网址</button>
