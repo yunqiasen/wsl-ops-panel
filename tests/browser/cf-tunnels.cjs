@@ -16,6 +16,12 @@ const { chromium } = require('playwright');
     // Version discovery is unrelated to CF; prevent registry network calls.
     await page.route('**/versions', route => route.fulfill({status: 200, contentType: 'application/json', body: '{"versions":[],"source_status":"unsupported"}'}));
     await page.goto(`${base}/categories/docker`);
+    const observer = await context.newPage();
+    observer.setDefaultTimeout(5000);
+    observer.on('pageerror', error => errors.push(error.message));
+    await observer.route('**/versions', route => route.fulfill({status: 200, contentType: 'application/json', body: '{"versions":[],"source_status":"unsupported"}'}));
+    await observer.goto(`${base}/categories/docker`);
+    await page.bringToFront();
     const card = page.locator('[data-asset-id="web"]');
     assert.match(await card.locator('[data-cf-state]').textContent(), /已关闭/);
     await card.locator('[data-asset-select]').click();
@@ -27,6 +33,7 @@ const { chromium } = require('playwright');
       await page.keyboard.press('Escape');
       await dialog.waitFor({state: 'hidden'});
       assert.match(await card.locator('[data-cf-state]').textContent(), /已关闭/);
+      await page.waitForFunction(() => document.activeElement?.dataset.bulkAction === 'cf-create');
       await page.getByRole('button', {name: '开启 CF', exact: true}).click();
       await dialog.waitFor({state: 'visible'});
       await page.setViewportSize({width: 390, height: 844});
@@ -43,6 +50,9 @@ const { chromium } = require('playwright');
       await page.setViewportSize({width: 1320, height: 1000});
     }
     await page.waitForFunction(() => document.querySelector('[data-cf-state]')?.textContent === '在线');
+    await observer.bringToFront();
+    await observer.waitForFunction(() => document.querySelector('[data-cf-state]')?.textContent === '在线', null, {timeout: 5000});
+    await page.bringToFront();
     const link = card.locator('[data-cf-url]');
     assert.equal(await link.getAttribute('href'), 'https://business-fixture.trycloudflare.com/');
     await card.getByRole('button', {name: '复制网址'}).click();
@@ -63,6 +73,6 @@ const { chromium } = require('playwright');
     await page.setViewportSize({width: 390, height: 844});
     if (desktop) await page.screenshot({path: path.join(desktop, 'cf-mobile.png'), fullPage: true});
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({onOffOn: true, clipboard: true, pageErrors: errors}));
+    console.log(JSON.stringify({onOffOn: true, clipboard: true, crossPage: true, pageErrors: errors}));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

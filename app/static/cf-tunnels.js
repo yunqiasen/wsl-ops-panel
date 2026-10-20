@@ -3,6 +3,7 @@
   'use strict';
   const labels = {off: '已关闭', starting: '开启中', online: '在线', stopping: '关闭中', error: '异常'};
   const states = new Map();
+  const refreshSequences = new Map();
 
   function currentUrl(status) {
     if (status.state !== 'online' || !status.current_url) return '';
@@ -14,7 +15,7 @@
   }
 
   async function request(endpoint, options = {}) {
-    const response = await fetch(endpoint, {...options, headers: {Accept: 'application/json', ...options.headers}});
+    const response = await fetch(endpoint, {signal: AbortSignal.timeout(20000), ...options, headers: {Accept: 'application/json', ...options.headers}});
     if (response.status === 401) {
       window.location.assign('/login');
       throw new Error('登录已过期');
@@ -49,6 +50,7 @@
       elements.forEach(element => render(element, status));
       return status;
     } catch (error) {
+      if (sequence !== refreshSequences.get(id)) return null;
       const status = {...states.get(id), state: 'error', current_url: null, error: {stage: 'status', message: error.message}};
       elements.forEach(element => render(element, status));
       return null;
@@ -160,7 +162,12 @@
       });
     }
     async function poll() {
-      if (!document.hidden) await Promise.all([...states].filter(([, status]) => status.state !== 'off').map(([id]) => refresh(id)));
+      if (!document.hidden) {
+        const pending = [...states.keys()];
+        await Promise.all(Array.from({length: Math.min(4, pending.length)}, async () => {
+          while (pending.length) await refresh(pending.shift());
+        }));
+      }
       if (elements.length) window.setTimeout(poll, 2000);
     }
     if (elements.length) window.setTimeout(poll, 2000);
