@@ -468,7 +468,14 @@ class CFTunnelService:
 
     def _cleanup_record(self, key, record, error):
         handle = record.get("handle")
-        if handle:
+        clean = bool(handle) and handle.get("kind") != "legacy"
+        if handle and error.stage == "persistence":
+            clean = record.get("desired") == "off" or (
+                handle.get("token") == record.get("last_task_id")
+                and (handle.get("kind") != "legacy" or handle.get("started_by_panel"))
+            )
+        # Background source maintenance withdraws external URLs, not external units.
+        if handle and clean:
             try:
                 self._runtime_for(handle).stop(handle, timeout=15)
                 handle = None
@@ -648,6 +655,7 @@ class CFTunnelService:
                     raise
             self.store.update(key, state="starting", current_url=None, error=None)
             handle = None
+            created = False
             try:
                 targets = self.prepare(operation.asset)["targets"]
                 target = next(
@@ -700,6 +708,9 @@ class CFTunnelService:
                         target["origin"],
                         timeout=budget(total_deadline, 10),
                         **({"legacy": operation.legacy} if operation.legacy else {}),
+                    )
+                    created = handle.get("kind") != "legacy" or handle.get(
+                        "started_by_panel", False
                     )
                 self.store.update(
                     key,
@@ -772,14 +783,20 @@ class CFTunnelService:
                     if isinstance(exc, CFError)
                     else CFError("runtime", f"CF 执行失败 ({type(exc).__name__})")
                 )
-                handle = handle or getattr(exc, "handle", None)
+                attached = getattr(exc, "handle", None)
+                if attached:
+                    created = attached.get("kind") != "legacy" or attached.get(
+                        "started_by_panel", False
+                    )
+                handle = handle or attached
                 cleanup = {}
                 if handle:
-                    try:
-                        self._runtime_for(handle).stop(handle)
-                        handle = None
-                    except Exception:
-                        error = CFError("cleanup", f"{error}；隧道仍待清理")
+                    if created:
+                        try:
+                            self._runtime_for(handle).stop(handle)
+                            handle = None
+                        except Exception:
+                            error = CFError("cleanup", f"{error}；隧道仍待清理")
                     cleanup["handle"] = handle
                 self.store.update(
                     key,

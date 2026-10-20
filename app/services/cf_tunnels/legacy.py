@@ -594,6 +594,7 @@ class LegacyTunnelRuntime:
                     "fragment_path": fragment_path,
                     "project_dir": project_dir,
                     "origin": origin,
+                    "started_by_panel": False,
                 }
 
         # Start the unit.
@@ -639,6 +640,7 @@ class LegacyTunnelRuntime:
             "fragment_path": fragment_path,
             "project_dir": project_dir,
             "origin": origin,
+            "started_by_panel": True,
         }
 
     def observe(self, handle: dict, *, timeout: float = 5) -> dict:

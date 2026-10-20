@@ -81,3 +81,50 @@ def test_explicit_old_unit_is_verified_and_controlled_without_creating_a_duplica
         assert panel.containers[0].state == "running"
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_failed_verification_leaves_an_already_external_tunnel_running(
+    tmp_path, monkeypatch
+):
+    import httpx
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch)
+    service = panel.app.state.cf_service
+    service.public_timeout = 0.01
+    service.http_transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            503 if request.url.host.endswith("trycloudflare.com") else 200,
+            text="fixture",
+        )
+    )
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        assert legacy.info["ActiveState"] == "active"
+        assert panel.client.get("/api/assets/web/cf").json()["current_url"] is None
+        assert service.runtime.resources == {}
+    finally:
+        panel.app.state.task_worker.stop()
+
+
+def test_source_maintenance_withdraws_an_external_url_without_implicitly_stopping_its_unit(
+    tmp_path, monkeypatch
+):
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch)
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        observed.info["running"] = False
+        panel.app.state.cf_service.maintain()
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["current_url"] is None
+        assert legacy.info["ActiveState"] == "active"
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        assert legacy.info["ActiveState"] == "inactive"
+    finally:
+        panel.app.state.task_worker.stop()
