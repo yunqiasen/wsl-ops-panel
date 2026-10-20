@@ -21,6 +21,9 @@ def restore_app(panel):
     old = panel.app.state.cf_service
     fresh = CFTunnelService(old.data_root)
     fresh.runtime = old.runtime
+    fresh.legacy_runtime = old.legacy_runtime
+    fresh.legacy_unit_roots = old.legacy_unit_roots
+    fresh.proc_root = old.proc_root
     fresh.http_transport = old.http_transport
     fresh.clock = old.clock
     app = create_app(
@@ -191,3 +194,57 @@ def test_restart_reclaims_a_launch_interrupted_before_its_handle_was_returned(
         assert status["current_url"] is None
         assert manager.info["ActiveState"] == "inactive"
         assert panel.store.get(task.id).status == "interrupted"
+
+
+def test_interrupted_old_unit_registration_remains_external_pending_explicit_retry(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    from types import SimpleNamespace
+    from app.services.cf_tunnels.runtime import SystemdTunnelRuntime
+    from tests.test_cf_legacy_routes import attach_legacy
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch, active=False)
+    service = panel.app.state.cf_service
+    service.runtime = SystemdTunnelRuntime(tmp_path / "owned-cf")
+    (service.legacy_runtime.proc_root / "sys/kernel/random/boot_id").write_text(
+        service.runtime.boot_id
+    )
+    original = legacy.unit.read_bytes()
+    external_run = subprocess.run
+
+    def crash_after_start(command, **kwargs):
+        result = external_run(command, **kwargs)
+        if "systemctl" in command and "start" in command:
+            raise SystemExit("fixture executor interrupted before registration")
+        return result
+
+    monkeypatch.setattr(subprocess, "run", crash_after_start)
+    result = panel.client.post("/api/bulk/actions/cf-create", json={"asset_ids": ["web"]}).json()
+    task = panel.store.get(result["tasks"][0]["id"])
+    plan = panel.app.state.task_worker.load_plan(Path(task.plan_path))
+    with pytest.raises(SystemExit):
+        execute_action_plan(
+            task, plan, sink=panel.app.state.system_terminal_sink, store=panel.store,
+            cf_executor=service.execute,
+        )
+    assert legacy.info["ActiveState"] == "active"
+    observed.requests.clear()
+    app, client = restore_app(panel)
+    with client:
+        status = client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "legacy_recovery"
+        assert status["management"] == "external"
+        assert status["current_url"] is None
+        assert panel.store.get(task.id).status == "interrupted"
+        assert legacy.info["ActiveState"] == "active"
+        assert not any("stop" in command for command in legacy.commands)
+        assert observed.requests == []
+        resumed = SimpleNamespace(app=app, client=client, store=panel.store)
+        assert submit_cf(resumed, "cf-disable").status == "succeeded"
+        assert legacy.info["ActiveState"] == "inactive"
+        assert client.get("/api/assets/web/cf").json()["state"] == "off"
+    assert legacy.unit.read_bytes() == original

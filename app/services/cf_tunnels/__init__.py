@@ -265,6 +265,21 @@ class CFTunnelService:
                 history_url=record.get("current_url") or record.get("history_url"),
             )
         if record.get("launch_pending") and not self.store.pending(key):
+            if record.get("legacy"):
+                # Without the launch's InvocationID an external unit is not
+                # recoverable from our transient namespace. Leave its process
+                # alone and retain the explicit close/retry association.
+                return self.store.update(
+                    key,
+                    state="error",
+                    current_url=None,
+                    handle=None,
+                    launch_pending=False,
+                    error=CFError(
+                        "legacy_recovery",
+                        "旧隧道启动登记中断，实际资源待核对；请重试开启或关闭",
+                    ).as_dict(),
+                )
             try:
                 handle = self.runtime.recover(key, record["active_generation"])
                 record = self.store.update(key, handle=handle, launch_pending=False)
