@@ -19,7 +19,7 @@ from app.services.cf_tunnels.processes import listeners
 
 _DOCKER_FIELDS = (
     '{"id":{{json .Id}},"name":{{json .Name}},"running":{{json .State.Running}},'
-    '"started_at":{{json .State.StartedAt}},"network_mode":{{json .HostConfig.NetworkMode}},'
+    '"started_at":{{json .State.StartedAt}},"pid":{{json .State.Pid}},"network_mode":{{json .HostConfig.NetworkMode}},'
     '"ports":{{json .NetworkSettings.Ports}},"networks":{{json .NetworkSettings.Networks}},'
     '"labels":{{json .Config.Labels}}}'
 )
@@ -107,6 +107,7 @@ def prepare_targets(
                 expected_project=primary.compose_project,
                 deadline=deadline,
                 probe_timeout=probe_timeout,
+                proc_root=proc_root,
             )
             for target in found:
                 existing = next(
@@ -134,6 +135,7 @@ def _container_targets(
     expected_project: str | None,
     deadline: float,
     probe_timeout: float,
+    proc_root: Path,
 ) -> list[dict]:
     info = inspect_container(container.name, timeout=remaining(deadline, 5))
     labels = info.get("labels") or {}
@@ -149,6 +151,33 @@ def _container_targets(
         raise CFError("origin_identity", "容器归属已变化，请刷新项目后重试")
     if not info.get("running"):
         raise CFError("origin_probe", "项目容器尚未运行")
+    if info.get("network_mode") == "host":
+        processes = subprocess.run(
+            ["docker", "top", info["id"], "-eo", "pid"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=remaining(deadline, 5),
+        )
+        pids = {int(value) for value in processes.stdout.split() if value.isdecimal()}
+        if not info.get("pid") or info["pid"] not in pids:
+            raise CFError("origin_identity", "host 网络容器进程归属待确认")
+        result = []
+        for listener in listeners(proc_root, timeout=remaining(deadline, 5)):
+            if listener["pid"] not in pids:
+                continue
+            target = _listener_target(
+                listener,
+                transport,
+                key=key,
+                role=container.compose_service,
+                deadline=deadline,
+                probe_timeout=probe_timeout,
+                source="host_network",
+                instance=[info["id"], info.get("started_at")],
+            )
+            _merge_target(result, target)
+        return result
     targets = []
     failures = []
     for exposed, bindings in (info.get("ports") or {}).items():
@@ -219,55 +248,67 @@ def _project_targets(asset, transport, *, key, deadline, probe_timeout, proc_roo
     root = Path(asset.metadata["path"]).resolve(strict=True)
     targets = []
     for listener in listeners(proc_root, timeout=remaining(deadline, 5)):
-        cwd = Path(listener["cwd"])
-        if listener["owner_type"] == "unknown" or not cwd.is_relative_to(root):
+        if not listener["cwd"] or listener["owner_type"] == "unknown":
             continue
-        port = listener["port"]
-        host = ipaddress.ip_address(listener["address"].replace("*", "0.0.0.0"))
-        if host.is_unspecified:
-            host = ipaddress.ip_address("::1" if host.version == 6 else "127.0.0.1")
-        authority = f"[{host}]" if host.version == 6 else str(host)
-        origin = f"http://{authority}:{port}"
+        cwd = Path(listener["cwd"]).resolve()
+        if not cwd.is_relative_to(root):
+            continue
         role = (
             listener.get("unit")
             or f"{cwd.relative_to(root)}:{listener['process_name']}"
         )
-        target_id = digest([key, role, port, "http"])
-        existing = next((item for item in targets if item["id"] == target_id), None)
-        if existing and existing["reachable"]:
-            continue
-        try:
-            checked = probe(
-                transport, origin + "/", timeout=remaining(deadline, probe_timeout)
-            )
-        except (httpx.HTTPError, CFError) as exc:
-            checked = {
-                "reachable": False,
-                "status_code": None,
-                "fingerprint": None,
-                "reason": str(exc)
-                if isinstance(exc, CFError)
-                else f"项目入口读取失败 ({type(exc).__name__})",
-            }
-        target = {
-            "id": target_id,
-            "revision": digest(
-                [
-                    key,
-                    listener["pid"],
-                    listener["start_time"],
-                    root.stat().st_ino,
-                    origin,
-                ]
-            ),
-            "name": f"{role} · {port}/tcp",
-            "origin": origin,
-            "path": "/",
-            "source": "project_listener",
-            **checked,
-        }
-        if existing is None:
-            targets.append(target)
-        elif target["reachable"]:
-            targets[targets.index(existing)] = target
+        target = _listener_target(
+            listener,
+            transport,
+            key=key,
+            role=role,
+            deadline=deadline,
+            probe_timeout=probe_timeout,
+            source="project_listener",
+            instance=[root.stat().st_dev, root.stat().st_ino],
+        )
+        _merge_target(targets, target)
     return targets
+
+
+def _merge_target(targets, target):
+    existing = next((item for item in targets if item["id"] == target["id"]), None)
+    if existing is None:
+        targets.append(target)
+    elif not existing["reachable"] and target["reachable"]:
+        targets[targets.index(existing)] = target
+
+
+def _listener_target(
+    listener, transport, *, key, role, deadline, probe_timeout, source, instance
+):
+    port = listener["port"]
+    host = ipaddress.ip_address(listener["address"].replace("*", "0.0.0.0"))
+    if host.is_unspecified:
+        host = ipaddress.ip_address("::1" if host.version == 6 else "127.0.0.1")
+    authority = f"[{host}]" if host.version == 6 else str(host)
+    origin = f"http://{authority}:{port}"
+    try:
+        checked = probe(
+            transport, origin + "/", timeout=remaining(deadline, probe_timeout)
+        )
+    except (httpx.HTTPError, CFError) as exc:
+        checked = {
+            "reachable": False,
+            "status_code": None,
+            "fingerprint": None,
+            "reason": str(exc)
+            if isinstance(exc, CFError)
+            else f"项目入口读取失败 ({type(exc).__name__})",
+        }
+    return {
+        "id": digest([key, role, port, "http"]),
+        "revision": digest(
+            [key, listener["pid"], listener["start_time"], instance, origin]
+        ),
+        "name": f"{role} · {port}/tcp",
+        "origin": origin,
+        "path": "/",
+        "source": source,
+        **checked,
+    }

@@ -1,6 +1,7 @@
 """Bind project entries to current listening processes, never to saved port hints."""
 
 from pathlib import Path
+import os
 import re
 import subprocess
 
@@ -27,7 +28,10 @@ def listeners(proc_root: Path, *, timeout: float) -> list[dict]:
             if not identity:
                 continue
             try:
-                cwd = (proc_root / pid / "cwd").resolve(strict=True)
+                cwd = os.readlink(proc_root / pid / "cwd")
+            except OSError:
+                cwd = None
+            try:
                 cgroup = (proc_root / pid / "cgroup").read_text()
             except OSError:
                 continue
@@ -37,7 +41,7 @@ def listeners(proc_root: Path, *, timeout: float) -> list[dict]:
             result.append(
                 {
                     **identity,
-                    "cwd": str(cwd),
+                    "cwd": cwd,
                     "cgroup": cgroup,
                     "address": socket["local_address"],
                     "port": int(socket["port"]),

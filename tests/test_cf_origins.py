@@ -239,3 +239,52 @@ def test_project_uses_owned_listener_not_a_port_hint_and_rechecks_pid(
         assert current["pid"] == 3102
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_host_network_uses_only_listeners_of_current_container_processes(
+    tmp_path, monkeypatch
+):
+    import subprocess
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    observed.info.update(network_mode="host", ports={}, pid=4201)
+    service = panel.app.state.cf_service
+    service.proc_root = tmp_path / "proc"
+    for number, group in [
+        (4201, "docker-" + "a" * 64 + ".scope"),
+        (4202, "session.scope"),
+    ]:
+        pid = service.proc_root / str(number)
+        pid.mkdir(parents=True)
+        (pid / "stat").write_text(
+            f"{number} (python) " + " ".join(["S"] + ["0"] * 18 + ["101"])
+        )
+        (pid / "comm").write_text("python\n")
+        (pid / "cgroup").write_text(f"0::/{group}\n")
+        (pid / "cwd").symlink_to(panel.project)
+    original = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "ss":
+            text = "\n".join(
+                [
+                    'LISTEN 0 128 [::]:18282 [::]:* users:(("python",pid=4201,fd=3))',
+                    'LISTEN 0 128 127.0.0.1:8080 0.0.0.0:* users:(("python",pid=4202,fd=3))',
+                ]
+            )
+            return subprocess.CompletedProcess(command, 0, text, "")
+        if command[:2] == ["docker", "top"]:
+            assert command[2] == "a" * 64
+            return subprocess.CompletedProcess(command, 0, "PID\n4201\n", "")
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    response = panel.client.get("/api/assets/web/cf/targets")
+    assert response.status_code == 200, response.json()
+    targets = response.json()["targets"]
+    assert len(targets) == 1
+    assert targets[0]["source"] == "host_network"
+    assert targets[0]["origin"] == "http://[::1]:18282"
+    assert observed.requests == ["http://[::1]:18282/"]
+    assert not panel.store.list_all()
