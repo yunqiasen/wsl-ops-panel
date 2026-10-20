@@ -138,3 +138,33 @@ def test_maintenance_never_revives_a_failed_close_and_retries_only_its_cleanup(
         assert panel.containers[0].state == "running"
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_source_instance_changed_during_public_verification_is_not_published_online(
+    tmp_path, monkeypatch
+):
+    import httpx
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    service = panel.app.state.cf_service
+    runtime = FakeTunnelRuntime()
+    service.runtime = runtime
+
+    def replace_source(request):
+        if request.url.host.endswith("trycloudflare.com"):
+            observed.info["id"] = "b" * 64
+        return httpx.Response(200, text="same business page")
+
+    service.http_transport = httpx.MockTransport(replace_source)
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "origin_identity"
+        assert status["current_url"] is None
+        assert not any(resource["active"] for resource in runtime.resources.values())
+        assert panel.containers[0].state == "running"
+    finally:
+        panel.app.state.task_worker.stop()

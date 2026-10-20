@@ -540,13 +540,18 @@ class CFTunnelService:
             update={"metadata": metadata, "supports_actions": actions}
         )
 
-    def prepare(self, asset: AssetSnapshot) -> dict[str, object]:
+    def prepare(
+        self, asset: AssetSnapshot, *, timeout: float | None = None
+    ) -> dict[str, object]:
+        deadline = monotonic() + min(
+            self.prepare_timeout, self.prepare_timeout if timeout is None else timeout
+        )
         try:
             legacy = self._legacy(asset)
             prepared = prepare_targets(
                 asset,
                 self.http_transport,
-                timeout=self.prepare_timeout,
+                timeout=budget(deadline, self.prepare_timeout, stage="origin_probe"),
                 probe_timeout=self.probe_timeout,
                 proc_root=self.proc_root,
             )
@@ -591,6 +596,22 @@ class CFTunnelService:
                 if isinstance(exc, httpx.HTTPError)
                 else f"项目入口读取失败 ({type(exc).__name__})",
             ) from exc
+
+    def _revalidate_target(self, asset, expected, *, timeout):
+        targets = self.prepare(asset, timeout=timeout)["targets"]
+        target = next(
+            (
+                item
+                for item in targets
+                if item["reachable"]
+                and item["id"] == expected.get("id")
+                and item["revision"] == expected.get("revision")
+            ),
+            None,
+        )
+        if target is None:
+            raise CFError("origin_identity", "入口或运行实例已变化，请重新开启")
+        return target
 
     def enqueue(
         self,
@@ -682,20 +703,11 @@ class CFTunnelService:
             handle = None
             created = False
             try:
-                targets = self.prepare(operation.asset)["targets"]
-                target = next(
-                    (
-                        item
-                        for item in targets
-                        if item["reachable"]
-                        and operation.target
-                        and item["id"] == operation.target.id
-                        and item["revision"] == operation.target.revision
-                    ),
-                    None,
+                target = self._revalidate_target(
+                    operation.asset,
+                    operation.target.model_dump() if operation.target else {},
+                    timeout=budget(total_deadline, self.prepare_timeout),
                 )
-                if target is None:
-                    raise CFError("origin_identity", "入口或容器实例已变化，请重新开启")
                 existing = record.get("handle")
                 if (
                     existing
@@ -770,9 +782,20 @@ class CFTunnelService:
                                 checked["reachable"]
                                 and checked["fingerprint"] == target["fingerprint"]
                             ):
+                                target = self._revalidate_target(
+                                    operation.asset,
+                                    target,
+                                    timeout=budget(
+                                        total_deadline, self.prepare_timeout,
+                                        stage="origin_identity",
+                                    ),
+                                )
+                                if checked["fingerprint"] != target["fingerprint"]:
+                                    raise CFError("public_probe", "公网响应与当前项目不一致")
                                 self.store.update(
                                     key,
                                     state="online",
+                                    target=target,
                                     current_url=public,
                                     last_verified_at=datetime.fromtimestamp(
                                         self.clock(), UTC
