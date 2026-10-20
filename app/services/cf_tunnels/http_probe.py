@@ -2,6 +2,9 @@
 
 import asyncio
 import hashlib
+import re
+import socket
+import ssl
 
 import httpx
 
@@ -9,24 +12,40 @@ from app.services.cf_tunnels.models import CFError
 
 
 def http_error_message(error: httpx.HTTPError) -> str:
-    # Classify locally, but never echo a URL, credential, or response body.
-    detail = str(error).lower()
+    # Transport adapters retain the OS/TLS cause. Read its type, never report
+    # its text: that text can contain the request URL or credentials.
     if isinstance(error, httpx.TimeoutException):
         return "HTTP 网络访问超时"
-    if any(word in detail for word in ("certificate", "ssl", "tls")):
-        return "HTTPS 证书验证或 TLS 握手失败"
-    if any(
-        word in detail
-        for word in (
-            "name or service not known",
-            "name resolution",
-            "nodename nor servname",
-            "getaddrinfo",
-            "dns",
-        )
-    ):
-        return "DNS 解析失败"
+    pending = [error]
+    seen = set()
+    while pending:
+        cause = pending.pop()
+        if id(cause) in seen:
+            continue
+        seen.add(id(cause))
+        if isinstance(cause, ssl.SSLError):
+            return "HTTPS 证书验证或 TLS 握手失败"
+        if isinstance(cause, socket.gaierror):
+            return "DNS 解析失败"
+        parent = cause.__cause__ or cause.__context__
+        if parent is not None:
+            pending.append(parent)
+        if isinstance(cause, BaseExceptionGroup):
+            pending.extend(cause.exceptions)
     if isinstance(error, httpx.ConnectError):
+        # Some transports expose only a message. Accept specific resolver/TLS
+        # diagnostics, after excluding URLs; a hostname/path is not a layer.
+        detail = re.sub(r"\b[a-z][a-z0-9+.-]*://\S+", "", str(error).lower())
+        if any(word in detail for word in (
+            "certificate verify failed", "certificate verification failed",
+            "tls handshake failed", "ssl handshake failed",
+        )):
+            return "HTTPS 证书验证或 TLS 握手失败"
+        if any(word in detail for word in (
+            "name or service not known", "name resolution",
+            "nodename nor servname", "getaddrinfo failed",
+        )):
+            return "DNS 解析失败"
         return "TCP 连接失败"
     if isinstance(error, httpx.RemoteProtocolError):
         return "HTTP 协议响应无效"
