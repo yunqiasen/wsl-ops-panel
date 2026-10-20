@@ -543,6 +543,31 @@ class LegacyTunnelRuntime:
 
     # -- public API --------------------------------------------------------- #
 
+    def current_handle(self, owner, token, *, legacy, timeout=5):
+        """Capture an explicitly chosen old unit without ever starting it."""
+        info = self._show(legacy["unit"], legacy["scope"], timeout=timeout)
+        if (
+            info.get("LoadState") == "not-found"
+            or info.get("ActiveState") not in _ACTIVE_JOB_STATES
+        ):
+            return None
+        self._verify_unit(legacy, info)
+        if not info.get("InvocationID"):
+            raise CFError("legacy_identity", "旧隧道当前运行标识缺失")
+        return {
+            "kind": "legacy",
+            "owner": owner,
+            "token": token,
+            "unit": legacy["unit"],
+            "scope": legacy["scope"],
+            "boot_id": self.boot_id,
+            "invocation_id": info["InvocationID"],
+            "fragment_path": legacy["fragment_path"],
+            "project_dir": legacy["project_dir"],
+            "origin": legacy["origin"],
+            "started_by_panel": False,
+        }
+
     def start(
         self,
         owner: str,

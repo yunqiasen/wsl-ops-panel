@@ -443,6 +443,7 @@ class CFTunnelService:
                     )
 
     def _close_record(self, key, record):
+        deadline = monotonic() + 15
         self.store.update(
             key,
             state="stopping",
@@ -450,8 +451,19 @@ class CFTunnelService:
             history_url=record.get("current_url") or record.get("history_url"),
         )
         try:
-            if record.get("handle"):
-                self._runtime_for(record["handle"]).stop(record["handle"], timeout=15)
+            handle = record.get("handle")
+            if record.get("legacy") and (not handle or not handle.get("invocation_id")):
+                handle = self.legacy_runtime.current_handle(
+                    key,
+                    record["last_task_id"],
+                    legacy=record["legacy"],
+                    timeout=budget(deadline, stage="cleanup"),
+                )
+                self.store.update(key, handle=handle)
+            if handle:
+                self._runtime_for(handle).stop(
+                    handle, timeout=budget(deadline, 15, stage="cleanup")
+                )
             self.store.update(
                 key, state="off", handle=None, error=None, last_verified_at=None
             )

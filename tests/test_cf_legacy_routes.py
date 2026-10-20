@@ -128,3 +128,23 @@ def test_source_maintenance_withdraws_an_external_url_without_implicitly_stoppin
         assert legacy.info["ActiveState"] == "inactive"
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_explicit_close_of_an_unrecorded_old_unit_does_not_start_or_probe_the_source(
+    tmp_path, monkeypatch
+):
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch)
+    observed.info["running"] = False
+    observed.requests.clear()
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        assert legacy.info["ActiveState"] == "inactive"
+        assert not any("start" in command for command in legacy.commands)
+        assert observed.requests == []
+        assert panel.app.state.cf_service.runtime.resources == {}
+        assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
+    finally:
+        panel.app.state.task_worker.stop()
