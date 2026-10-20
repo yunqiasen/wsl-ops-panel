@@ -185,7 +185,7 @@ def _container_targets(
         if not exposed.endswith("/tcp"):
             continue
         source = "published_port"
-        if not isinstance(bindings, list):
+        if not bindings:
             source = "container_network"
             bindings = [
                 {"HostIp": network[field], "HostPort": exposed.split("/", 1)[0]}

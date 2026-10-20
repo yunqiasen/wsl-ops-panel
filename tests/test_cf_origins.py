@@ -1,5 +1,7 @@
 """Runtime-derived candidates and selections through authenticated project endpoints."""
 
+import pytest
+
 from tests.test_cf_tunnels import (
     FakeTunnelRuntime,
     attach_local_observation,
@@ -8,12 +10,13 @@ from tests.test_cf_tunnels import (
 )
 
 
+@pytest.mark.parametrize("bindings", [None, []])
 def test_unpublished_docker_port_uses_container_network_not_same_number_on_host(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, bindings
 ):
     panel = make_panel(tmp_path)
     observed = attach_local_observation(panel, monkeypatch)
-    observed.info["ports"] = {"8080/tcp": None}
+    observed.info["ports"] = {"8080/tcp": bindings}
     runtime = FakeTunnelRuntime()
     panel.app.state.cf_service.runtime = runtime
     prepared = panel.client.get("/api/assets/web/cf/targets")
@@ -29,7 +32,7 @@ def test_unpublished_docker_port_uses_container_network_not_same_number_on_host(
         assert (
             next(iter(runtime.resources.values()))["origin"] == "http://172.20.0.2:8080"
         )
-        assert observed.info["ports"] == {"8080/tcp": None}
+        assert observed.info["ports"] == {"8080/tcp": bindings}
     finally:
         panel.app.state.task_worker.stop()
 
