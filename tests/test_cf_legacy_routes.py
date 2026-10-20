@@ -3,6 +3,8 @@
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.cf_tunnels.legacy import LegacyTunnelRuntime
 from tests.test_cf_legacy import make_proc_root, make_systemd_mock, write_unit
 from tests.test_cf_tunnels import (
@@ -175,3 +177,51 @@ def test_script_only_clues_are_shown_without_enqueuing_the_foreground_script(
     assert page.status_code == 200
     assert "外部线索" in page.text
     assert "缺少可核验 systemd 管理对象" in page.text
+
+
+@pytest.mark.parametrize("failure", ["missing_id", "start_timeout", "registration_timeout", "start_oserror"])
+def test_failed_legacy_registration_preserves_retryable_cleanup_without_guessing_an_instance(
+    tmp_path, monkeypatch, failure
+):
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch, active=False)
+    external_run = subprocess.run
+
+    registered = False
+    broken = True
+
+    def lose_registration(command, **kwargs):
+        nonlocal registered
+        if broken and registered and failure == "registration_timeout" and "show" in command:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        result = external_run(command, **kwargs)
+        if "systemctl" in command and "start" in command:
+            registered = True
+            if failure == "missing_id":
+                legacy.info["InvocationID"] = ""
+            elif failure == "start_timeout":
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            elif failure == "start_oserror":
+                raise OSError("fixture private data")
+        return result
+
+    monkeypatch.setattr(subprocess, "run", lose_registration)
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["management"] == "external"
+        assert status["current_url"] is None
+        assert legacy.info["ActiveState"] == "active"
+        assert not any("stop" in command for command in legacy.commands)
+        assert panel.app.state.cf_service.runtime.resources == {}
+        assert "private data" not in str(status)
+        broken = False
+        legacy.info["InvocationID"] = "b" * 32
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        assert legacy.info["ActiveState"] == "inactive"
+        assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
+    finally:
+        panel.app.state.task_worker.stop()

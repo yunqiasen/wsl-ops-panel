@@ -543,6 +543,22 @@ class LegacyTunnelRuntime:
 
     # -- public API --------------------------------------------------------- #
 
+    def _handle(self, owner, token, legacy, *, invocation_id="", started=False):
+        return {
+            "kind": "legacy",
+            "owner": owner,
+            "token": token,
+            "unit": legacy["unit"],
+            "scope": legacy["scope"],
+            "boot_id": self.boot_id,
+            "invocation_id": invocation_id,
+            "fragment_path": legacy["fragment_path"],
+            "project_dir": legacy["project_dir"],
+            "origin": legacy["origin"],
+            "exec_start": legacy["exec_start"],
+            "started_by_panel": started,
+        }
+
     def current_handle(self, owner, token, *, legacy, timeout=5):
         """Capture an explicitly chosen old unit without ever starting it."""
         info = self._show(legacy["unit"], legacy["scope"], timeout=timeout)
@@ -554,19 +570,7 @@ class LegacyTunnelRuntime:
         self._verify_unit(legacy, info)
         if not info.get("InvocationID"):
             raise CFError("legacy_identity", "旧隧道当前运行标识缺失")
-        return {
-            "kind": "legacy",
-            "owner": owner,
-            "token": token,
-            "unit": legacy["unit"],
-            "scope": legacy["scope"],
-            "boot_id": self.boot_id,
-            "invocation_id": info["InvocationID"],
-            "fragment_path": legacy["fragment_path"],
-            "project_dir": legacy["project_dir"],
-            "origin": legacy["origin"],
-            "started_by_panel": False,
-        }
+        return self._handle(owner, token, legacy, invocation_id=info["InvocationID"])
 
     def start(
         self,
@@ -581,92 +585,57 @@ class LegacyTunnelRuntime:
             raise CFError("legacy_identity", "旧隧道缺少可核验的管理对象")
         if legacy.get("load_state") == "masked":
             raise CFError("legacy_masked", "旧隧道单元处于 masked 状态，不可启动")
-
-        legacy_origin = legacy.get("origin")
-        if legacy_origin and legacy_origin != origin:
+        if legacy.get("origin") != origin:
             raise CFError("legacy_origin", "源站参数与旧隧道单元不一致")
 
-        unit = legacy["unit"]
-        scope = legacy["scope"]
-        project_dir = legacy["project_dir"]
-        fragment_path = legacy["fragment_path"]
         deadline = monotonic() + timeout
-
+        unit, scope = legacy["unit"], legacy["scope"]
         info = self._show(
             unit,
             scope,
             timeout=min(5, self._remaining_or_raise(deadline, "legacy_runtime")),
         )
-        load_state = info.get("LoadState", "")
-        if load_state == "masked":
-            raise CFError("legacy_masked", "旧隧道单元处于 masked 状态，不可启动")
-        if load_state == "not-found":
-            raise CFError("legacy_identity", "旧隧道单元未找到")
         self._verify_unit(legacy, info)
-
-        # Already active → reuse existing InvocationID.
+        handle = self._handle(owner, token, legacy)
         if info.get("ActiveState") in _ACTIVE_JOB_STATES:
-            invocation_id = info.get("InvocationID", "")
-            if invocation_id:
-                return {
-                    "kind": "legacy",
-                    "owner": owner,
-                    "token": token,
-                    "unit": unit,
-                    "scope": scope,
-                    "boot_id": self.boot_id,
-                    "invocation_id": invocation_id,
-                    "fragment_path": fragment_path,
-                    "project_dir": project_dir,
-                    "origin": origin,
-                    "started_by_panel": False,
-                }
+            if not info.get("InvocationID"):
+                raise CFError(
+                    "legacy_identity", "旧隧道当前运行标识缺失", handle=handle
+                )
+            handle["invocation_id"] = info["InvocationID"]
+            return handle
 
-        # Start the unit.
-        result = self._run(
-            self._systemctl_argv(scope, "start", unit),
-            timeout=self._remaining_or_raise(deadline, "legacy_runtime"),
-            stage="legacy_runtime",
-        )
-        if result.returncode:
-            raise CFError("legacy_runtime", "旧隧道服务启动失败")
-
-        # Wait for activation and capture InvocationID.
-        remaining = self._remaining_or_raise(deadline, "legacy_runtime")
-        info = self._show(unit, scope, timeout=min(5, remaining))
-        if info.get("ActiveState") not in _ACTIVE_JOB_STATES:
-            err = CFError("legacy_runtime", "旧隧道启动后未进入活动状态")
-            err.handle = {
-                "unit": unit,
-                "scope": scope,
-                "boot_id": self.boot_id,
-                "project_dir": project_dir,
-            }
-            raise err
-        invocation_id = info.get("InvocationID", "")
-        if not invocation_id:
-            err = CFError("legacy_runtime", "旧隧道未获得 InvocationID")
-            err.handle = {
-                "unit": unit,
-                "scope": scope,
-                "boot_id": self.boot_id,
-                "project_dir": project_dir,
-            }
-            raise err
-
-        return {
-            "kind": "legacy",
-            "owner": owner,
-            "token": token,
-            "unit": unit,
-            "scope": scope,
-            "boot_id": self.boot_id,
-            "invocation_id": invocation_id,
-            "fragment_path": fragment_path,
-            "project_dir": project_dir,
-            "origin": origin,
-            "started_by_panel": True,
-        }
+        # Preserve complete ownership evidence even if start or registration
+        # fails. An absent InvocationID stays absent: cleanup must not guess it.
+        handle["started_by_panel"] = True
+        try:
+            result = self._run(
+                self._systemctl_argv(scope, "start", unit),
+                timeout=self._remaining_or_raise(deadline, "legacy_runtime"),
+                stage="legacy_runtime",
+            )
+            if result.returncode:
+                raise CFError("legacy_runtime", "旧隧道服务启动失败")
+            info = self._show(
+                unit,
+                scope,
+                timeout=min(5, self._remaining_or_raise(deadline, "legacy_runtime")),
+            )
+            self._verify_unit(legacy, info)
+            if info.get("ActiveState") not in _ACTIVE_JOB_STATES:
+                raise CFError("legacy_runtime", "旧隧道启动后未进入活动状态")
+            if not info.get("InvocationID"):
+                raise CFError("legacy_runtime", "旧隧道未获得 InvocationID")
+            handle["invocation_id"] = info["InvocationID"]
+            return handle
+        except (CFError, OSError) as exc:
+            error = (
+                exc
+                if isinstance(exc, CFError)
+                else CFError("legacy_runtime", f"旧隧道启动失败 ({type(exc).__name__})")
+            )
+            error.handle = handle
+            raise error from exc
 
     def observe(self, handle: dict, *, timeout: float = 5) -> dict:
         if handle["boot_id"] != self.boot_id:
