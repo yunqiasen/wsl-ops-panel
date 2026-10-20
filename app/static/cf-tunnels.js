@@ -42,6 +42,9 @@
     element.querySelector('[data-cf-copy]').disabled = !url;
     element.querySelector('[data-cf-error]').textContent = status.error ? `${status.error.stage}：${status.error.message}` : '';
     element.querySelector('[data-cf-verified]').textContent = status.last_verified_at ? `核验：${new Date(status.last_verified_at).toLocaleString()}` : '';
+    const history = element.querySelector('[data-cf-history]');
+    history.hidden = !status.history_url || status.history_url === url;
+    history.querySelector('code').textContent = status.history_url || '';
     const task = element.querySelector('[data-cf-task]');
     task.hidden = !status.last_task_id;
     if (status.last_task_id) task.href = `/tasks#task-${encodeURIComponent(status.last_task_id)}`;

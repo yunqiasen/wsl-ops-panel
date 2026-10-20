@@ -8635,3 +8635,7 @@ body[data-page="agent"] .agent-provider-editor [data-agent-provider-settings] {
 .cf-entry-notice { font-size: .84rem; line-height: 1.6; color: var(--muted); }
 .cf-entry-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
 @media (max-width: 480px) { .cf-entry-dialog { padding: 18px; } .cf-entry-actions button { flex: 1; } }
+
+.cf-access__history { min-width: 0; }
+.cf-access__history summary { cursor: pointer; font-size: 0.75rem; }
+.cf-access__history code { display: block; white-space: normal; overflow-wrap: anywhere; font-size: 0.75rem; }

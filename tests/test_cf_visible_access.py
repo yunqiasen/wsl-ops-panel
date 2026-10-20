@@ -26,3 +26,21 @@ def test_cf_card_explains_that_verified_application_access_requires_login(
     finally:
         panel.app.state.task_worker.stop()
 
+
+def test_closed_cf_card_retains_history_as_text_not_as_a_current_openable_link(
+    tmp_path, monkeypatch
+):
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    panel.app.state.cf_service.runtime = FakeTunnelRuntime()
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        page = panel.client.get("/categories/docker")
+        assert "失效网址" in page.text
+        assert "https://business-fixture.trycloudflare.com/" in page.text
+        assert 'href="https://business-fixture.trycloudflare.com/"' not in page.text
+        assert panel.client.get("/api/assets/web/cf").json()["current_url"] is None
+    finally:
+        panel.app.state.task_worker.stop()
