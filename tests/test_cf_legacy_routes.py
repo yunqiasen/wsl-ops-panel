@@ -339,3 +339,40 @@ def test_non_quick_or_ambiguous_old_command_is_an_external_clue_only(
     assert observed.requests == []
     assert legacy.unit.read_bytes() == original
     assert panel.app.state.cf_service.runtime.resources == {}
+
+
+def test_host_reboot_leaves_old_enabled_unit_external_and_pending_not_falsely_closed(
+    tmp_path, monkeypatch
+):
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch)
+    legacy.info["UnitFileState"] = "enabled"
+    original = legacy.unit.read_bytes()
+    service = panel.app.state.cf_service
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        service.runtime.boot_id = "next-host-boot"
+        (service.legacy_runtime.proc_root / "sys/kernel/random/boot_id").write_text("next-host-boot")
+        legacy.info["InvocationID"] = "b" * 32
+        observed.requests.clear()
+        legacy.commands.clear()
+        for _ in range(2):
+            status = panel.client.get("/api/assets/web/cf").json()
+            assert status["state"] == "unknown"
+            assert status["management"] == "external"
+            assert status["current_url"] is None
+            assert status["error"]["stage"] == "legacy_recovery"
+        service.maintain()
+        assert legacy.commands == []
+        assert observed.requests == []
+        assert legacy.info["ActiveState"] == "active"
+        assert legacy.info["UnitFileState"] == "enabled"
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        assert legacy.info["ActiveState"] == "inactive"
+        assert legacy.info["UnitFileState"] == "enabled"
+        assert legacy.unit.read_bytes() == original
+        assert observed.requests == []
+    finally:
+        panel.app.state.task_worker.stop()

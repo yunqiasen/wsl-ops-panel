@@ -140,22 +140,30 @@ class CFTunnelService:
             "pending_action": pending[-1][1] if pending else None,
         }
 
+    def _after_host_restart(self, key, record):
+        external = bool(record.get("legacy"))
+        return self.store.update(
+            key,
+            state="unknown" if external else "off",
+            desired="off",
+            handle=None,
+            current_url=None,
+            last_verified_at=None,
+            launch_pending=False,
+            boot_id=self.runtime.boot_id,
+            error=CFError(
+                "legacy_recovery", "宿主已重启，旧隧道由外部管理，当前运行待核验"
+            ).as_dict() if external else None,
+            history_url=record.get("current_url") or record.get("history_url"),
+        )
+
     def _observe_record(self, key, record):
         handle = record.get("handle")
         if not handle:
             return record
         try:
             if handle.get("boot_id") != self._runtime_for(handle).boot_id:
-                return self.store.update(
-                    key,
-                    state="off",
-                    desired="off",
-                    handle=None,
-                    current_url=None,
-                    last_verified_at=None,
-                    error=None,
-                    history_url=record.get("current_url") or record.get("history_url"),
-                )
+                return self._after_host_restart(key, record)
             observed = self._runtime_for(handle).observe(handle)
             if not observed["active"]:
                 return self.store.update(
@@ -253,17 +261,7 @@ class CFTunnelService:
                 self.store.settle_request(last_request, "failed")
                 interrupted = True
         if changed_boot:
-            return self.store.update(
-                key,
-                state="off",
-                desired="off",
-                handle=None,
-                current_url=None,
-                last_verified_at=None,
-                boot_id=self.runtime.boot_id,
-                error=None,
-                history_url=record.get("current_url") or record.get("history_url"),
-            )
+            return self._after_host_restart(key, record)
         if record.get("launch_pending") and not self.store.pending(key):
             if record.get("legacy"):
                 # Without the launch's InvocationID an external unit is not
