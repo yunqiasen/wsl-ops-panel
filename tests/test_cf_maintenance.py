@@ -1,5 +1,7 @@
 """Current observations, expiry and recovery through the panel's normal CF routes."""
 
+import pytest
+
 from tests.test_cf_tunnels import (
     FakeTunnelRuntime,
     attach_local_observation,
@@ -140,8 +142,9 @@ def test_maintenance_never_revives_a_failed_close_and_retries_only_its_cleanup(
         panel.app.state.task_worker.stop()
 
 
+@pytest.mark.parametrize("phase", ["open", "maintenance"])
 def test_source_instance_changed_during_public_verification_is_not_published_online(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, phase
 ):
     import httpx
 
@@ -151,15 +154,22 @@ def test_source_instance_changed_during_public_verification_is_not_published_onl
     runtime = FakeTunnelRuntime()
     service.runtime = runtime
 
+    replace = phase == "open"
+
     def replace_source(request):
-        if request.url.host.endswith("trycloudflare.com"):
+        if replace and request.url.host.endswith("trycloudflare.com"):
             observed.info["id"] = "b" * 64
         return httpx.Response(200, text="same business page")
 
     service.http_transport = httpx.MockTransport(replace_source)
     panel.app.state.task_worker.start()
     try:
-        assert submit_cf(panel, "cf-create").status == "failed"
+        if phase == "open":
+            assert submit_cf(panel, "cf-create").status == "failed"
+        else:
+            assert submit_cf(panel, "cf-create").status == "succeeded"
+            replace = True
+            service.maintain(force=True)
         status = panel.client.get("/api/assets/web/cf").json()
         assert status["state"] == "error"
         assert status["error"]["stage"] == "origin_identity"

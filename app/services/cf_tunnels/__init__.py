@@ -425,6 +425,11 @@ class CFTunnelService:
                             "public_probe",
                             checked.get("reason") or "公网响应与当前项目不一致",
                         )
+                    target = self._revalidate_target(
+                        asset, target, timeout=self.prepare_timeout
+                    )
+                    if checked["fingerprint"] != target["fingerprint"]:
+                        raise CFError("public_probe", "公网响应与当前项目不一致")
                     self.store.update(
                         key,
                         state="online",
@@ -446,6 +451,9 @@ class CFTunnelService:
                             else f"公网核验失败 ({type(exc).__name__})",
                         )
                     )
+                    if error.stage.startswith("origin_"):
+                        self._cleanup_record(key, record, error)
+                        continue
                     self.store.update(
                         key,
                         state="error",
