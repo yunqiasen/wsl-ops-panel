@@ -10,6 +10,7 @@ from app.api.agent import router as agent_router
 from app.api.agent_router import router as agent_router_control_router
 from app.api.assets import router as assets_router
 from app.api.auth import router as auth_router
+from app.api.cf_tunnels import router as cf_tunnels_router
 from app.api.bulk_actions import router as bulk_actions_router
 from app.api.notifications import router as notifications_router
 from app.api.remote_nodes import router as remote_nodes_router
@@ -23,6 +24,7 @@ from app.models.registry import RegistrySnapshot
 from app.recipes.service import DockerRecipeService
 from app.registry.service import RegistryService
 from app.services.assets import AssetService
+from app.services.cf_tunnels import CFTunnelService
 from app.services.docker_versions import DockerVersionService
 from app.services.notifications import NotificationService
 from app.services.agent_mcp import agent_data_root
@@ -64,6 +66,7 @@ def create_app(
     system_infra_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     project_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     task_store: TaskStore | None = None,
+    cf_service: CFTunnelService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="WSL Ops Panel", lifespan=lifespan)
     app.include_router(auth_router)
@@ -77,6 +80,7 @@ def create_app(
     app.include_router(settings_router)
     app.include_router(terminals_router)
     app.include_router(assets_router)
+    app.include_router(cf_tunnels_router)
     app.mount(
         "/static",
         StaticFiles(directory=str(Path(__file__).parent / "static")),
@@ -107,6 +111,7 @@ def create_app(
 
     app.state.config_root = config_root
     app.state.data_root = data_root
+    app.state.cf_service = cf_service or CFTunnelService(data_root)
     app.state.debug_terminal_manager = DebugTerminalManager(base_dir=data_root / "terminals")
     app.state.terminal_upload_root = data_root / "uploads/terminals"
     app.state.docker_scanner = docker_scanner
