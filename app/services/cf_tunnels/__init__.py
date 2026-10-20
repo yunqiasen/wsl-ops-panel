@@ -643,7 +643,11 @@ class CFTunnelService:
                             last_error = CFError(
                                 "public_probe", "公网响应与项目入口不一致"
                             )
-                        except (httpx.HTTPError, CFError) as exc:
+                        except CFError as exc:
+                            if exc.stage != "public_probe":
+                                raise
+                            last_error = exc
+                        except httpx.HTTPError as exc:
                             last_error = CFError(
                                 "public_probe",
                                 f"公网访问核验失败 ({type(exc).__name__})",

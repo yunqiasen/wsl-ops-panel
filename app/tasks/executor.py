@@ -587,7 +587,13 @@ def _run_command_with_retry(
                 stream="stderr",
                 mirror_to_system=False,
             )
-            _append_output_summary(task, completed.stderr, sink=sink, stream="stderr", failed=completed.returncode != 0)
+            _append_output_summary(
+                task,
+                completed.stderr,
+                sink=sink,
+                stream="stderr",
+                failed=completed.returncode != 0,
+            )
         if completed.returncode == 0:
             diagnosis = _diagnose_text(completed.stderr or "")
             if diagnosis:
@@ -744,5 +750,11 @@ def execute_action_plan(
     task.status = "succeeded"
     task.finished_at = datetime.now(UTC)
     if store is not None:
-        store.update(task)
+        try:
+            store.update(task)
+        except Exception:
+            # The worker settles this as failed; an in-memory success is not a
+            # committed result and must not leave the persisted task running.
+            task.status = "failed"
+            raise
     append_system_chunk(sink, f"└─ 结论：✅ {_status_footer(task, '成功')}\n")

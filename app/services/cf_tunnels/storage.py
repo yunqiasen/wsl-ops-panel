@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 from threading import RLock
 
-from app.services.cf_tunnels.models import CFOperation
+from app.services.cf_tunnels.models import CFError, CFOperation
 
 
 class CFStore:
@@ -17,22 +17,27 @@ class CFStore:
     @contextmanager
     def transaction(self):
         # One short transaction per mutation; no network work holds a DB lock.
-        with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with (
-                closing(sqlite3.connect(self.path, timeout=5)) as connection,
-                connection,
-            ):
-                connection.execute("PRAGMA busy_timeout=5000")
-                connection.execute(
-                    "CREATE TABLE IF NOT EXISTS cf_tunnels (owner TEXT PRIMARY KEY, payload TEXT NOT NULL)"
-                )
-                connection.execute(
-                    "CREATE TABLE IF NOT EXISTS cf_requests (id TEXT PRIMARY KEY, owner TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL)"
-                )
-                connection.execute("BEGIN IMMEDIATE")
-                yield connection
-            self.path.chmod(0o600)
+        try:
+            with self._lock:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with (
+                    closing(sqlite3.connect(self.path, timeout=5)) as connection,
+                    connection,
+                ):
+                    connection.execute("PRAGMA busy_timeout=5000")
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS cf_tunnels (owner TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                    )
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS cf_requests (id TEXT PRIMARY KEY, owner TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL)"
+                    )
+                    connection.execute("BEGIN IMMEDIATE")
+                    yield connection
+                self.path.chmod(0o600)
+        except (sqlite3.Error, OSError) as exc:
+            raise CFError(
+                "persistence", f"CF 状态保存失败 ({type(exc).__name__})"
+            ) from exc
 
     def _read_query(self, table: str, query: str, args: tuple = ()) -> list:
         if not self.path.exists():
