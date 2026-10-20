@@ -207,12 +207,33 @@ def _container_targets(
             origin = f"http://{authority}:{port}"
             path = _page_path(asset, port, exposed.split("/", 1)[0])
             target_id = digest([key, container.compose_service, exposed, "http", path])
-            existing = next((item for item in targets if item["id"] == target_id), None)
+            existing = next(
+                (
+                    item
+                    for item in targets
+                    if item["id"]
+                    in {
+                        digest([key, container.compose_service, exposed, scheme, path])
+                        for scheme in ("http", "https")
+                    }
+                ),
+                None,
+            )
             if existing and existing["reachable"]:
                 continue
-            limit = remaining(deadline, probe_timeout)
+            protocol = "http"
             try:
-                checked = probe(transport, origin + path, timeout=limit)
+                checked = _probe_origin(
+                    transport,
+                    origin,
+                    path,
+                    deadline=deadline,
+                    probe_timeout=probe_timeout,
+                )
+                origin, protocol = checked.pop("origin"), checked.pop("protocol")
+                target_id = digest(
+                    [key, container.compose_service, exposed, protocol, path]
+                )
             except (httpx.HTTPError, CFError) as exc:
                 failure = (
                     exc
@@ -236,7 +257,7 @@ def _container_targets(
                 "name": f"{container.compose_service} · {exposed}",
                 "origin": origin,
                 "path": path,
-                "protocol": "http",
+                "protocol": protocol,
                 "source": source,
                 **checked,
             }
@@ -294,10 +315,12 @@ def _listener_target(
         host = ipaddress.ip_address("::1" if host.version == 6 else "127.0.0.1")
     authority = f"[{host}]" if host.version == 6 else str(host)
     origin = f"http://{authority}:{port}"
+    protocol = "http"
     try:
-        checked = probe(
-            transport, origin + path, timeout=remaining(deadline, probe_timeout)
+        checked = _probe_origin(
+            transport, origin, path, deadline=deadline, probe_timeout=probe_timeout
         )
+        origin, protocol = checked.pop("origin"), checked.pop("protocol")
     except (httpx.HTTPError, CFError) as exc:
         checked = {
             "reachable": False,
@@ -308,14 +331,14 @@ def _listener_target(
             else f"项目入口读取失败 ({type(exc).__name__})",
         }
     return {
-        "id": digest([key, role, port, "http", path]),
+        "id": digest([key, role, port, protocol, path]),
         "revision": digest(
             [key, listener["pid"], listener["start_time"], instance, origin, path]
         ),
         "name": f"{role} · {port}/tcp",
         "origin": origin,
         "path": path,
-        "protocol": "http",
+        "protocol": protocol,
         "source": source,
         **checked,
     }
@@ -340,3 +363,19 @@ def _page_path(asset, port, container_port=None):
             raise CFError("origin_identity", "项目网页路径格式错误")
         return path
     return "/"
+
+
+def _probe_origin(transport, origin, path, *, deadline, probe_timeout):
+    # Try TLS only on a protocol/connect mismatch; an HTTP timeout still ends at its limit.
+    try:
+        checked = probe(
+            transport, origin + path, timeout=remaining(deadline, probe_timeout)
+        )
+    except (httpx.ConnectError, httpx.RemoteProtocolError):
+        checked = None
+    if checked is None or checked["status_code"] in {400, 426}:
+        origin = "https:" + origin.removeprefix("http:")
+        checked = probe(
+            transport, origin + path, timeout=remaining(deadline, probe_timeout)
+        )
+    return {**checked, "origin": origin, "protocol": origin.split(":", 1)[0]}

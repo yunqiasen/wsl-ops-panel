@@ -337,3 +337,27 @@ def test_existing_page_path_and_same_origin_login_redirect_are_verified(
         assert "https://business-fixture.trycloudflare.com/login" in requests
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_tls_entry_is_detected_on_the_verified_ipv6_binding(tmp_path, monkeypatch):
+    import httpx
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    observed.info["ports"] = {"8443/tcp": [{"HostIp": "::", "HostPort": "18443"}]}
+    requests = []
+
+    def respond(request):
+        requests.append(str(request.url))
+        if request.url.scheme == "http":
+            return httpx.Response(400, text="plain HTTP on a TLS listener")
+        return httpx.Response(200, text="Business TLS fixture")
+
+    panel.app.state.cf_service.http_transport = httpx.MockTransport(respond)
+    response = panel.client.get("/api/assets/web/cf/targets")
+    assert response.status_code == 200
+    target = response.json()["targets"][0]
+    assert target["reachable"] is True
+    assert target["protocol"] == "https"
+    assert target["origin"] == "https://[::1]:18443"
+    assert requests == ["http://[::1]:18443/", "https://[::1]:18443/"]
