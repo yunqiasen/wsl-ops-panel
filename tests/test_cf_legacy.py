@@ -674,6 +674,7 @@ def test_observe_rejects_changed_invocation(tmp_path: Path, monkeypatch) -> None
     proc_root = make_proc_root(tmp_path)
     unit_root = tmp_path / "units"
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",
@@ -724,6 +725,7 @@ def test_stop_does_not_disable_or_unmask(tmp_path: Path, monkeypatch) -> None:
         "fragment_path": str(unit_root / "legacy-cf.service"),
         "project_dir": str(project),
         "origin": "http://127.0.0.1:8080",
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
     }
     units = {
         "legacy-cf.service": _make_unit_info(
@@ -785,6 +787,7 @@ def test_observe_returns_inactive_when_boot_id_changes(
 ) -> None:
     proc_root = make_proc_root(tmp_path)
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",
@@ -851,6 +854,7 @@ def test_stop_rejects_changed_invocation(tmp_path: Path, monkeypatch) -> None:
     )
     inv = "c" * 32
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",
@@ -896,6 +900,7 @@ def test_stop_activating_mainpid_zero(tmp_path: Path, monkeypatch) -> None:
     )
     inv = "f" * 32
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",
@@ -936,6 +941,7 @@ def test_stop_zero_timeout_no_extension(tmp_path: Path, monkeypatch) -> None:
     )
     inv = "g" * 32
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",
@@ -975,6 +981,7 @@ def test_stop_verifies_stopped_before_success(tmp_path: Path, monkeypatch) -> No
     )
     inv = "h" * 32
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",
@@ -1044,6 +1051,7 @@ def test_observe_preserves_enabled_masked(tmp_path: Path, monkeypatch) -> None:
     )
     inv = "i" * 32
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",
@@ -1096,6 +1104,7 @@ def test_observe_rejects_invalid_journal_url(tmp_path: Path, monkeypatch) -> Non
     )
     inv = "j" * 32
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",
@@ -1139,6 +1148,7 @@ def test_observe_no_url_from_old_invocation(tmp_path: Path, monkeypatch) -> None
     )
     inv = "k" * 32
     handle = {
+        "exec_start": "/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080",
         "kind": "legacy",
         "owner": "o",
         "token": "t",

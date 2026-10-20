@@ -522,6 +522,14 @@ class LegacyTunnelRuntime:
         if exec_info["origin"] != expected_origin:
             raise CFError("legacy_origin", "旧隧道源站参数已变化")
 
+        expected_exec = _parse_exec_start_value(expected.get("exec_start", ""))
+        if (
+            expected_exec is None
+            or exec_info["binary"] != expected_exec["binary"]
+            or exec_info["argv"] != expected_exec["argv"]
+        ):
+            raise CFError("legacy_identity", "旧隧道可执行文件或启动参数已变化")
+
         if check_invocation:
             expected_inv = expected.get("invocation_id", "")
             actual_inv = info.get("InvocationID", "")

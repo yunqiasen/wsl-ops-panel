@@ -267,3 +267,43 @@ def test_old_tunnel_reuse_and_rebuild_keep_using_its_external_runtime(
             assert legacy.info["InvocationID"] == "b" * 32
     finally:
         panel.app.state.task_worker.stop()
+
+
+@pytest.mark.parametrize("when", ["before", "after_start"])
+@pytest.mark.parametrize(
+    "changed_command",
+    [
+        "/opt/another/cloudflared tunnel --url http://127.0.0.1:18080",
+        "/usr/bin/cloudflared tunnel --url http://127.0.0.1:18080 --protocol http2",
+    ],
+)
+def test_changed_old_tunnel_command_with_the_same_origin_is_not_adopted_or_stopped(
+    tmp_path, monkeypatch, when, changed_command
+):
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch, active=when == "before")
+    original_unit = legacy.unit.read_bytes()
+    external_run = subprocess.run
+    if when == "before":
+        legacy.info["ExecStart"] = changed_command
+
+    def change_on_start(command, **kwargs):
+        result = external_run(command, **kwargs)
+        if "systemctl" in command and "start" in command:
+            legacy.info["ExecStart"] = changed_command
+        return result
+
+    monkeypatch.setattr(subprocess, "run", change_on_start)
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["current_url"] is None
+        assert legacy.info["ActiveState"] == "active"
+        assert not any("stop" in command for command in legacy.commands)
+        assert legacy.unit.read_bytes() == original_unit
+        assert panel.app.state.cf_service.runtime.resources == {}
+    finally:
+        panel.app.state.task_worker.stop()
