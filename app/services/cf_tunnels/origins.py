@@ -15,7 +15,7 @@ import httpx
 from app.models.assets import AssetSnapshot, DockerContainerSnapshot
 from app.services.cf_tunnels.http_probe import probe
 from app.services.cf_tunnels.models import CFError
-from app.services.cf_tunnels.processes import listeners
+from app.services.cf_tunnels.processes import listeners, project_role
 
 _DOCKER_FIELDS = (
     '{"id":{{json .Id}},"name":{{json .Name}},"running":{{json .State.Running}},'
@@ -274,15 +274,11 @@ def _project_targets(asset, transport, *, key, deadline, probe_timeout, proc_roo
     root = Path(asset.metadata["path"]).resolve(strict=True)
     targets = []
     for listener in listeners(proc_root, timeout=remaining(deadline, 5)):
-        if not listener["cwd"] or listener["owner_type"] == "unknown":
-            continue
-        cwd = Path(listener["cwd"]).resolve()
-        if not cwd.is_relative_to(root):
-            continue
-        role = (
-            listener.get("unit")
-            or f"{cwd.relative_to(root)}:{listener['process_name']}"
+        role = project_role(
+            listener, root, asset.metadata, timeout=remaining(deadline, 5)
         )
+        if role is None:
+            continue
         target = _listener_target(
             listener,
             transport,

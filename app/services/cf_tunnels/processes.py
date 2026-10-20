@@ -48,3 +48,66 @@ def listeners(proc_root: Path, *, timeout: float) -> list[dict]:
                 }
             )
     return result
+
+
+def project_role(
+    listener: dict, root: Path, metadata: dict, *, timeout: float
+) -> str | None:
+    if listener["owner_type"] == "unknown":
+        return None
+    if listener["cwd"]:
+        cwd = Path(listener["cwd"]).resolve()
+        if cwd.is_relative_to(root):
+            return (
+                listener.get("unit")
+                or f"{cwd.relative_to(root)}:{listener['process_name']}"
+            )
+    if listener["owner_type"] != "systemd":
+        return None
+    targets = metadata.get("service_targets") or [
+        {
+            "name": metadata.get("service_unit"),
+            "scope": metadata.get("service_scope", "system"),
+        }
+    ]
+    if not any(
+        item.get("name") == listener["unit"]
+        and item.get("scope", "system") == listener["service_scope"]
+        for item in targets
+    ):
+        return None
+    control = (
+        ["systemctl", "--user"]
+        if listener["service_scope"] == "user"
+        else ["systemctl"]
+    )
+    observed = subprocess.run(
+        [
+            *control,
+            "show",
+            listener["unit"],
+            "--property=ActiveState,WorkingDirectory,ControlGroup,InvocationID",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    info = dict(
+        line.split("=", 1) for line in observed.stdout.splitlines() if "=" in line
+    )
+    directory = info.get("WorkingDirectory")
+    group = info.get("ControlGroup")
+    groups = [row.split(":", 2)[-1] for row in listener["cgroup"].splitlines()]
+    if (
+        info.get("ActiveState") == "active"
+        and info.get("InvocationID")
+        and directory
+        and Path(directory).is_absolute()
+        and Path(directory).resolve().is_relative_to(root)
+        and group
+        and group != "/"
+        and any(value == group or value.startswith(group + "/") for value in groups)
+    ):
+        return listener["unit"]
+    return None
