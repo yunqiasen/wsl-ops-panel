@@ -74,7 +74,7 @@ class CFStore:
             )
         return record
 
-    def accept(self, operation: CFOperation) -> None:
+    def accept(self, operation: CFOperation, *, boot_id: str | None = None) -> None:
         with self.transaction() as connection:
             row = connection.execute(
                 "SELECT payload FROM cf_tunnels WHERE owner=?", (operation.owner,)
@@ -86,6 +86,7 @@ class CFStore:
                 desired="off" if operation.action == "cf_disable" else "on",
                 last_task_id=operation.request_id,
                 asset=operation.asset.model_dump(mode="json"),
+                boot_id=boot_id,
             )
             if operation.target:
                 record["selection_id"] = operation.target.id

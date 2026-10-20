@@ -35,6 +35,7 @@ class CFTunnelService:
         self.public_timeout = 90.0
         self.clock = time
         self.asset_source = None
+        self.task_store = None
         self._observer_stop = Event()
         self._observer_thread = None
 
@@ -72,12 +73,15 @@ class CFTunnelService:
             key = None
         record = self.store.get(key) if key else None
         pending = self.store.pending(key) if record else []
-        if record and record.get("handle") and not pending:
+        if record and (record.get("handle") or pending):
             with observe_lock(
                 self.data_root / "cf" / f"{key}.runtime.lock"
             ) as acquired:
                 if acquired:
-                    record = self._observe_record(key, self.store.get(key))
+                    record = self._synchronize_requests(key, self.store.get(key))
+                    pending = self.store.pending(key)
+                    if record.get("handle") and not pending:
+                        record = self._observe_record(key, record)
         state = (record or {}).get("state", "off")
         if pending:
             state = "stopping" if pending[-1][1] == "cf_disable" else "starting"
@@ -160,6 +164,56 @@ class CFTunnelService:
                     },
                 )
         return record
+
+    def _synchronize_requests(self, key, record):
+        pending = self.store.pending(key)
+        boot = record.get("boot_id") or (record.get("handle") or {}).get("boot_id")
+        changed_boot = bool(boot and boot != self.runtime.boot_id)
+        interrupted = False
+        for request_id, _ in pending:
+            try:
+                task = self.task_store.get(request_id) if self.task_store else None
+            except KeyError:
+                task = None
+            if not changed_boot and (
+                self.task_store is None
+                or (task and task.status in {"queued", "running"})
+            ):
+                continue
+            self.store.settle_request(request_id, "failed")
+            interrupted = True
+            if changed_boot and task and task.status in {"queued", "running"}:
+                task.status = "interrupted"
+                task.finished_at = datetime.fromtimestamp(self.clock(), UTC)
+                self.task_store.update(task)
+        if changed_boot:
+            return self.store.update(
+                key,
+                state="off",
+                desired="off",
+                handle=None,
+                current_url=None,
+                last_verified_at=None,
+                boot_id=self.runtime.boot_id,
+                error=None,
+                history_url=record.get("current_url") or record.get("history_url"),
+            )
+        if interrupted:
+            return self._cleanup_record(
+                key,
+                record,
+                CFError("persistence", "上次 CF 任务已中断或失效，运行记录已核对"),
+            )
+        return record
+
+    def recover(self):
+        for key, record in self.store.records():
+            with observe_lock(
+                self.data_root / "cf" / f"{key}.runtime.lock"
+            ) as acquired:
+                if acquired:
+                    self._synchronize_requests(key, self.store.get(key))
+        self.maintain(force=True)
 
     def start_observer(self):
         if self._observer_thread and self._observer_thread.is_alive():
@@ -411,7 +465,7 @@ class CFTunnelService:
             commands=[], cf_operation=operation, command_timeout_seconds=120
         )
         with exclusive_file_lock(self.data_root / "cf" / f"{key}.enqueue.lock"):
-            self.store.accept(operation)
+            self.store.accept(operation, boot_id=self.runtime.boot_id)
             try:
                 task = queue.enqueue(
                     asset.object_id, action, plan=plan, task_id=operation.request_id

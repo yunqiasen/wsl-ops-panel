@@ -1,3 +1,4 @@
+from asyncio import to_thread
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -47,6 +48,7 @@ from app.terminals.system_terminal import SystemTerminalSink
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     worker = app.state.task_worker
     app.state.task_queue.recover_on_startup()
+    await to_thread(app.state.cf_service.recover)
     worker.start()
     app.state.cf_service.start_observer()
     try:
@@ -142,6 +144,7 @@ def create_app(
     )
     app.state.rebuild_registry_runtime = lambda: _rebuild_registry_runtime(app)
     app.state.task_store = queue_store
+    cf_service.task_store = queue_store
     app.state.task_queue = task_queue
     app.state.task_worker = task_worker
     app.state.system_terminal_sink = system_terminal_sink
