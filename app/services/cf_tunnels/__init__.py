@@ -134,6 +134,9 @@ class CFTunnelService:
             "current_url": record.get("current_url")
             if record and state == "online"
             else None,
+            "requires_login": state == "online" and bool(
+                (record or {}).get("target", {}).get("requires_login")
+            ),
             "history_url": (record or {}).get("history_url"),
             "last_verified_at": (record or {}).get("last_verified_at"),
             "last_task_id": (record or {}).get("last_task_id"),

@@ -33,6 +33,7 @@
     const management = element.querySelector('[data-cf-management]');
     management.hidden = !managementLabel;
     management.textContent = managementLabel + (managementLabel && status.reason ? `：${status.reason}` : '');
+    element.querySelector('[data-cf-login]').hidden = !(status.state === 'online' && status.requires_login);
     const url = currentUrl(status);
     const link = element.querySelector('[data-cf-url]');
     link.textContent = url;
