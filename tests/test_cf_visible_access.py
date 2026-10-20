@@ -20,7 +20,9 @@ def test_cf_card_explains_that_verified_application_access_requires_login(
     panel.app.state.task_worker.start()
     try:
         assert submit_cf(panel, "cf-create").status == "succeeded"
-        assert panel.client.get("/api/assets/web/cf").json()["state"] == "online"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "online"
+        assert status["requires_login"] is True
         page = panel.client.get("/categories/docker")
         assert "可达，需要登录" in page.text
     finally:

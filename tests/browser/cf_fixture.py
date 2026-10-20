@@ -8,6 +8,7 @@ from threading import Thread
 from time import monotonic, sleep
 
 import uvicorn
+import httpx
 import pytest
 
 from app.core.security import COOKIE_NAME, issue_session_token
@@ -19,7 +20,7 @@ from tests.test_cf_tunnels import (
 )
 
 
-@pytest.mark.parametrize("scenario", ["single", "multiple", "legacy", "hint"])
+@pytest.mark.parametrize("scenario", ["single", "multiple", "legacy", "hint", "login"])
 def test_browser_cf_on_off(tmp_path, monkeypatch, scenario):
     panel = make_panel(tmp_path)
     observed = attach_local_observation(panel, monkeypatch)
@@ -30,6 +31,10 @@ def test_browser_cf_on_off(tmp_path, monkeypatch, scenario):
         ]
     runtime = FakeTunnelRuntime()
     panel.app.state.cf_service.runtime = runtime
+    if scenario == "login":
+        panel.app.state.cf_service.http_transport = httpx.MockTransport(
+            lambda request: httpx.Response(403, text="Business fixture needs login")
+        )
     legacy = None
     if scenario == "legacy":
         legacy = attach_legacy(panel, tmp_path, monkeypatch)
