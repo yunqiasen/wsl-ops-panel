@@ -38,12 +38,36 @@ class CFTunnelService:
         self._observer_stop = Event()
         self._observer_thread = None
 
+    def _key(self, asset):
+        key = owner_key(asset)
+        if (
+            asset.category == "docker"
+            and not asset.containers
+            and not self.store.get(key)
+        ):
+            directory = str(Path(asset.metadata["project_dir"]).resolve())
+            matches = [
+                owner
+                for owner, row in self.store.records()
+                if row.get("asset", {}).get("object_id") == asset.object_id
+                and row.get("asset", {}).get("category") == asset.category
+                and str(Path(row["asset"]["metadata"].get("project_dir", "")).resolve())
+                == directory
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise CFError(
+                    "origin_identity", "项目旧 CF 记录存在多个归属，请重新核对"
+                )
+        return key
+
     def status(self, asset: AssetSnapshot) -> dict[str, object]:
-        capable = (asset.category == "docker" and bool(asset.containers)) or (
-            asset.category == "project" and bool(asset.metadata.get("path"))
+        capable = asset.category in {"docker", "project"} and bool(
+            asset.metadata.get("project_dir") or asset.metadata.get("path")
         )
         try:
-            key = owner_key(asset)
+            key = self._key(asset)
         except ValueError:
             key = None
         record = self.store.get(key) if key else None
@@ -352,7 +376,7 @@ class CFTunnelService:
     ):
         from app.adapters.base import ActionPlan
 
-        key = owner_key(asset)
+        key = self._key(asset) if action == "cf_disable" else owner_key(asset)
         if action != "cf_disable":
             prepared = self.prepare(asset)
             targets = [item for item in prepared["targets"] if item["reachable"]]
