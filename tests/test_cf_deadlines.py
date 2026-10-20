@@ -103,3 +103,17 @@ def test_launch_registration_timeout_reaps_the_resource_already_created(
         assert panel.containers[0].state == "running"
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_close_cancels_an_activating_owned_unit_even_before_its_pid_is_registered(
+    tmp_path, monkeypatch
+):
+    manager = DelayedManager(tmp_path, monkeypatch)
+    manager.delay = manager.next_delay = 0
+    runtime = SystemdTunnelRuntime(tmp_path / "cf")
+    handle = runtime.start(
+        "a" * 64, "fixture-token", "http://127.0.0.1:18080", timeout=10
+    )
+    manager.info.update(ActiveState="activating", MainPID="0")
+    runtime.stop(handle, timeout=15)
+    assert manager.info["ActiveState"] == "inactive"

@@ -131,9 +131,9 @@ class SystemdTunnelRuntime:
             error.handle = handle
             raise error from exc
 
-    def observe(self, handle: dict, *, timeout: float = 5) -> dict:
+    def _owned_info(self, handle: dict, *, timeout: float) -> dict:
         if handle["boot_id"] != self.boot_id:
-            return {"active": False, "url": None}
+            return {"LoadState": "not-found", "ActiveState": "inactive", "MainPID": "0"}
         info = self._show(handle["unit"], timeout)
         active = info.get("ActiveState") in {"active", "activating", "deactivating"}
         if active and (
@@ -147,9 +147,15 @@ class SystemdTunnelRuntime:
             or info.get("Transient") != "yes"
         ):
             raise CFError("runtime_identity", "CF 服务归属已变化，原资源保持原样")
-        url = None
         if active:
             handle.setdefault("invocation_id", info["InvocationID"])
+        return info
+
+    def observe(self, handle: dict, *, timeout: float = 5) -> dict:
+        info = self._owned_info(handle, timeout=timeout)
+        active = info.get("ActiveState") in {"active", "activating", "deactivating"}
+        url = None
+        if active:
             try:
                 value = json.loads((self._directory(handle) / "url.json").read_text())
                 if value.get("token") == handle["token"]:
@@ -167,16 +173,25 @@ class SystemdTunnelRuntime:
 
     def stop(self, handle: dict, *, timeout: float = 15) -> None:
         deadline = monotonic() + timeout
-        if not self.observe(handle, timeout=min(5, timeout))["active"]:
-            return
-        result = subprocess.run(
-            ["systemctl", "--user", "stop", handle["unit"]],
-            capture_output=True,
-            text=True,
-            timeout=max(0.1, deadline - monotonic()),
-        )
-        if (
-            result.returncode
-            or self.observe(handle, timeout=max(0.1, deadline - monotonic()))["active"]
-        ):
-            raise CFError("cleanup", "CF 服务关闭失败，仍待清理")
+        live_states = {"active", "activating", "deactivating"}
+        try:
+            info = self._owned_info(handle, timeout=budget(deadline, stage="cleanup"))
+            if info.get("ActiveState") not in live_states:
+                return
+            result = subprocess.run(
+                ["systemctl", "--user", "stop", handle["unit"]],
+                capture_output=True,
+                text=True,
+                timeout=budget(deadline, timeout, stage="cleanup"),
+            )
+            if result.returncode:
+                raise CFError("cleanup", "CF 服务关闭失败，仍待清理")
+            info = self._owned_info(handle, timeout=budget(deadline, stage="cleanup"))
+            if info.get("ActiveState") in live_states:
+                raise CFError("cleanup", "CF 服务关闭后仍在运行，仍待清理")
+        except subprocess.TimeoutExpired as exc:
+            raise CFError("cleanup", "CF 服务关闭超时，仍待清理") from exc
+        except CFError as exc:
+            if exc.stage == "runtime":
+                raise CFError("cleanup", f"CF 关闭核对失败：{exc}") from exc
+            raise
