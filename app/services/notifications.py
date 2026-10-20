@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict
 from app.models.assets import AssetSnapshot
 from app.services.endpoints import DEFAULT_TAILSCALE_IP, format_ports_for_display, service_urls
 from app.services.source_links import source_url_from_links
+from app.services.cf_tunnels import CFTunnelService
+from app.services.state_store import resolve_state_db_path
 
 DEFAULT_TEMPLATE = (
     '📌 {{ asset.name }}\n'
@@ -46,8 +48,9 @@ class NotificationPreview(BaseModel):
 
 
 class NotificationService:
-    def __init__(self, config_root: Path | str = Path('config')) -> None:
+    def __init__(self, config_root: Path | str = Path('config'), *, cf_service: CFTunnelService | None = None) -> None:
         self.config_root = Path(config_root)
+        self.cf_service = cf_service or CFTunnelService(resolve_state_db_path(self.config_root).parent)
         self.config_path = self.config_root / 'notifications' / 'projects.yaml'
 
     def get_project_config(self, asset: AssetSnapshot) -> ProjectNotificationConfig:
@@ -71,6 +74,7 @@ class NotificationService:
         return ProjectNotificationConfig(enabled=enabled, title=title, template=template)
 
     def preview(self, asset: AssetSnapshot) -> NotificationPreview:
+        asset = self.cf_service.decorate(asset)
         config = self.get_project_config(asset)
         return NotificationPreview(
             title=config.title,

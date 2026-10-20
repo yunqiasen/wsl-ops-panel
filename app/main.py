@@ -132,7 +132,7 @@ def create_app(
     cf_service.asset_source = lambda: app.state.asset_service
     app.state.docker_recipe_service = docker_recipe_service
     app.state.docker_version_service = docker_version_service
-    app.state.notification_service = NotificationService(config_root)
+    app.state.notification_service = NotificationService(config_root, cf_service=cf_service)
     app.state.agent_router_controller = AgentRouterController(
         AgentRouterConfigStore(agent_data_root(config_root))
     )
