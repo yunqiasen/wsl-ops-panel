@@ -502,12 +502,18 @@ class CFTunnelService:
                 task = queue.enqueue(
                     asset.object_id, action, plan=plan, task_id=operation.request_id
                 )
-            except Exception:
+            except Exception as exc:
                 self.store.settle_request(operation.request_id, "failed")
+                record = self.store.get(key) or {}
+                error = CFError("persistence", "CF 任务入队失败，请重试")
                 self.store.update(
-                    key, error={"stage": "persistence", "message": "CF 任务入队失败"}
+                    key,
+                    state="error",
+                    current_url=None,
+                    history_url=record.get("current_url") or record.get("history_url"),
+                    error=error.as_dict(),
                 )
-                raise
+                raise error from exc
         return task, plan
 
     def execute(self, operation: CFOperation, task) -> None:
