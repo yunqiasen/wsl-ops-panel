@@ -29,8 +29,8 @@ def run(
     process = subprocess.Popen(
         [
             binary,
-            "--no-autoupdate",
             "tunnel",
+            "--no-autoupdate",
             "--config",
             str(config),
             "--protocol",
