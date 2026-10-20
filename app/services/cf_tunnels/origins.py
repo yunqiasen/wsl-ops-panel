@@ -33,7 +33,7 @@ def digest(value: object) -> str:
 def owner_key(asset: AssetSnapshot) -> str:
     directory = asset.metadata.get("project_dir") or asset.metadata.get("path")
     if asset.category != "docker" or not isinstance(directory, str) or not directory:
-        raise ValueError("项目尚缺少可确认的 Docker 归属")
+        raise CFError("origin_identity", "项目尚缺少可确认的 Docker 归属")
     return digest([asset.category, str(Path(directory).resolve())])
 
 
@@ -47,7 +47,7 @@ def inspect_container(name: str, *, timeout: float = 5) -> dict[str, Any]:
     )
     result = json.loads(completed.stdout)
     if not isinstance(result, dict):
-        raise ValueError("Docker 运行信息格式错误")
+        raise CFError("origin_identity", "Docker 运行信息格式错误")
     return result
 
 
@@ -71,7 +71,7 @@ def prepare_targets(
         (c for c in asset.containers if c.name == asset.primary_container_name), None
     )
     if primary is None:
-        raise ValueError("项目尚缺少主容器")
+        raise CFError("origin_identity", "项目尚缺少主容器")
     info = inspect_container(primary.name, timeout=remaining(deadline, 5))
     labels = info.get("labels") or {}
     expected_dir = str(Path(str(asset.metadata["project_dir"])).resolve())
@@ -82,9 +82,9 @@ def prepare_targets(
         or labels.get("com.docker.compose.project") != primary.compose_project
         or labels.get("com.docker.compose.service") != primary.compose_service
     ):
-        raise ValueError("容器归属已变化，请刷新项目后重试")
+        raise CFError("origin_identity", "容器归属已变化，请刷新项目后重试")
     if not info.get("running"):
-        raise ValueError("项目容器尚未运行")
+        raise CFError("origin_probe", "项目容器尚未运行")
     targets = []
     for exposed, bindings in (info.get("ports") or {}).items():
         if not exposed.endswith("/tcp") or not isinstance(bindings, list):

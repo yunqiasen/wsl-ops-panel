@@ -400,3 +400,20 @@ def test_failed_close_retains_owned_resource_for_retry(tmp_path, monkeypatch):
         assert not any(resource["active"] for resource in runtime.resources.values())
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_origin_stopped_while_queued_keeps_actionable_phase_and_reason(tmp_path, monkeypatch):
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    panel.app.state.cf_service.runtime = FakeTunnelRuntime()
+    response = panel.client.post("/api/bulk/actions/cf-create", json={"asset_ids": ["web"]})
+    assert response.json()["queued_count"] == 1
+    observed.info["running"] = False
+    panel.app.state.task_worker.start()
+    try:
+        assert wait_for_task(panel, response.json()["tasks"][0]["id"]).status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["error"]["stage"] == "origin_probe"
+        assert "尚未运行" in status["error"]["message"]
+    finally:
+        panel.app.state.task_worker.stop()
