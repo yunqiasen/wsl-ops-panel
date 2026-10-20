@@ -76,18 +76,18 @@ def prepare_targets(
 ) -> dict[str, object]:
     deadline = monotonic() + timeout
     key = owner_key(asset)
+    directory = Path(asset.metadata.get("project_dir") or asset.metadata["path"]).stat()
+    identity = digest([directory.st_dev, directory.st_ino])
     if asset.category == "project":
-        return {
-            "targets": _project_targets(
-                asset,
-                transport,
-                key=key,
-                deadline=deadline,
-                probe_timeout=probe_timeout,
-                proc_root=proc_root,
-            ),
-            "selected_id": None,
-        }
+        targets = _project_targets(
+            asset,
+            transport,
+            key=key,
+            deadline=deadline,
+            probe_timeout=probe_timeout,
+            proc_root=proc_root,
+        )
+        return _stamp_project(targets, identity)
     primary = next(
         (c for c in asset.containers if c.name == asset.primary_container_name), None
     )
@@ -123,6 +123,13 @@ def prepare_targets(
             failures.append(exc)
     if failures and not any(target["reachable"] for target in targets):
         raise failures[0]
+    return _stamp_project(targets, identity)
+
+
+def _stamp_project(targets, identity):
+    for target in targets:
+        target["project_identity"] = identity
+        target["revision"] = digest([target["revision"], identity])
     return {"targets": targets, "selected_id": None}
 
 

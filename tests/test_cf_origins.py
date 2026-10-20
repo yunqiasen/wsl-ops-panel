@@ -364,3 +364,30 @@ def test_tls_entry_is_detected_on_the_verified_ipv6_binding(tmp_path, monkeypatc
     assert target["protocol"] == "https"
     assert target["origin"] == "https://[::1]:18443"
     assert requests == ["http://[::1]:18443/", "https://[::1]:18443/"]
+
+
+def test_replacing_project_directory_requires_a_fresh_entry_choice(
+    tmp_path, monkeypatch
+):
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    panel.app.state.cf_service.runtime = FakeTunnelRuntime()
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        old = panel.client.get("/api/assets/web/cf/targets").json()["targets"][0]
+        panel.project.rename(tmp_path / "previous-source")
+        panel.project.mkdir()
+        (panel.project / "compose.yaml").write_text("services: {}\n")
+        prepared = panel.client.get("/api/assets/web/cf/targets").json()
+        assert prepared["requires_selection"] is True
+        assert prepared["selected_id"] is None
+        assert prepared["targets"][0]["revision"] != old["revision"]
+        response = panel.client.post(
+            "/api/bulk/actions/cf-create", json={"asset_ids": ["web"]}
+        )
+        assert response.json()["queued_count"] == 0
+        assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
+    finally:
+        panel.app.state.task_worker.stop()

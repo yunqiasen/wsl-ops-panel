@@ -93,7 +93,19 @@ class CFTunnelService:
             record = self.store.get(owner_key(asset)) or {}
             saved = record.get("selection_id") or record.get("target", {}).get("id")
             valid = [item for item in prepared["targets"] if item["reachable"]]
-            selected = next((item["id"] for item in valid if item["id"] == saved), None)
+            previous_identity = record.get("target", {}).get("project_identity")
+            selected = next(
+                (
+                    item["id"]
+                    for item in valid
+                    if item["id"] == saved
+                    and (
+                        not previous_identity
+                        or item.get("project_identity") == previous_identity
+                    )
+                ),
+                None,
+            )
             if not saved and len(valid) == 1:
                 selected = valid[0]["id"]
             prepared.update(
