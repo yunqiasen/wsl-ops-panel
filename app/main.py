@@ -89,6 +89,7 @@ def create_app(
 
     config_root = Path(config_root).resolve()
     data_root = resolve_state_db_path(config_root).parent
+    cf_service = cf_service or CFTunnelService(data_root)
     docker_version_service = DockerVersionService()
     runtime_services = _build_runtime_services(
         config_root,
@@ -100,6 +101,7 @@ def create_app(
         system_infra_scanner=system_infra_scanner,
         project_scanner=project_scanner,
         docker_version_service=docker_version_service,
+        cf_service=cf_service,
     )
     registry_service = runtime_services.registry_service
     docker_recipe_service = runtime_services.docker_recipe_service
@@ -107,8 +109,6 @@ def create_app(
     queue_store = task_store if task_store is not None else SQLiteTaskStore(data_root / "tasks.sqlite3")
     task_queue = GlobalTaskQueue(queue_store, operations_root=data_root / "operations")
     system_terminal_sink = SystemTerminalSink(data_root / "terminals/system.log")
-    cf_service = cf_service or CFTunnelService(data_root)
-    asset_service.cf_service = cf_service
     task_worker = SerialTaskWorker(queue=task_queue, sink=system_terminal_sink, cf_executor=cf_service.execute)
 
     app.state.config_root = config_root
@@ -204,6 +204,7 @@ def _build_runtime_services(
     system_infra_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     project_scanner: Callable[[], list[AssetSnapshot]] | None = None,
     docker_version_service: DockerVersionService | None = None,
+    cf_service: CFTunnelService | None = None,
 ) -> RuntimeServices:
     registry_service = RegistryService(config_root)
     docker_recipe_service = _build_docker_recipe_service(
@@ -220,6 +221,7 @@ def _build_runtime_services(
         project_scanner=project_scanner,
         docker_recipe_service=docker_recipe_service,
         docker_version_service=docker_version_service,
+        cf_service=cf_service,
         config_root=config_root,
     )
     return RuntimeServices(registry_service, docker_recipe_service, asset_service)
@@ -236,11 +238,11 @@ def _rebuild_registry_runtime(app: FastAPI) -> RegistrySnapshot:
         system_infra_scanner=app.state.system_infra_scanner,
         project_scanner=app.state.project_scanner,
         docker_version_service=app.state.docker_version_service,
+        cf_service=app.state.cf_service,
     )
     app.state.registry_service = runtime_services.registry_service
     app.state.docker_recipe_service = runtime_services.docker_recipe_service
     app.state.asset_service = runtime_services.asset_service
-    app.state.asset_service.cf_service = app.state.cf_service
     return runtime_services.registry_service.snapshot
 
 

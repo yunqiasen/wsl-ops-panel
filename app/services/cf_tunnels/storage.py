@@ -1,6 +1,6 @@
 """CF-owned rows in the existing panel database, separate from discovery caches."""
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 from pathlib import Path
 import sqlite3
@@ -19,7 +19,10 @@ class CFStore:
         # One short transaction per mutation; no network work holds a DB lock.
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(self.path, timeout=5) as connection:
+            with (
+                closing(sqlite3.connect(self.path, timeout=5)) as connection,
+                connection,
+            ):
                 connection.execute("PRAGMA busy_timeout=5000")
                 connection.execute(
                     "CREATE TABLE IF NOT EXISTS cf_tunnels (owner TEXT PRIMARY KEY, payload TEXT NOT NULL)"
@@ -31,23 +34,24 @@ class CFStore:
                 yield connection
             self.path.chmod(0o600)
 
-    def get(self, owner: str) -> dict | None:
+    def _read_query(self, table: str, query: str, args: tuple = ()) -> list:
         if not self.path.exists():
-            return None
-        with sqlite3.connect(
-            f"file:{self.path}?mode=ro", uri=True, timeout=5
+            return []
+        with closing(
+            sqlite3.connect(
+                self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5
+            )
         ) as connection:
             exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='cf_tunnels'"
+                "SELECT 1 FROM sqlite_master WHERE name=?", (table,)
             ).fetchone()
-            row = (
-                connection.execute(
-                    "SELECT payload FROM cf_tunnels WHERE owner=?", (owner,)
-                ).fetchone()
-                if exists
-                else None
-            )
-        return json.loads(row[0]) if row else None
+            return connection.execute(query, args).fetchall() if exists else []
+
+    def get(self, owner: str) -> dict | None:
+        rows = self._read_query(
+            "cf_tunnels", "SELECT payload FROM cf_tunnels WHERE owner=?", (owner,)
+        )
+        return json.loads(rows[0][0]) if rows else None
 
     def update(self, owner: str, **changes) -> dict:
         with self.transaction() as connection:
@@ -85,29 +89,17 @@ class CFStore:
             )
 
     def pending(self, owner: str) -> list[tuple[str, str]]:
-        if not self.path.exists():
-            return []
-        with sqlite3.connect(
-            f"file:{self.path}?mode=ro", uri=True, timeout=5
-        ) as connection:
-            exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='cf_requests'"
-            ).fetchone()
-            return (
-                connection.execute(
-                    "SELECT id, action FROM cf_requests WHERE owner=? AND status IN ('queued', 'running') ORDER BY rowid",
-                    (owner,),
-                ).fetchall()
-                if exists
-                else []
-            )
+        return self._read_query(
+            "cf_requests",
+            "SELECT id, action FROM cf_requests WHERE owner=? AND status IN ('queued', 'running') ORDER BY rowid",
+            (owner,),
+        )
 
     def request_status(self, request_id: str) -> str | None:
-        with self.transaction() as connection:
-            row = connection.execute(
-                "SELECT status FROM cf_requests WHERE id=?", (request_id,)
-            ).fetchone()
-        return row[0] if row else None
+        rows = self._read_query(
+            "cf_requests", "SELECT status FROM cf_requests WHERE id=?", (request_id,)
+        )
+        return rows[0][0] if rows else None
 
     def settle_request(self, request_id: str, status: str) -> None:
         with self.transaction() as connection:
