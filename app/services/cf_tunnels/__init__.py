@@ -139,6 +139,27 @@ class CFTunnelService:
             if self.store.request_status(operation.request_id) != "queued":
                 raise CFError("persistence", "CF 任务记录已失效")
             self.store.settle_request(operation.request_id, "running")
+            record = self.store.get(key) or {}
+            if operation.action == "cf_disable":
+                self.store.update(
+                    key,
+                    state="stopping",
+                    current_url=None,
+                    history_url=record.get("current_url") or record.get("history_url"),
+                )
+                try:
+                    if record.get("handle"):
+                        self.runtime.stop(record["handle"], timeout=15)
+                    self.store.update(
+                        key, state="off", handle=None, error=None, last_verified_at=None
+                    )
+                    self.store.settle_request(operation.request_id, "succeeded")
+                    return
+                except Exception as exc:
+                    error = CFError("cleanup", "CF 关闭失败，原隧道仍待清理")
+                    self.store.update(key, state="error", error=error.as_dict())
+                    self.store.settle_request(operation.request_id, "failed")
+                    raise error from exc
             self.store.update(key, state="starting", current_url=None, error=None)
             handle = None
             try:

@@ -243,3 +243,38 @@ def test_open_cf_is_verified_and_does_not_block_following_tasks(tmp_path, monkey
         assert [p.name for p in panel.project.iterdir()] == ["compose.yaml"]
     finally:
         panel.app.state.task_worker.stop()
+
+
+def submit_cf(panel, action):
+    response = panel.client.post(
+        f"/api/bulk/actions/{action}", json={"asset_ids": ["web"]}
+    )
+    assert response.status_code == 202
+    assert response.json()["queued_count"] == 1, response.json()
+    return wait_for_task(panel, response.json()["tasks"][0]["id"])
+
+
+def test_close_cf_is_idempotent_even_after_origin_stops(tmp_path, monkeypatch):
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    runtime = FakeTunnelRuntime()
+    panel.app.state.cf_service.runtime = runtime
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        observed.info["running"] = False
+        observed.requests.clear()
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "off"
+        assert status["desired"] == "off"
+        assert status["current_url"] is None
+        assert status["history_url"] == "https://business-fixture.trycloudflare.com/"
+        assert observed.requests == []
+        assert not any(resource["active"] for resource in runtime.resources.values())
+        assert (
+            panel.containers[0].state == "running"
+        )  # CF never changed the business fixture.
+    finally:
+        panel.app.state.task_worker.stop()
