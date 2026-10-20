@@ -59,3 +59,43 @@ def test_legacy_close_requires_complete_current_ownership_evidence(
         runtime.stop(handle, timeout=15)
     assert error.value.stage == stage
     assert info["ActiveState"] == "active"
+
+
+@pytest.mark.parametrize("host", ["127.business.invalid", "10.business.invalid"])
+def test_legacy_origin_prefix_is_not_proof_of_a_private_ip(tmp_path, host):
+    project = tmp_path / "business"
+    project.mkdir()
+    units = tmp_path / "units"
+    write_unit(
+        units,
+        "legacy-cf.service",
+        working_directory=str(project),
+        exec_start=f"/usr/bin/cloudflared tunnel --url http://{host}:18080",
+    )
+    hint = inspect_legacy(make_asset(project), unit_roots=[units])
+    assert hint["management"] == "external_hint"
+
+
+def test_legacy_url_comes_from_the_latest_output_of_the_current_live_invocation(
+    tmp_path, monkeypatch
+):
+    _, _, runtime, legacy, info = legacy_fixture(tmp_path, monkeypatch)
+    handle = runtime.start(
+        "owner", "token", legacy["origin"], timeout=10, legacy=legacy
+    )
+    external_run = subprocess.run
+
+    def journal(command, **kwargs):
+        if "journalctl" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "https://older-fixture.trycloudflare.com\nhttps://current-fixture.trycloudflare.com\n",
+                "",
+            )
+        return external_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", journal)
+    assert runtime.observe(handle)["url"] == "https://current-fixture.trycloudflare.com"
+    info.update(ActiveState="activating", MainPID="0")
+    assert runtime.observe(handle)["active"] is False

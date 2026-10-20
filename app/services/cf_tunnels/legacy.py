@@ -9,6 +9,7 @@ verify the unit's explicit association before acting.
 from __future__ import annotations
 
 import os
+import ipaddress
 import shlex
 from pathlib import Path
 import re
@@ -42,18 +43,13 @@ _ACTIVE_JOB_STATES = frozenset({"active", "activating", "deactivating"})
 
 def _is_loopback_or_lan(host: str) -> bool:
     """Check whether *host* is loopback or a private/container-LAN address."""
-    host = host.lower().rstrip(".")
-    if host in ("localhost", "::1", "0:0:0:0:0:0:0:1", "0.0.0.0"):
+    if host.lower().rstrip(".") == "localhost":
         return True
-    if host.startswith("127."):
-        return True
-    if host.startswith("10."):
-        return True
-    if host.startswith("192.168."):
-        return True
-    if any(host.startswith(f"172.{i}.") for i in range(16, 32)):
-        return True
-    return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return not address.is_multicast and (address.is_loopback or address.is_private)
 
 
 def _extract_url_from_argv(argv: list[str]) -> str | None:
@@ -669,10 +665,6 @@ class LegacyTunnelRuntime:
             and int(info.get("MainPID") or 0) > 0
         )
 
-        # Also treat activating with MainPID=0 as active for URL reading.
-        if not active and info.get("ActiveState") == "activating":
-            active = True
-
         if active and info.get("InvocationID") != handle["invocation_id"]:
             raise CFError(
                 "legacy_identity",
@@ -758,5 +750,5 @@ class LegacyTunnelRuntime:
         if result.returncode:
             return None
         output = result.stdout[-8192:]
-        match = _URL_RE.search(output)
-        return match.group(0) if match else None
+        matches = _URL_RE.findall(output)
+        return matches[-1] if matches else None
