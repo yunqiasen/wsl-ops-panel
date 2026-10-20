@@ -386,7 +386,7 @@ def _probe_origin(transport, origin, path, *, deadline, probe_timeout):
         except (httpx.ConnectError, httpx.RemoteProtocolError):
             checked = None
         if checked is None or checked["status_code"] in {400, 426}:
-            origin = "https:" + origin.removeprefix("http:")
+            origin = str(httpx.URL(origin).copy_with(scheme="https"))
             checked = probe(
                 transport,
                 origin + candidate_path,

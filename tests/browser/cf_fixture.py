@@ -8,6 +8,7 @@ from threading import Thread
 from time import monotonic, sleep
 
 import uvicorn
+import pytest
 
 from app.core.security import COOKIE_NAME, issue_session_token
 from tests.test_cf_tunnels import (
@@ -17,9 +18,14 @@ from tests.test_cf_tunnels import (
 )
 
 
-def test_browser_cf_on_off(tmp_path, monkeypatch):
+@pytest.mark.parametrize("multiple", [False, True])
+def test_browser_cf_on_off(tmp_path, monkeypatch, multiple):
     panel = make_panel(tmp_path)
-    attach_local_observation(panel, monkeypatch)
+    observed = attach_local_observation(panel, monkeypatch)
+    if multiple:
+        observed.info["ports"]["9090/tcp"] = [
+            {"HostIp": "127.0.0.1", "HostPort": "19090"}
+        ]
     runtime = FakeTunnelRuntime()
     panel.app.state.cf_service.runtime = runtime
     listener = socket.socket()
@@ -38,6 +44,7 @@ def test_browser_cf_on_off(tmp_path, monkeypatch):
             env={
                 **os.environ,
                 "CF_BROWSER_URL": f"http://127.0.0.1:{port}",
+                "CF_BROWSER_MULTIPLE": str(int(multiple)),
                 "CF_COOKIE_NAME": COOKIE_NAME,
                 "CF_COOKIE_TOKEN": issue_session_token(),
             },
@@ -49,6 +56,10 @@ def test_browser_cf_on_off(tmp_path, monkeypatch):
         print(result.stdout)
         assert [task.status for task in panel.store.list_all()] == ["succeeded"] * 3
         assert len(runtime.resources) == 2
+        if multiple:
+            assert {value["origin"] for value in runtime.resources.values()} == {
+                "http://127.0.0.1:19090"
+            }
         assert sum(resource["active"] for resource in runtime.resources.values()) == 1
         assert panel.containers[0].state == "running"
     finally:

@@ -8617,3 +8617,21 @@ body[data-page="agent"] .agent-provider-editor [data-agent-provider-settings] {
 .cf-notice { color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 78ch; margin-top: 8px; }
 .cf-access [hidden] { display: none !important; }
 @media (max-width: 480px) { .cf-access__link { flex-wrap: wrap; } .cf-access__link a { flex-basis: 100%; } }
+
+/* CF entry choice follows the panel's existing controls and surfaces. */
+.cf-entry-dialog { width: min(38rem, calc(100vw - 2rem)); box-sizing: border-box; max-height: calc(100dvh - 2rem); overflow-y: auto; border: 1px solid var(--line); border-radius: 16px; padding: 24px; color: var(--ink); background: var(--surface, #fff); }
+.cf-entry-dialog::backdrop { background: rgb(15 23 42 / 45%); }
+.cf-entry-dialog h2 { margin: 0 0 8px; }
+.cf-entry-dialog fieldset { min-width: 0; border: 0; padding: 0; margin: 18px 0; }
+.cf-entry-dialog legend { margin-bottom: 10px; font-weight: 600; }
+.cf-entry-option { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 8px 0; cursor: pointer; }
+.cf-entry-option:has(input:checked) { border-color: var(--accent, #2760cb); background: rgb(39 96 203 / 7%); }
+.cf-entry-option:focus-within { outline: 2px solid var(--accent, #2760cb); outline-offset: 2px; }
+.cf-entry-option input { margin-top: 5px; }
+.cf-entry-option span { min-width: 0; }
+.cf-entry-option strong, .cf-entry-option code, .cf-entry-option small { display: block; overflow-wrap: anywhere; }
+.cf-entry-option code { margin: 5px 0; font-size: .85rem; }
+.cf-entry-option--unavailable { opacity: .7; cursor: default; }
+.cf-entry-notice { font-size: .84rem; line-height: 1.6; color: var(--muted); }
+.cf-entry-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+@media (max-width: 480px) { .cf-entry-dialog { padding: 18px; } .cf-entry-actions button { flex: 1; } }

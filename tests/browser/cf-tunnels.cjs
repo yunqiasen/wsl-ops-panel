@@ -20,6 +20,28 @@ const { chromium } = require('playwright');
     assert.match(await card.locator('[data-cf-state]').textContent(), /已关闭/);
     await card.locator('[data-asset-select]').click();
     await page.getByRole('button', {name: '开启 CF', exact: true}).click();
+    if (process.env.CF_BROWSER_MULTIPLE === '1') {
+      const dialog = page.getByRole('dialog', {name: '选择项目入口'});
+      await dialog.waitFor({state: 'visible'});
+      assert.match(await dialog.textContent(), /整个 HTTP 服务/);
+      await page.keyboard.press('Escape');
+      await dialog.waitFor({state: 'hidden'});
+      assert.match(await card.locator('[data-cf-state]').textContent(), /已关闭/);
+      await page.getByRole('button', {name: '开启 CF', exact: true}).click();
+      await dialog.waitFor({state: 'visible'});
+      await page.setViewportSize({width: 390, height: 844});
+      const box = await dialog.boundingBox();
+      assert.ok(box.width <= 390 && box.x >= 0);
+      const choices = dialog.getByRole('radio');
+      await choices.nth(1).focus();
+      await page.keyboard.press('Space');
+      for (let index = 0; index < 6; index++) {
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => !!document.activeElement.closest('dialog')), true);
+      }
+      await dialog.getByRole('button', {name: '确认入口'}).click();
+      await page.setViewportSize({width: 1320, height: 1000});
+    }
     await page.waitForFunction(() => document.querySelector('[data-cf-state]')?.textContent === '在线');
     const link = card.locator('[data-cf-url]');
     assert.equal(await link.getAttribute('href'), 'https://business-fixture.trycloudflare.com/');

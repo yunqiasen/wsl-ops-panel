@@ -55,28 +55,84 @@
     }
   }
 
+  const sourceLabels = {published_port: '宿主发布端口', container_network: '容器网络', host_network: 'host 网络', project_listener: '项目监听'};
+
+  function chooseTarget(id, prepared) {
+    return new Promise(resolve => {
+      const dialog = document.createElement('dialog');
+      dialog.className = 'cf-entry-dialog';
+      dialog.setAttribute('aria-labelledby', 'cf-entry-heading');
+      dialog.innerHTML = '<h2 id="cf-entry-heading">选择项目入口</h2><p data-cf-project></p><fieldset><legend>当前可达入口</legend></fieldset><p class="cf-entry-notice">开放的是整个 HTTP 服务，不只下面的页面。临时网址重建后会变化；Quick Tunnel 不支持 SSE，有 200 个进行中请求上限及可用性限制。</p><div class="cf-entry-actions"><button type="button" class="ghost-button" data-cf-cancel>取消此项目</button><button type="button" class="primary-button" data-cf-confirm disabled>确认入口</button></div>';
+      dialog.querySelector('[data-cf-project]').textContent = id;
+      const confirm = dialog.querySelector('[data-cf-confirm]');
+      const fieldset = dialog.querySelector('fieldset');
+      let selected = null;
+      for (const target of prepared.targets) {
+        const label = document.createElement('label');
+        label.className = `cf-entry-option${target.reachable ? '' : ' cf-entry-option--unavailable'}`;
+        const input = document.createElement('input');
+        input.type = 'radio'; input.name = 'cf-entry'; input.disabled = !target.reachable;
+        input.setAttribute('aria-label', `${target.name} ${target.origin}${target.path || '/'}`);
+        input.addEventListener('change', () => {
+          selected = {id: target.id, revision: target.revision}; confirm.disabled = false;
+        });
+        const text = document.createElement('span');
+        for (const [tag, value] of [
+          ['strong', target.name], ['code', `${target.origin}${target.path || '/'}`],
+          ['small', `${sourceLabels[target.source] || target.source} · ${target.reason || (target.reachable ? '可达' : '待核验')}`],
+        ]) {
+          const line = document.createElement(tag); line.textContent = value; text.append(line);
+        }
+        label.append(input, text); fieldset.append(label);
+      }
+      const finish = choice => { dialog.close(); dialog.remove(); resolve(choice); };
+      confirm.addEventListener('click', () => { if (selected) finish(selected); });
+      dialog.querySelector('[data-cf-cancel]').addEventListener('click', () => finish(null));
+      dialog.addEventListener('cancel', event => { event.preventDefault(); finish(null); });
+      dialog.addEventListener('keydown', event => {
+        if (event.key !== 'Tab') return;
+        const focusable = [...dialog.querySelectorAll('input:not(:disabled),button:not(:disabled)')];
+        const first = focusable[0], last = focusable.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      });
+      document.body.append(dialog); dialog.showModal();
+      dialog.querySelector('input:not(:disabled),button').focus();
+    });
+  }
+
   async function submit(action, assetIds, result) {
     result.textContent = '正在核对 CF 入口…';
-    const ready = [];
-    const skipped = [];
-    for (const id of assetIds) {
-      try {
-        if (action !== 'cf-disable') {
-          const prepared = await request(`/api/assets/${encodeURIComponent(id)}/cf/targets`);
-          const targets = prepared.targets.filter(target => target.reachable);
-          if (targets.length !== 1) throw new Error(targets.length ? '有多个入口，请选择后开启' : '没有可达的 HTTP 入口');
-        }
-        ready.push(id);
-      } catch (error) { skipped.push(`${id}：${error.message}`); }
+    const ready = [], skipped = [], targetMap = {};
+    const trigger = [...document.querySelectorAll('[data-bulk-action]')].find(button => button.dataset.bulkAction === action);
+    try {
+      for (const id of assetIds) {
+        try {
+          if (action !== 'cf-disable') {
+            const prepared = await request(`/api/assets/${encodeURIComponent(id)}/cf/targets`);
+            const targets = prepared.targets.filter(target => target.reachable);
+            if (!targets.length) throw new Error(prepared.targets.map(target => target.reason).filter(Boolean).join('；') || '没有可达的 HTTP 入口');
+            const saved = targets.find(target => target.id === prepared.selected_id);
+            const automatic = !prepared.requires_selection && (saved || (targets.length === 1 ? targets[0] : null));
+            const choice = automatic ? {id: automatic.id, revision: automatic.revision} : await chooseTarget(id, prepared);
+            if (!choice) { skipped.push(`${id}：已取消，保持原状`); continue; }
+            targetMap[id] = choice;
+          }
+          ready.push(id);
+        } catch (error) { skipped.push(`${id}：${error.message}`); }
+      }
+      let payload = {queued_count: 0, tasks: [], skipped: []};
+      if (ready.length) payload = await request(`/api/bulk/actions/${action}`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({asset_ids: ready, cf_target_map: targetMap}),
+      });
+      skipped.push(...payload.skipped.map(item => `${item.asset_id}：${item.reason}`));
+      result.textContent = `${payload.queued_count ? `已入队 ${payload.queued_count} 个，实际结果见卡片与任务中心。` : '未入队。'}${skipped.join('；')}`;
+      await Promise.all(ready.map(refresh));
+      return payload;
+    } finally {
+      // The toolbar enables its buttons when this promise settles.
+      window.setTimeout(() => { if (trigger?.isConnected) trigger.focus(); }, 0);
     }
-    let payload = {queued_count: 0, tasks: [], skipped: []};
-    if (ready.length) payload = await request(`/api/bulk/actions/${action}`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({asset_ids: ready}),
-    });
-    skipped.push(...payload.skipped.map(item => `${item.asset_id}：${item.reason}`));
-    result.textContent = `${payload.queued_count ? `已入队 ${payload.queued_count} 个，实际结果见卡片与任务中心。` : '未入队。'}${skipped.join('；')}`;
-    await Promise.all(ready.map(refresh));
-    return payload;
   }
 
   function init() {
