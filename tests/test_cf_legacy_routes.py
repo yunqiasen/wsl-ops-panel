@@ -15,8 +15,8 @@ from tests.test_cf_tunnels import (
 )
 
 
-def attach_legacy(panel, tmp_path, monkeypatch, *, active=True, exec_start=None):
-    roots = tmp_path / "units"
+def attach_legacy(panel, tmp_path, monkeypatch, *, active=True, exec_start=None, unit_root=None):
+    roots = unit_root if unit_root is not None else tmp_path / "units"
     raw = exec_start or "/usr/bin/cloudflared tunnel --url http://127.0.0.1:18080"
     unit = write_unit(
         roots,

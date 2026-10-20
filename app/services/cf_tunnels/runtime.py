@@ -5,11 +5,39 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from time import monotonic, sleep
 
 from app.services.cf_tunnels.models import CFError
+
+
+# System services often lack the login session variables. Resolve only the
+# current process user's existing directory/socket; never create a session.
+USER_RUNTIME_ROOT = Path("/run/user")
+
+
+def user_manager_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    uid = os.geteuid()
+    if not environment.get("XDG_RUNTIME_DIR"):
+        directory = USER_RUNTIME_ROOT / str(uid)
+        try:
+            info = directory.stat()
+            if info.st_uid == uid and stat.S_ISDIR(info.st_mode):
+                environment["XDG_RUNTIME_DIR"] = str(directory)
+        except OSError:
+            pass
+    if not environment.get("DBUS_SESSION_BUS_ADDRESS") and environment.get("XDG_RUNTIME_DIR"):
+        bus = Path(environment["XDG_RUNTIME_DIR"]) / "bus"
+        try:
+            info = bus.stat()
+            if info.st_uid == uid and stat.S_ISSOCK(info.st_mode):
+                environment["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+        except OSError:
+            pass
+    return environment
 
 
 def quick_url(value: str) -> str:
@@ -45,6 +73,7 @@ class SystemdTunnelRuntime:
                 ],
                 capture_output=True,
                 text=True,
+                env=user_manager_environment(),
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
@@ -107,6 +136,7 @@ class SystemdTunnelRuntime:
                     command,
                     capture_output=True,
                     text=True,
+                    env=user_manager_environment(),
                     timeout=budget(deadline, timeout),
                 )
             except subprocess.TimeoutExpired as exc:
@@ -196,6 +226,7 @@ class SystemdTunnelRuntime:
                 ["systemctl", "--user", "stop", handle["unit"]],
                 capture_output=True,
                 text=True,
+                env=user_manager_environment(),
                 timeout=budget(deadline, timeout, stage="cleanup"),
             )
             if result.returncode:

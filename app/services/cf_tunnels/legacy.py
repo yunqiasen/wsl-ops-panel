@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from app.models.assets import AssetSnapshot
 from app.services.cf_tunnels.models import CFError
-from app.services.cf_tunnels.runtime import quick_url
+from app.services.cf_tunnels.runtime import quick_url, user_manager_environment
 
 _DEFAULT_UNIT_ROOTS: list[Path] = [
     Path("/etc/systemd/system"),
@@ -489,6 +489,7 @@ class LegacyTunnelRuntime:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                **({"env": user_manager_environment()} if "--user" in argv else {}),
             )
         except subprocess.TimeoutExpired:
             raise CFError(stage, "旧隧道操作超时") from None
