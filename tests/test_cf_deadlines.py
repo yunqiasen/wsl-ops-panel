@@ -81,3 +81,25 @@ def test_registration_obeys_one_total_budget_across_inspect_start_and_register(
         runtime.start("a" * 64, "fixture-token", "http://127.0.0.1:18080", timeout=10)
     assert error.value.stage == "runtime"
     assert manager.clock <= 10
+
+
+def test_launch_registration_timeout_reaps_the_resource_already_created(
+    tmp_path, monkeypatch
+):
+    from tests.test_cf_tunnels import attach_local_observation, make_panel, submit_cf
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    manager = DelayedManager(tmp_path, monkeypatch)
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "runtime"
+        assert status["current_url"] is None
+        assert manager.info["ActiveState"] == "inactive"
+        assert manager.clock <= 25  # launch budget plus at most fifteen for cleanup
+        assert panel.containers[0].state == "running"
+    finally:
+        panel.app.state.task_worker.stop()

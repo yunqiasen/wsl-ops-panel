@@ -102,23 +102,34 @@ class SystemdTunnelRuntime:
             origin,
         ]
         try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=budget(deadline, timeout),
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=budget(deadline, timeout),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise CFError("runtime", "CF 用户级服务创建超时") from exc
+            if result.returncode:
+                raise CFError("runtime", "CF 用户级服务创建失败")
+            while monotonic() < deadline:
+                info = self._show(unit, budget(deadline))
+                if info.get("Description") == description and info.get("InvocationID"):
+                    handle["invocation_id"] = info["InvocationID"]
+                    return handle
+                sleep(min(0.05, max(0, deadline - monotonic())))
+            raise CFError("runtime", "CF 运行标识登记超时")
+        except (CFError, OSError, subprocess.SubprocessError) as exc:
+            error = (
+                exc
+                if isinstance(exc, CFError)
+                else CFError("runtime", f"CF 用户级服务创建失败 ({type(exc).__name__})")
             )
-        except subprocess.TimeoutExpired as exc:
-            raise CFError("runtime", "CF 用户级服务创建超时") from exc
-        if result.returncode:
-            raise CFError("runtime", "CF 用户级服务创建失败")
-        while monotonic() < deadline:
-            info = self._show(unit, budget(deadline))
-            if info.get("Description") == description and info.get("InvocationID"):
-                handle["invocation_id"] = info["InvocationID"]
-                return handle
-            sleep(min(0.05, max(0, deadline - monotonic())))
-        raise CFError("runtime", "CF 运行标识登记超时")
+            # Even if systemd-run/registration times out, the unit may exist.
+            # Retain this unique generation so the caller can verify and clean it.
+            error.handle = handle
+            raise error from exc
 
     def observe(self, handle: dict, *, timeout: float = 5) -> dict:
         if handle["boot_id"] != self.boot_id:
@@ -126,7 +137,11 @@ class SystemdTunnelRuntime:
         info = self._show(handle["unit"], timeout)
         active = info.get("ActiveState") in {"active", "activating", "deactivating"}
         if active and (
-            info.get("InvocationID") != handle["invocation_id"]
+            not info.get("InvocationID")
+            or (
+                handle.get("invocation_id")
+                and info.get("InvocationID") != handle["invocation_id"]
+            )
             or info.get("Description")
             != f"wsl-ops-cf:{handle['owner']}:{handle['token']}"
             or info.get("Transient") != "yes"
@@ -134,6 +149,7 @@ class SystemdTunnelRuntime:
             raise CFError("runtime_identity", "CF 服务归属已变化，原资源保持原样")
         url = None
         if active:
+            handle.setdefault("invocation_id", info["InvocationID"])
             try:
                 value = json.loads((self._directory(handle) / "url.json").read_text())
                 if value.get("token") == handle["token"]:

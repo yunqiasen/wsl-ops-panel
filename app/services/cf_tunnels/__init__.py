@@ -660,14 +660,21 @@ class CFTunnelService:
                     if isinstance(exc, CFError)
                     else CFError("runtime", f"CF 执行失败 ({type(exc).__name__})")
                 )
+                handle = handle or getattr(exc, "handle", None)
+                cleanup = {}
                 if handle:
                     try:
                         self.runtime.stop(handle)
-                        self.store.update(key, handle=None)
+                        handle = None
                     except Exception:
                         error = CFError("cleanup", f"{error}；隧道仍待清理")
+                    cleanup["handle"] = handle
                 self.store.update(
-                    key, state="error", current_url=None, error=error.as_dict()
+                    key,
+                    state="error",
+                    current_url=None,
+                    error=error.as_dict(),
+                    **cleanup,
                 )
                 self.store.settle_request(operation.request_id, "failed")
                 raise error from exc

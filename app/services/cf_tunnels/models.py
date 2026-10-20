@@ -23,9 +23,10 @@ class CFOperation(BaseModel):
 
 
 class CFError(ValueError):
-    def __init__(self, stage: str, message: str):
+    def __init__(self, stage: str, message: str, *, handle: dict | None = None):
         super().__init__(message)
         self.stage = stage
+        self.handle = handle
 
     def as_dict(self) -> dict[str, str]:
         return {"stage": self.stage, "message": str(self)}
