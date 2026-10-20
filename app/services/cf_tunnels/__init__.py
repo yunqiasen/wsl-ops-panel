@@ -168,6 +168,14 @@ class CFTunnelService:
         return record
 
     def _synchronize_requests(self, key, record):
+        # Acceptance spans two stores. A concurrent reader must not mistake the
+        # short gap before task insertion for an abandoned request.
+        with observe_lock(self.data_root / "cf" / f"{key}.enqueue.lock") as acquired:
+            if not acquired:
+                return record
+            return self._reconcile_requests(key, record)
+
+    def _reconcile_requests(self, key, record):
         pending = self.store.pending(key)
         boot = record.get("boot_id") or (record.get("handle") or {}).get("boot_id")
         changed_boot = bool(boot and boot != self.runtime.boot_id)
