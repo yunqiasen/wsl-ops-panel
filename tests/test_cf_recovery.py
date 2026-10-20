@@ -106,3 +106,45 @@ def test_startup_cleans_unverified_resource_left_by_interrupted_executor(
         assert status["current_url"] is None
         assert panel.store.get(task.id).status == "interrupted"
         assert not any(resource["active"] for resource in runtime.resources.values())
+
+
+def test_restart_compensates_when_cf_finished_but_task_result_write_failed(
+    tmp_path, monkeypatch
+):
+    import sqlite3
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    runtime = FakeTunnelRuntime()
+    panel.app.state.cf_service.runtime = runtime
+    original_update = panel.store.update
+
+    def failing_result(task):
+        if task.status == "succeeded":
+            raise sqlite3.OperationalError("fixture result write failed")
+        original_update(task)
+
+    monkeypatch.setattr(panel.store, "update", failing_result)
+    response = panel.client.post(
+        "/api/bulk/actions/cf-create", json={"asset_ids": ["web"]}
+    ).json()
+    task = panel.store.get(response["tasks"][0]["id"])
+    plan = panel.app.state.task_worker.load_plan(Path(task.plan_path))
+    with pytest.raises(sqlite3.OperationalError):
+        execute_action_plan(
+            task,
+            plan,
+            sink=panel.app.state.system_terminal_sink,
+            store=panel.store,
+            cf_executor=panel.app.state.cf_service.execute,
+        )
+    assert panel.store.get(task.id).status == "running"
+    assert next(iter(runtime.resources.values()))["verified"] is True
+    _, client = restore_app(panel)
+    with client:
+        status = client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "persistence"
+        assert status["current_url"] is None
+        assert panel.store.get(task.id).status == "interrupted"
+        assert not any(resource["active"] for resource in runtime.resources.values())

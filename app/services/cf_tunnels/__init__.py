@@ -73,7 +73,7 @@ class CFTunnelService:
             key = None
         record = self.store.get(key) if key else None
         pending = self.store.pending(key) if record else []
-        if record and (record.get("handle") or pending):
+        if record:
             with observe_lock(
                 self.data_root / "cf" / f"{key}.runtime.lock"
             ) as acquired:
@@ -196,6 +196,23 @@ class CFTunnelService:
                 task.status = "interrupted"
                 task.finished_at = datetime.fromtimestamp(self.clock(), UTC)
                 self.task_store.update(task)
+        last_request = record.get("last_task_id")
+        if (
+            self.task_store is not None
+            and last_request
+            and self.store.request_status(last_request) == "succeeded"
+        ):
+            try:
+                completed = self.task_store.get(last_request)
+            except KeyError:
+                completed = None
+            if not completed or completed.status not in {
+                "queued",
+                "running",
+                "succeeded",
+            }:
+                self.store.settle_request(last_request, "failed")
+                interrupted = True
         if changed_boot:
             return self.store.update(
                 key,
@@ -258,9 +275,12 @@ class CFTunnelService:
             with observe_lock(
                 self.data_root / "cf" / f"{key}.runtime.lock"
             ) as acquired:
-                if not acquired or self.store.pending(key):
+                if not acquired:
                     continue
-                record = self._observe_record(key, self.store.get(key))
+                record = self._synchronize_requests(key, self.store.get(key))
+                if self.store.pending(key):
+                    continue
+                record = self._observe_record(key, record)
                 if not record.get("handle"):
                     continue
                 if record.get("desired") == "off":
