@@ -18,6 +18,13 @@ def quick_url(value: str) -> str:
     return value
 
 
+def budget(deadline: float, cap: float = 5, *, stage: str = "runtime") -> float:
+    left = deadline - monotonic()
+    if left <= 0:
+        raise CFError(stage, "CF 运行操作超时")
+    return min(cap, left)
+
+
 class SystemdTunnelRuntime:
     def __init__(self, root: Path):
         self.root = root
@@ -27,18 +34,21 @@ class SystemdTunnelRuntime:
         return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
     def _show(self, unit: str, timeout: float = 5) -> dict[str, str]:
-        result = subprocess.run(
-            [
-                "systemctl",
-                "--user",
-                "show",
-                unit,
-                "--property=LoadState,ActiveState,MainPID,InvocationID,Description,Transient",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "systemctl",
+                    "--user",
+                    "show",
+                    unit,
+                    "--property=LoadState,ActiveState,MainPID,InvocationID,Description,Transient",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CFError("runtime", "CF 运行标识读取超时") from exc
         if result.returncode:
             raise CFError("runtime", "用户级服务管理器访问失败")
         return dict(
@@ -49,6 +59,7 @@ class SystemdTunnelRuntime:
         return self.root / handle["owner"] / handle["token"]
 
     def start(self, owner: str, token: str, origin: str, *, timeout: float) -> dict:
+        deadline = monotonic() + timeout
         binary = shutil.which("cloudflared") or str(
             Path.home() / ".cftunnel/bin/cloudflared"
         )
@@ -57,7 +68,7 @@ class SystemdTunnelRuntime:
                 "dependency", "缺少可执行的 cloudflared，请在系统基础设施中安装"
             )
         unit = f"wsl-ops-cf-{owner[:24]}.service"
-        before = self._show(unit)
+        before = self._show(unit, budget(deadline))
         if before.get("ActiveState") in {"active", "activating", "deactivating"}:
             raise CFError("runtime", "对应 CF 运行资源已被占用")
         handle = {"owner": owner, "token": token, "unit": unit, "boot_id": self.boot_id}
@@ -90,18 +101,23 @@ class SystemdTunnelRuntime:
             "--origin",
             origin,
         ]
-        result = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout
-        )
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=budget(deadline, timeout),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CFError("runtime", "CF 用户级服务创建超时") from exc
         if result.returncode:
             raise CFError("runtime", "CF 用户级服务创建失败")
-        deadline = monotonic() + 3
         while monotonic() < deadline:
-            info = self._show(unit)
+            info = self._show(unit, budget(deadline))
             if info.get("Description") == description and info.get("InvocationID"):
                 handle["invocation_id"] = info["InvocationID"]
                 return handle
-            sleep(0.05)
+            sleep(min(0.05, max(0, deadline - monotonic())))
         raise CFError("runtime", "CF 运行标识登记超时")
 
     def observe(self, handle: dict, *, timeout: float = 5) -> dict:
