@@ -278,3 +278,22 @@ def test_close_cf_is_idempotent_even_after_origin_stops(tmp_path, monkeypatch):
         )  # CF never changed the business fixture.
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_open_reuses_online_tunnel_and_only_refresh_rebuilds_it(tmp_path, monkeypatch):
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    runtime = FakeTunnelRuntime()
+    panel.app.state.cf_service.runtime = runtime
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        first = panel.client.get("/api/assets/web/cf").json()["current_url"]
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        assert len(runtime.resources) == 1
+        assert panel.client.get("/api/assets/web/cf").json()["current_url"] == first
+        assert submit_cf(panel, "cf-refresh").status == "succeeded"
+        assert len(runtime.resources) == 2
+        assert sum(resource["active"] for resource in runtime.resources.values()) == 1
+    finally:
+        panel.app.state.task_worker.stop()

@@ -177,9 +177,26 @@ class CFTunnelService:
                 )
                 if target is None:
                     raise CFError("origin_identity", "入口或容器实例已变化，请重新开启")
-                handle = self.runtime.start(
-                    key, operation.request_id, target["origin"], timeout=10
-                )
+                existing = record.get("handle")
+                if existing and self.runtime.observe(existing)["active"]:
+                    if (
+                        operation.action == "cf_create"
+                        and record.get("target", {}).get("revision")
+                        == target["revision"]
+                    ):
+                        handle = existing
+                    else:
+                        self.runtime.stop(existing, timeout=15)
+                        self.store.update(
+                            key,
+                            handle=None,
+                            history_url=record.get("current_url")
+                            or record.get("history_url"),
+                        )
+                if handle is None:
+                    handle = self.runtime.start(
+                        key, operation.request_id, target["origin"], timeout=10
+                    )
                 self.store.update(
                     key,
                     handle=handle,
