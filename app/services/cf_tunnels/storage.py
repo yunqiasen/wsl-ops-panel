@@ -79,6 +79,8 @@ class CFStore:
                 last_task_id=operation.request_id,
                 asset=operation.asset.model_dump(mode="json"),
             )
+            if operation.target:
+                record["selection_id"] = operation.target.id
             connection.execute(
                 "INSERT INTO cf_tunnels VALUES (?, ?) ON CONFLICT(owner) DO UPDATE SET payload=excluded.payload",
                 (operation.owner, json.dumps(record)),

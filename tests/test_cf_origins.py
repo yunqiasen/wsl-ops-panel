@@ -32,3 +32,54 @@ def test_unpublished_docker_port_uses_container_network_not_same_number_on_host(
         assert observed.info["ports"] == {"8080/tcp": None}
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_explicit_choice_is_checked_then_re_resolved_on_reopen(tmp_path, monkeypatch):
+    from tests.test_cf_tunnels import wait_for_task
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    observed.info["ports"]["9090/tcp"] = [{"HostIp": "127.0.0.1", "HostPort": "19090"}]
+    runtime = FakeTunnelRuntime()
+    panel.app.state.cf_service.runtime = runtime
+    targets = panel.client.get("/api/assets/web/cf/targets").json()["targets"]
+    assert len(targets) == 2
+    selected = next(target for target in targets if target["origin"].endswith(":19090"))
+    choice = {key: selected[key] for key in ("id", "revision")}
+    response = panel.client.post(
+        "/api/bulk/actions/cf-create",
+        json={"asset_ids": ["web"], "cf_target_map": {"web": choice}},
+    )
+    assert response.status_code == 202
+    assert response.json()["queued_count"] == 1
+    panel.app.state.task_worker.start()
+    try:
+        assert (
+            wait_for_task(panel, response.json()["tasks"][0]["id"]).status
+            == "succeeded"
+        )
+        assert (
+            next(iter(runtime.resources.values()))["origin"] == "http://127.0.0.1:19090"
+        )
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        observed.info["ports"]["9090/tcp"][0]["HostPort"] = "19091"
+        observed.info["id"] = "b" * 64
+        panel.containers[0].id = "b" * 64
+        stale = panel.client.post(
+            "/api/bulk/actions/cf-create",
+            json={"asset_ids": ["web"], "cf_target_map": {"web": choice}},
+        )
+        assert stale.json()["queued_count"] == 0
+        assert not any(resource["active"] for resource in runtime.resources.values())
+        assert (
+            panel.client.get("/api/assets/web/cf/targets").json()["selected_id"]
+            == choice["id"]
+        )
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        assert [
+            resource["origin"]
+            for resource in runtime.resources.values()
+            if resource["active"]
+        ] == ["http://127.0.0.1:19091"]
+    finally:
+        panel.app.state.task_worker.stop()

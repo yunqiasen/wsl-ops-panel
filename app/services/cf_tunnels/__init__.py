@@ -80,12 +80,22 @@ class CFTunnelService:
 
     def prepare(self, asset: AssetSnapshot) -> dict[str, object]:
         try:
-            return prepare_targets(
+            prepared = prepare_targets(
                 asset,
                 self.http_transport,
                 timeout=self.prepare_timeout,
                 probe_timeout=self.probe_timeout,
             )
+            record = self.store.get(owner_key(asset)) or {}
+            saved = record.get("selection_id") or record.get("target", {}).get("id")
+            valid = [item for item in prepared["targets"] if item["reachable"]]
+            selected = next((item["id"] for item in valid if item["id"] == saved), None)
+            if not saved and len(valid) == 1:
+                selected = valid[0]["id"]
+            prepared.update(
+                selected_id=selected, requires_selection=bool(valid) and not selected
+            )
+            return prepared
         except (httpx.HTTPError, OSError, SubprocessError) as exc:
             raise CFError(
                 "origin_probe", f"项目入口读取失败 ({type(exc).__name__})"
@@ -110,6 +120,12 @@ class CFTunnelService:
                     for item in targets
                     if item["id"] == choice.id and item["revision"] == choice.revision
                 ]
+            elif prepared.get("selected_id"):
+                targets = [
+                    item for item in targets if item["id"] == prepared["selected_id"]
+                ]
+            elif prepared.get("requires_selection"):
+                raise CFError("origin_selection", "需要重新选择一个当前可达的项目入口")
             if len(targets) != 1:
                 raise CFError(
                     "origin_selection",

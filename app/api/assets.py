@@ -17,6 +17,7 @@ from app.core.security import require_authenticated_request
 from app.models.assets import AssetSnapshot, PackageVersionInfo, RuntimeVersionInfo
 from app.models.registry import ObjectDefinition
 from app.models.tasks import TaskRecord
+from app.services.cf_tunnels.models import TargetChoice
 from app.services.notifications import asset_to_notification_json
 
 router = APIRouter(prefix='/api/assets', tags=['assets'])
@@ -235,7 +236,7 @@ async def _extract_requested_version(request: Request) -> str | None:
 
 
 def enqueue_asset_action(request: Request, object_id: str, *, action: str, version: str | None = None,
-                         asset: AssetSnapshot | None = None, render_flash: bool = True):
+                         asset: AssetSnapshot | None = None, render_flash: bool = True, cf_target: TargetChoice | None = None):
     require_authenticated_request(request)
     asset = asset if asset is not None else _get_asset(request, object_id)
     if asset.object_id != object_id:
@@ -246,7 +247,7 @@ def enqueue_asset_action(request: Request, object_id: str, *, action: str, versi
         raise HTTPException(status_code=400, detail=f'action {action} is not supported by {object_id}')
     if action in {"cf_create", "cf_refresh", "cf_disable"} and asset.category == "docker":
         try:
-            task, plan = request.app.state.cf_service.enqueue(request.app.state.task_queue, asset, action)
+            task, plan = request.app.state.cf_service.enqueue(request.app.state.task_queue, asset, action, choice=cf_target)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return AssetActionResponse(task=task, plan=plan)

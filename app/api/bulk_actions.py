@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.assets import AssetActionResponse, enqueue_asset_action
 from app.core.security import require_authenticated_request
 from app.models.tasks import TaskRecord
+from app.services.cf_tunnels.models import TargetChoice
 
 router = APIRouter(prefix='/api/bulk/actions', tags=['bulk-actions'])
 
@@ -29,6 +30,7 @@ class BulkActionRequest(BaseModel):
     asset_ids: list[str] = Field(min_length=1)
     version_map: dict[str, str] = Field(default_factory=dict)
     options: dict[str, str] = Field(default_factory=dict)
+    cf_target_map: dict[str, TargetChoice] = Field(default_factory=dict)
 
 
 class BulkSkippedItem(BaseModel):
@@ -73,7 +75,7 @@ def queue_bulk_action(action_slug: str, payload: BulkActionRequest, request: Req
             if action == 'deploy_version' and not version:
                 skipped.append(BulkSkippedItem(asset_id=asset_id, reason=f'version is required for {asset_id}'))
                 continue
-            response = enqueue_asset_action(request, asset_id, action=action, version=version, asset=asset, render_flash=False)
+            response = enqueue_asset_action(request, asset_id, action=action, version=version, asset=asset, render_flash=False, cf_target=payload.cf_target_map.get(asset_id))
             if not isinstance(response, AssetActionResponse):
                 skipped.append(BulkSkippedItem(asset_id=asset_id, reason='unexpected action response'))
                 continue
