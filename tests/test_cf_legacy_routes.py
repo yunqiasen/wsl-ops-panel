@@ -15,9 +15,9 @@ from tests.test_cf_tunnels import (
 )
 
 
-def attach_legacy(panel, tmp_path, monkeypatch, *, active=True):
+def attach_legacy(panel, tmp_path, monkeypatch, *, active=True, exec_start=None):
     roots = tmp_path / "units"
-    raw = "/usr/bin/cloudflared tunnel --url http://127.0.0.1:18080"
+    raw = exec_start or "/usr/bin/cloudflared tunnel --url http://127.0.0.1:18080"
     unit = write_unit(
         roots,
         "explicit-old-cf.service",
@@ -307,3 +307,35 @@ def test_changed_old_tunnel_command_with_the_same_origin_is_not_adopted_or_stopp
         assert panel.app.state.cf_service.runtime.resources == {}
     finally:
         panel.app.state.task_worker.stop()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "tunnel --url http://127.0.0.1:18080 --token fixture-value",
+        "tunnel run --url http://127.0.0.1:18080 named-fixture",
+        "--config /tmp/fixture.yml tunnel --url http://127.0.0.1:18080",
+        "tunnel --url http://127.0.0.1:18080 --url http://127.0.0.1:18081",
+        "tunnel --url http://127.0.0.1:18080 ; /bin/fixture",
+    ],
+)
+def test_non_quick_or_ambiguous_old_command_is_an_external_clue_only(
+    tmp_path, monkeypatch, arguments
+):
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(
+        panel, tmp_path, monkeypatch, exec_start=f"/usr/bin/cloudflared {arguments}"
+    )
+    original = legacy.unit.read_bytes()
+    status = panel.client.get("/api/assets/web/cf").json()
+    assert status["management"] == "external_hint"
+    assert status["capable"] is False
+    assert status["current_url"] is None
+    result = panel.client.post("/api/bulk/actions/cf-create", json={"asset_ids": ["web"]})
+    assert result.json()["queued_count"] == 0
+    assert not panel.store.list_all()
+    assert legacy.commands == []
+    assert observed.requests == []
+    assert legacy.unit.read_bytes() == original
+    assert panel.app.state.cf_service.runtime.resources == {}

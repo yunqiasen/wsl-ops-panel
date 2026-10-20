@@ -53,29 +53,49 @@ def _is_loopback_or_lan(host: str) -> bool:
 
 
 def _extract_url_from_argv(argv: list[str]) -> str | None:
-    """Extract and validate a ``--url`` origin from an argv list.
-
-    Supports ``--url VALUE`` and ``--url=VALUE``.  Rejects credentials,
-    non-HTTP(S) schemes, and non-loopback/container-LAN addresses.
-    """
-    origin: str | None = None
-    for i, arg in enumerate(argv):
-        if arg == "--url" and i + 1 < len(argv):
-            origin = argv[i + 1]
-            break
-        if arg.startswith("--url="):
-            origin = arg[len("--url=") :]
-            break
-    if origin is None:
+    """Accept a single direct Quick Tunnel, not named/configured commands."""
+    values = {
+        "--protocol": {"auto", "http2", "quic"},
+        "--edge-ip-version": {"auto", "4", "6"},
+        "--loglevel": {"debug", "info", "warn", "error", "fatal"},
+        "--transport-loglevel": {"debug", "info", "warn", "error", "fatal"},
+        "--url": None,
+    }
+    seen = set()
+    origin = None
+    args = iter(argv[1:])
+    for arg in args:
+        name, separator, inline = arg.partition("=")
+        if name in seen:
+            return None
+        seen.add(name)
+        if name in {"tunnel", "--no-autoupdate"}:
+            if separator:
+                return None
+            continue
+        if name not in values:
+            return None
+        value = inline if separator else next(args, "")
+        if not value or (values[name] is not None and value not in values[name]):
+            return None
+        if name == "--url":
+            origin = value
+    if "tunnel" not in seen or not origin:
         return None
-    origin = origin.strip("'\"")
-    if not origin.startswith(("http://", "https://")):
-        return None
-    if "@" in origin:
-        return None
-    parsed = urlparse(origin)
-    host = parsed.hostname or ""
-    if not host or not _is_loopback_or_lan(host):
+    try:
+        parsed = urlparse(origin)
+        port = parsed.port
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or not _is_loopback_or_lan(parsed.hostname or "")
+            or parsed.query
+            or parsed.fragment
+            or port == 0
+        ):
+            return None
+    except ValueError:
         return None
     return origin
 
@@ -123,7 +143,11 @@ def _parse_exec_start_value(exec_start: str) -> dict[str, Any] | None:
         binary = argv[0]
 
     is_cf = Path(binary).name == "cloudflared"
-    origin = _extract_url_from_argv(argv) if is_cf else None
+    origin = (
+        _extract_url_from_argv(argv)
+        if is_cf and Path(binary).is_absolute() and argv and argv[0] == binary
+        else None
+    )
 
     return {
         "binary": binary,
@@ -345,7 +369,7 @@ def inspect_legacy(
                 if has_cf:
                     return {
                         "management": "external_hint",
-                        "reason": "旧单元 ExecStart 非直接 cloudflared 或源站参数不可核验",
+                        "reason": "旧单元不是可核验的直接 Quick Tunnel，保留外部线索",
                         "unit": path.name,
                         "fragment_path": str(path),
                     }
@@ -374,7 +398,7 @@ def inspect_legacy(
             }
         return {
             "management": "external_hint",
-            "reason": "旧单元 ExecStart 非直接 cloudflared 或源站参数不可核验",
+            "reason": "旧单元不是可核验的直接 Quick Tunnel，保留外部线索",
             "unit": path.name,
             "fragment_path": str(path),
         }
