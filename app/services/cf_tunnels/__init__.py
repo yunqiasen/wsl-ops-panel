@@ -686,9 +686,9 @@ class CFTunnelService:
                 existing = record.get("handle")
                 if (
                     existing
-                    and self.runtime.observe(existing, timeout=budget(total_deadline))[
-                        "active"
-                    ]
+                    and self._runtime_for(existing).observe(
+                        existing, timeout=budget(total_deadline)
+                    )["active"]
                 ):
                     if (
                         operation.action == "cf_create"

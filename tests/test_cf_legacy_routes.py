@@ -225,3 +225,45 @@ def test_failed_legacy_registration_preserves_retryable_cleanup_without_guessing
         assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
     finally:
         panel.app.state.task_worker.stop()
+
+
+@pytest.mark.parametrize("action", ["cf-create", "cf-refresh"])
+def test_old_tunnel_reuse_and_rebuild_keep_using_its_external_runtime(
+    tmp_path, monkeypatch, action
+):
+    from app.services.cf_tunnels.runtime import SystemdTunnelRuntime
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch)
+    service = panel.app.state.cf_service
+    service.runtime = SystemdTunnelRuntime(tmp_path / "owned-cf")
+    (service.legacy_runtime.proc_root / "sys/kernel/random/boot_id").write_text(
+        service.runtime.boot_id
+    )
+    external_run = subprocess.run
+
+    def new_invocation(command, **kwargs):
+        result = external_run(command, **kwargs)
+        if "systemctl" in command and "start" in command:
+            legacy.info["InvocationID"] = "b" * 32
+        return result
+
+    monkeypatch.setattr(subprocess, "run", new_invocation)
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        assert submit_cf(panel, action).status == "succeeded"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "online"
+        assert status["management"] == "external"
+        assert not service.runtime.root.exists()
+        if action == "cf-create":
+            assert not any("start" in command or "stop" in command for command in legacy.commands)
+            assert legacy.info["InvocationID"] == "a" * 32
+        else:
+            assert sum("stop" in command for command in legacy.commands) == 1
+            assert sum("start" in command for command in legacy.commands) == 1
+            assert legacy.info["InvocationID"] == "b" * 32
+    finally:
+        panel.app.state.task_worker.stop()
