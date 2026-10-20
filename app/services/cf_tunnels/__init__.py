@@ -13,6 +13,7 @@ import httpx
 from app.models.assets import AssetSnapshot
 from app.services.agent_native_lock import exclusive_file_lock
 from app.services.cf_tunnels.models import CFError, CFOperation, TargetChoice
+from app.services.cf_tunnels.freshness import verification_is_fresh
 from app.services.cf_tunnels.origins import owner_key, prepare_targets
 from app.services.cf_tunnels.http_probe import http_error_message, probe
 from app.services.cf_tunnels.storage import CFStore
@@ -193,15 +194,9 @@ class CFTunnelService:
                 error=error.as_dict(),
             )
         if record.get("state") == "online":
-            try:
-                age = (
-                    self.clock()
-                    - datetime.fromisoformat(record["last_verified_at"]).timestamp()
-                )
-            except (KeyError, TypeError, ValueError):
-                age = 61
-            # ISO timestamps round to microseconds; a frozen clock can be fractionally earlier.
-            if not -0.001 <= age < 60:
+            if not verification_is_fresh(
+                record.get("last_verified_at"), now=self.clock()
+            ):
                 return self.store.update(
                     key,
                     state="error",

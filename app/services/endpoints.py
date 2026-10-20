@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from time import time
 from typing import Any
 
 from app.models.assets import AssetSnapshot
+from app.services.cf_tunnels.freshness import verification_is_fresh
 
 DEFAULT_TAILSCALE_IP = '100.126.43.55'
 
@@ -172,11 +173,12 @@ def read_cf_url(asset: AssetSnapshot) -> str | None:
     if not isinstance(observation, dict) or observation.get('state') != 'online':
         return None
     value = observation.get('current_url')
-    try:
-        age = datetime.now(UTC).timestamp() - datetime.fromisoformat(observation['last_verified_at']).timestamp()
-    except (KeyError, TypeError, ValueError):
-        return None
-    return value.strip() if isinstance(value, str) and -0.001 <= age < 60 else None
+    return (
+        value.strip()
+        if isinstance(value, str)
+        and verification_is_fresh(observation.get('last_verified_at'), now=time())
+        else None
+    )
 
 
 def _endpoint_from_config(
