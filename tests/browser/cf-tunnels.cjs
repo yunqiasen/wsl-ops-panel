@@ -65,6 +65,13 @@ const { chromium } = require('playwright');
     await page.waitForFunction(() => document.querySelector('[data-cf-state]')?.textContent === '在线');
     assert.match(await page.locator('[data-bulk-result]').textContent(), /已入队/);
     assert.match(await page.locator('[data-cf-notice]').textContent(), /SSE/);
+    await page.route('**/api/assets/web/cf', route => route.fulfill({status: 503, contentType: 'application/json', body: '{"detail":"status fixture unavailable"}'}));
+    await card.getByRole('button', {name: '复制网址'}).click();
+    await page.waitForFunction(() => document.querySelector('[data-cf-state]')?.textContent === '异常');
+    assert.equal(await link.isVisible(), false);
+    assert.equal(await card.getByRole('button', {name: '复制网址'}).isDisabled(), true);
+    await page.unroute('**/api/assets/web/cf');
+    await page.waitForFunction(() => document.querySelector('[data-cf-state]')?.textContent === '在线');
     const desktop = process.env.CF_BROWSER_OUTPUT;
     if (desktop) {
       fs.mkdirSync(desktop, {recursive: true});

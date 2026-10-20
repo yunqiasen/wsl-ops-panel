@@ -45,8 +45,11 @@
   async function refresh(id) {
     const elements = [...document.querySelectorAll('[data-cf-object]')].filter(element => element.dataset.cfObject === id);
     if (!elements.length) return null;
+    const sequence = (refreshSequences.get(id) || 0) + 1;
+    refreshSequences.set(id, sequence);
     try {
       const status = await request(`/api/assets/${encodeURIComponent(id)}/cf`);
+      if (sequence !== refreshSequences.get(id)) return null;
       elements.forEach(element => render(element, status));
       return status;
     } catch (error) {
