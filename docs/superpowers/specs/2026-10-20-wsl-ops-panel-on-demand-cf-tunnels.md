@@ -1,7 +1,7 @@
 # Docker / Project 按需 CF 隧道规格
 
 日期：2026-10-20
-状态：规格已发布，等待用户批准任务拆分与实现。
+状态：用户回复“进入”后已批准全部实现，按 #4 → #5 → #6 执行。
 
 追踪：[GitHub #3](https://github.com/yunqiasen/wsl-ops-panel/issues/3)
 
