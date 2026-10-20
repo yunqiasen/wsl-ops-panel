@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 from app.models.assets import AssetSnapshot
@@ -167,25 +167,16 @@ def parse_port_mappings(ports: str) -> list[dict[str, str]]:
 
 
 def read_cf_url(asset: AssetSnapshot) -> str | None:
-    capabilities = asset.metadata.get('capabilities')
-    if isinstance(capabilities, dict):
-        cf = capabilities.get('cf_tunnel')
-        if isinstance(cf, dict):
-            current_url = cf.get('current_url')
-            if isinstance(current_url, str) and current_url.strip():
-                return current_url.strip()
-            domain_file = cf.get('domain_file')
-            if isinstance(domain_file, str):
-                path = Path(domain_file)
-                if path.exists():
-                    return path.read_text(encoding='utf-8', errors='replace').strip() or None
-    for key in ('project_dir', 'path'):
-        value = asset.metadata.get(key)
-        if isinstance(value, str) and value.strip():
-            domain_file = Path(value) / 'logs' / 'cftunnel-domain.txt'
-            if domain_file.exists():
-                return domain_file.read_text(encoding='utf-8', errors='replace').strip() or None
-    return None
+    # Discovery caches and old domain files are not evidence of a current tunnel.
+    observation = asset.metadata.get('cf')
+    if not isinstance(observation, dict) or observation.get('state') != 'online':
+        return None
+    value = observation.get('current_url')
+    try:
+        age = datetime.now(UTC).timestamp() - datetime.fromisoformat(observation['last_verified_at']).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value.strip() if isinstance(value, str) and -0.001 <= age < 60 else None
 
 
 def _endpoint_from_config(

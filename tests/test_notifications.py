@@ -135,7 +135,7 @@ def test_notification_api_save_preview_and_send_enqueue(tmp_path: Path) -> None:
     assert store.list_all()[0].action == 'notify_send'
 
 
-def test_registered_docker_notification_reads_cf_file_and_formats_ports(tmp_path: Path) -> None:
+def test_registered_docker_notification_ignores_history_cf_file_and_formats_ports(tmp_path: Path) -> None:
     _write_registry(tmp_path)
     docker_assets = _docker_containers()
     docker_assets[0] = docker_assets[0].model_copy(
@@ -162,6 +162,7 @@ def test_registered_docker_notification_reads_cf_file_and_formats_ports(tmp_path
     rendered = service.preview(asset).content
 
     assert '首选TS：http://100.126.43.55:8317/management.html' in rendered
-    assert 'CF：https://demo.trycloudflare.com' in rendered
+    assert 'CF：\n' in rendered
+    assert 'https://demo.trycloudflare.com' not in rendered
     assert 'API / 管理面板入口：http://100.126.43.55:8317/management.html' in rendered
     assert '原始端口：8317/tcp, 11451/tcp' in rendered
