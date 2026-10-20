@@ -12,7 +12,7 @@ from time import monotonic
 
 import httpx
 
-from app.models.assets import AssetSnapshot
+from app.models.assets import AssetSnapshot, DockerContainerSnapshot
 from app.services.cf_tunnels.http_probe import probe
 from app.services.cf_tunnels.models import CFError
 
@@ -72,15 +72,58 @@ def prepare_targets(
     )
     if primary is None:
         raise CFError("origin_identity", "项目尚缺少主容器")
-    info = inspect_container(primary.name, timeout=remaining(deadline, 5))
+    targets = []
+    failures = []
+    for container in sorted(
+        asset.containers, key=lambda item: item.name != primary.name
+    ):
+        try:
+            found = _container_targets(
+                asset,
+                container,
+                transport,
+                key=key,
+                expected_project=primary.compose_project,
+                deadline=deadline,
+                probe_timeout=probe_timeout,
+            )
+            for target in found:
+                existing = next(
+                    (item for item in targets if item["id"] == target["id"]), None
+                )
+                if existing is None:
+                    targets.append(target)
+                elif not existing["reachable"] and target["reachable"]:
+                    targets[targets.index(existing)] = target
+        except CFError as exc:
+            if exc.stage == "origin_identity":
+                raise
+            failures.append(exc)
+    if failures and not any(target["reachable"] for target in targets):
+        raise failures[0]
+    return {"targets": targets, "selected_id": None}
+
+
+def _container_targets(
+    asset: AssetSnapshot,
+    container: DockerContainerSnapshot,
+    transport: httpx.AsyncBaseTransport | None,
+    *,
+    key: str,
+    expected_project: str | None,
+    deadline: float,
+    probe_timeout: float,
+) -> list[dict]:
+    info = inspect_container(container.name, timeout=remaining(deadline, 5))
     labels = info.get("labels") or {}
     expected_dir = str(Path(str(asset.metadata["project_dir"])).resolve())
     observed_dir = labels.get("com.docker.compose.project.working_dir")
     if (
-        not observed_dir
+        not str(info.get("id", "")).startswith(container.id)
+        or not observed_dir
         or str(Path(observed_dir).resolve()) != expected_dir
-        or labels.get("com.docker.compose.project") != primary.compose_project
-        or labels.get("com.docker.compose.service") != primary.compose_service
+        or labels.get("com.docker.compose.project") != expected_project
+        or labels.get("com.docker.compose.service") != container.compose_service
     ):
         raise CFError("origin_identity", "容器归属已变化，请刷新项目后重试")
     if not info.get("running"):
@@ -111,7 +154,7 @@ def prepare_targets(
                 continue
             authority = f"[{host}]" if ":" in host else host
             origin = f"http://{authority}:{port}"
-            target_id = digest([key, primary.compose_service, exposed, "http"])
+            target_id = digest([key, container.compose_service, exposed, "http"])
             existing = next((item for item in targets if item["id"] == target_id), None)
             if existing and existing["reachable"]:
                 continue
@@ -136,7 +179,7 @@ def prepare_targets(
             target = {
                 "id": target_id,
                 "revision": digest([key, info["id"], info.get("started_at"), origin]),
-                "name": f"{primary.compose_service} · {exposed}",
+                "name": f"{container.compose_service} · {exposed}",
                 "origin": origin,
                 "path": "/",
                 "source": source,
@@ -148,4 +191,4 @@ def prepare_targets(
                 targets[targets.index(existing)] = target
     if failures and not any(target["reachable"] for target in targets):
         raise failures[0]
-    return {"targets": targets, "selected_id": None}
+    return targets

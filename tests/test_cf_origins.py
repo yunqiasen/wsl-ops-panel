@@ -111,3 +111,57 @@ def test_equivalent_container_network_addresses_choose_a_reachable_route(
     assert target["origin"] == "http://172.22.0.2:8080"
     assert target["reachable"] is True
     assert panel.store.list_all() == []
+
+
+def test_all_owned_compose_services_are_candidates_not_only_primary(
+    tmp_path, monkeypatch
+):
+    import json
+    import subprocess
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    admin = panel.containers[0].model_copy(
+        update={
+            "id": "b" * 64,
+            "name": "business-admin",
+            "compose_service": "admin",
+            "labels": {
+                **panel.containers[0].labels,
+                "com.docker.compose.service": "admin",
+            },
+        }
+    )
+    panel.containers.append(admin)
+    original_run = subprocess.run
+
+    def run(command, **kwargs):
+        if (
+            command[:3] == ["docker", "container", "inspect"]
+            and command[-1] == "business-admin"
+        ):
+            info = {
+                **observed.info,
+                "id": admin.id,
+                "name": "/business-admin",
+                "labels": admin.labels,
+                "ports": {"9090/tcp": [{"HostIp": "127.0.0.1", "HostPort": "19090"}]},
+            }
+            return subprocess.CompletedProcess(command, 0, json.dumps(info), "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    response = panel.client.get("/api/assets/web/cf/targets")
+    assert response.status_code == 200
+    assert {target["name"] for target in response.json()["targets"]} == {
+        "web · 8080/tcp",
+        "admin · 9090/tcp",
+    }
+    assert response.json()["requires_selection"] is True
+    assert (
+        panel.client.post(
+            "/api/bulk/actions/cf-create", json={"asset_ids": ["web"]}
+        ).json()["queued_count"]
+        == 0
+    )
+    assert panel.store.list_all() == []
