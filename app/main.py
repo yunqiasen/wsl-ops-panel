@@ -48,10 +48,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     worker = app.state.task_worker
     app.state.task_queue.recover_on_startup()
     worker.start()
+    app.state.cf_service.start_observer()
     try:
         yield
     finally:
         close_all_terminal_sessions(app)
+        app.state.cf_service.stop_observer()
         worker.stop()
 
 
@@ -125,6 +127,7 @@ def create_app(
     app.state.project_scanner = project_scanner
     app.state.registry_service = registry_service
     app.state.asset_service = asset_service
+    cf_service.asset_source = lambda: app.state.asset_service
     app.state.docker_recipe_service = docker_recipe_service
     app.state.docker_version_service = docker_version_service
     app.state.notification_service = NotificationService(config_root)

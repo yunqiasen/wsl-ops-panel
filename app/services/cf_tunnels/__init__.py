@@ -1,10 +1,12 @@
 """On-demand CF access, independent from the local application's lifecycle."""
 
 from datetime import UTC, datetime
+import logging
 from pathlib import Path
 from subprocess import SubprocessError
 from time import monotonic, sleep, time
 from uuid import uuid4
+from threading import Event, Thread
 
 import httpx
 
@@ -32,6 +34,9 @@ class CFTunnelService:
         self.runtime = SystemdTunnelRuntime(self.data_root / "cf")
         self.public_timeout = 90.0
         self.clock = time
+        self.asset_source = None
+        self._observer_stop = Event()
+        self._observer_thread = None
 
     def status(self, asset: AssetSnapshot) -> dict[str, object]:
         capable = (asset.category == "docker" and bool(asset.containers)) or (
@@ -118,7 +123,8 @@ class CFTunnelService:
                 )
             except (KeyError, TypeError, ValueError):
                 age = 61
-            if not 0 <= age < 60:
+            # ISO timestamps round to microseconds; a frozen clock can be fractionally earlier.
+            if not -0.001 <= age < 60:
                 return self.store.update(
                     key,
                     state="error",
@@ -130,6 +136,155 @@ class CFTunnelService:
                     },
                 )
         return record
+
+    def start_observer(self):
+        if self._observer_thread and self._observer_thread.is_alive():
+            return
+        self._observer_stop.clear()
+
+        def run():
+            while not self._observer_stop.wait(5):
+                try:
+                    self.maintain()
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "CF observation failed (%s)", type(exc).__name__
+                    )
+
+        self._observer_thread = Thread(
+            target=run, name="wsl-ops-cf-observer", daemon=True
+        )
+        self._observer_thread.start()
+
+    def stop_observer(self):
+        self._observer_stop.set()
+        if self._observer_thread:
+            self._observer_thread.join(timeout=2)
+
+    def maintain(self, *, force=False):
+        if self.asset_source is None:
+            return
+        for key, record in self.store.records():
+            if not record.get("handle"):
+                continue
+            with observe_lock(
+                self.data_root / "cf" / f"{key}.runtime.lock"
+            ) as acquired:
+                if not acquired or self.store.pending(key):
+                    continue
+                record = self._observe_record(key, self.store.get(key))
+                if not record.get("handle"):
+                    continue
+                try:
+                    object_id = record["asset"]["object_id"]
+                    assets = self.asset_source()
+                    asset = assets.get_assets([object_id]).get(object_id)
+                    if asset is None:
+                        asset = next(
+                            (
+                                item
+                                for item in assets.list_assets(
+                                    record["asset"]["category"]
+                                )
+                                if owner_key(item) == key
+                            ),
+                            None,
+                        )
+                    if asset is None or owner_key(asset) != key:
+                        raise CFError("origin_identity", "原项目已消失或归属变化")
+                    prepared = self.prepare(asset)
+                    target = next(
+                        (
+                            item
+                            for item in prepared["targets"]
+                            if item["reachable"]
+                            and item["revision"] == record["target"]["revision"]
+                        ),
+                        None,
+                    )
+                    if target is None:
+                        raise CFError(
+                            "origin_identity", "项目入口或运行实例已变化，请重新开启"
+                        )
+                except (CFError, OSError, SubprocessError) as exc:
+                    error = (
+                        exc
+                        if isinstance(exc, CFError)
+                        else CFError("origin_identity", "项目运行归属读取失败")
+                    )
+                    self._cleanup_record(key, record, error)
+                    continue
+                if (
+                    not force
+                    and self.clock() - record.get("last_probe_attempt", 0) < 30
+                ):
+                    continue
+                self.store.update(key, last_probe_attempt=self.clock())
+                try:
+                    from app.services.cf_tunnels.runtime import quick_url
+
+                    observed = self.runtime.observe(record["handle"])
+                    if not observed["active"] or not observed.get("url"):
+                        raise CFError("cf_connect", "CF 当前连接尚未提供有效网址")
+                    public = quick_url(observed["url"]) + target["path"]
+                    checked = probe(
+                        self.http_transport,
+                        public,
+                        timeout=self.probe_timeout,
+                        stage="public_probe",
+                    )
+                    if (
+                        not checked["reachable"]
+                        or checked["fingerprint"] != target["fingerprint"]
+                    ):
+                        raise CFError(
+                            "public_probe",
+                            checked.get("reason") or "公网响应与当前项目不一致",
+                        )
+                    self.store.update(
+                        key,
+                        state="online",
+                        current_url=public,
+                        target=target,
+                        last_verified_at=datetime.fromtimestamp(
+                            self.clock(), UTC
+                        ).isoformat(),
+                        error=None,
+                    )
+                except (CFError, httpx.HTTPError, OSError, SubprocessError) as exc:
+                    error = (
+                        exc
+                        if isinstance(exc, CFError)
+                        else CFError(
+                            "public_probe", f"公网核验失败 ({type(exc).__name__})"
+                        )
+                    )
+                    self.store.update(
+                        key,
+                        state="error",
+                        current_url=None,
+                        history_url=record.get("current_url")
+                        or record.get("history_url"),
+                        error=error.as_dict(),
+                    )
+
+    def _cleanup_record(self, key, record, error):
+        handle = record.get("handle")
+        if handle:
+            try:
+                self.runtime.stop(handle, timeout=15)
+                handle = None
+            except Exception as exc:
+                message = str(exc) if isinstance(exc, CFError) else type(exc).__name__
+                error = CFError("cleanup", f"{error}；原隧道待清理 ({message})")
+        return self.store.update(
+            key,
+            state="error",
+            current_url=None,
+            handle=handle,
+            history_url=record.get("current_url") or record.get("history_url"),
+            error=error.as_dict(),
+        )
 
     def decorate(self, asset: AssetSnapshot) -> AssetSnapshot:
         if asset.category not in {"docker", "project"}:
@@ -352,6 +507,7 @@ class CFTunnelService:
                                     last_verified_at=datetime.fromtimestamp(
                                         self.clock(), UTC
                                     ).isoformat(),
+                                    last_probe_attempt=self.clock(),
                                     error=None,
                                 )
                                 self.runtime.activate(handle)

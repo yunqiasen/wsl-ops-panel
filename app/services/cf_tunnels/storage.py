@@ -53,6 +53,14 @@ class CFStore:
         )
         return json.loads(rows[0][0]) if rows else None
 
+    def records(self) -> list[tuple[str, dict]]:
+        return [
+            (owner, json.loads(payload))
+            for owner, payload in self._read_query(
+                "cf_tunnels", "SELECT owner, payload FROM cf_tunnels"
+            )
+        ]
+
     def update(self, owner: str, **changes) -> dict:
         with self.transaction() as connection:
             row = connection.execute(

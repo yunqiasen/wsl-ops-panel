@@ -55,3 +55,39 @@ def test_public_verification_expires_in_sixty_seconds_and_boot_change_clears_swi
         assert rebooted["history_url"]
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_maintenance_rechecks_online_entries_and_cleans_only_a_stopped_source_tunnel(
+    tmp_path, monkeypatch
+):
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    service = panel.app.state.cf_service
+    runtime = FakeTunnelRuntime()
+    service.runtime = runtime
+    clock = [1792460000.1234567]
+    service.clock = lambda: clock[0]
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        observed.requests.clear()
+        clock[0] += 29
+        service.maintain()
+        assert not any("trycloudflare.com" in url for url in observed.requests)
+        clock[0] += 2
+        service.maintain()
+        assert sum("trycloudflare.com" in url for url in observed.requests) == 1
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "online", status
+        observed.info["running"] = False
+        service.maintain()
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "origin_probe"
+        assert status["current_url"] is None
+        assert not any(value["active"] for value in runtime.resources.values())
+        assert (
+            panel.containers[0].state == "running"
+        )  # CF never issued a business stop command.
+    finally:
+        panel.app.state.task_worker.stop()
