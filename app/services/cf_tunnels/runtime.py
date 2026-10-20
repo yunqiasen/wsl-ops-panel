@@ -151,6 +151,20 @@ class SystemdTunnelRuntime:
             handle.setdefault("invocation_id", info["InvocationID"])
         return info
 
+    def recover(self, owner: str, token: str, *, timeout: float = 5) -> dict | None:
+        handle = {
+            "owner": owner,
+            "token": token,
+            "unit": f"wsl-ops-cf-{owner[:24]}.service",
+            "boot_id": self.boot_id,
+        }
+        if not self._directory(handle).is_dir():
+            return None
+        info = self._owned_info(handle, timeout=timeout)
+        if info.get("ActiveState") not in {"active", "activating", "deactivating"}:
+            return None
+        return handle
+
     def observe(self, handle: dict, *, timeout: float = 5) -> dict:
         info = self._owned_info(handle, timeout=timeout)
         active = info.get("ActiveState") in {"active", "activating", "deactivating"}

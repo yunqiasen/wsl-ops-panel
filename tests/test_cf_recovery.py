@@ -148,3 +148,46 @@ def test_restart_compensates_when_cf_finished_but_task_result_write_failed(
         assert status["current_url"] is None
         assert panel.store.get(task.id).status == "interrupted"
         assert not any(resource["active"] for resource in runtime.resources.values())
+
+
+def test_restart_reclaims_a_launch_interrupted_before_its_handle_was_returned(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    from tests.test_cf_deadlines import DelayedManager
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    manager = DelayedManager(tmp_path, monkeypatch)
+    manager.delay = manager.next_delay = 0
+    manager_run = subprocess.run
+
+    def crash_after_creation(command, **kwargs):
+        result = manager_run(command, **kwargs)
+        if command[0] == "systemd-run":
+            raise SystemExit("fixture executor died during registration")
+        return result
+
+    monkeypatch.setattr(subprocess, "run", crash_after_creation)
+    response = panel.client.post(
+        "/api/bulk/actions/cf-create", json={"asset_ids": ["web"]}
+    ).json()
+    task = panel.store.get(response["tasks"][0]["id"])
+    plan = panel.app.state.task_worker.load_plan(Path(task.plan_path))
+    with pytest.raises(SystemExit):
+        execute_action_plan(
+            task,
+            plan,
+            sink=panel.app.state.system_terminal_sink,
+            store=panel.store,
+            cf_executor=panel.app.state.cf_service.execute,
+        )
+    assert manager.info["ActiveState"] == "active"
+    _, client = restore_app(panel)
+    with client:
+        status = client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "persistence"
+        assert status["current_url"] is None
+        assert manager.info["ActiveState"] == "inactive"
+        assert panel.store.get(task.id).status == "interrupted"

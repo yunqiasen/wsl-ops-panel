@@ -225,6 +225,22 @@ class CFTunnelService:
                 error=None,
                 history_url=record.get("current_url") or record.get("history_url"),
             )
+        if record.get("launch_pending") and not self.store.pending(key):
+            try:
+                handle = self.runtime.recover(key, record["active_generation"])
+                record = self.store.update(key, handle=handle, launch_pending=False)
+                interrupted = True
+            except (CFError, OSError, SubprocessError) as exc:
+                error = (
+                    exc
+                    if isinstance(exc, CFError)
+                    else CFError(
+                        "runtime", f"CF 启动残留核对失败 ({type(exc).__name__})"
+                    )
+                )
+                return self.store.update(
+                    key, state="error", current_url=None, error=error.as_dict()
+                )
         if interrupted:
             return self._cleanup_record(
                 key,
@@ -270,7 +286,7 @@ class CFTunnelService:
         if self.asset_source is None:
             return
         for key, record in self.store.records():
-            if not record.get("handle"):
+            if not record.get("handle") and not record.get("launch_pending"):
                 continue
             with observe_lock(
                 self.data_root / "cf" / f"{key}.runtime.lock"
@@ -594,6 +610,12 @@ class CFTunnelService:
                             or record.get("history_url"),
                         )
                 if handle is None:
+                    self.store.update(
+                        key,
+                        target=target,
+                        active_generation=operation.request_id,
+                        launch_pending=True,
+                    )
                     handle = self.runtime.start(
                         key, operation.request_id, target["origin"], timeout=10
                     )
@@ -602,6 +624,7 @@ class CFTunnelService:
                     handle=handle,
                     target=target,
                     active_generation=operation.request_id,
+                    launch_pending=False,
                 )
                 deadline = min(total_deadline, monotonic() + self.public_timeout)
                 last_error = CFError("cf_connect", "CF 网址建立超时")
@@ -674,6 +697,7 @@ class CFTunnelService:
                     state="error",
                     current_url=None,
                     error=error.as_dict(),
+                    launch_pending=False,
                     **cleanup,
                 )
                 self.store.settle_request(operation.request_id, "failed")
