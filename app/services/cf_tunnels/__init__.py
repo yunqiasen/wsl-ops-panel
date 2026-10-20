@@ -166,7 +166,14 @@ class CFTunnelService:
                     self.store.settle_request(operation.request_id, "succeeded")
                     return
                 except Exception as exc:
-                    error = CFError("cleanup", "CF 关闭失败，原隧道仍待清理")
+                    error = (
+                        CFError(exc.stage, f"{exc}；原隧道仍待清理")
+                        if isinstance(exc, CFError)
+                        else CFError(
+                            "cleanup",
+                            f"CF 关闭失败 ({type(exc).__name__})，原隧道仍待清理",
+                        )
+                    )
                     self.store.update(key, state="error", error=error.as_dict())
                     self.store.settle_request(operation.request_id, "failed")
                     raise error from exc
