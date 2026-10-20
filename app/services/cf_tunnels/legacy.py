@@ -373,7 +373,16 @@ def inspect_legacy(
                         "unit": path.name,
                         "fragment_path": str(path),
                     }
-                # Not a CF unit — fall through to scanning.
+                return {
+                    "management": "external_hint",
+                    "reason": "显式关联的旧单元不是可核验的 CF 隧道",
+                    "unit": path.name,
+                }
+        return {
+            "management": "external_hint",
+            "reason": "显式关联的旧隧道单元文件缺失或读取失败",
+            "unit": explicit_unit,
+        }
 
     # 2. Scan all unit roots for matching WorkingDirectory + cloudflared.
     matched = _scan_for_associated(project_dir, roots)
