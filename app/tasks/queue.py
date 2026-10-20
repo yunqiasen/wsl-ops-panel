@@ -28,8 +28,9 @@ class GlobalTaskQueue:
         requested_version: str | None = None,
         *,
         plan: ActionPlan | None = None,
+        task_id: str | None = None,
     ) -> TaskRecord:
-        task_id = str(uuid4())
+        task_id = task_id or str(uuid4())
         operation_dir = self.operations_root / task_id
         operation_dir.mkdir(parents=True, exist_ok=True)
         operation_dir.chmod(0o700)

@@ -1,11 +1,13 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.agent_provider_projection import ProviderProjection
+from app.services.cf_tunnels.models import CFOperation
 
 
 class ActionPlan(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
 
+    cf_operation: CFOperation | None = None
     provider_projection: ProviderProjection | None = None
     commands: list[list[str]]
     success_commands: list[list[str]] = Field(default_factory=list)

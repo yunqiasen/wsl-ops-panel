@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 import json
 import logging
@@ -6,7 +7,11 @@ from threading import Event, Thread
 
 from app.adapters.base import ActionPlan
 from app.models.tasks import TaskRecord
-from app.tasks.executor import append_system_chunk, append_task_chunk, execute_action_plan
+from app.tasks.executor import (
+    append_system_chunk,
+    append_task_chunk,
+    execute_action_plan,
+)
 from app.tasks.queue import GlobalTaskQueue
 from app.terminals.system_terminal import SystemTerminalSink
 
@@ -21,7 +26,9 @@ class SerialTaskWorker:
         queue: GlobalTaskQueue,
         sink: SystemTerminalSink,
         poll_interval: float = 0.2,
+        cf_executor: Callable | None = None,
     ) -> None:
+        self.cf_executor = cf_executor
         self.queue = queue
         self.sink = sink
         self.poll_interval = poll_interval
@@ -34,7 +41,7 @@ class SerialTaskWorker:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._thread = Thread(target=self._run, name='wsl-ops-task-runner', daemon=True)
+        self._thread = Thread(target=self._run, name="wsl-ops-task-runner", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -45,14 +52,18 @@ class SerialTaskWorker:
 
     @property
     def is_alive(self) -> bool:
-        return self._thread is not None and self._thread.is_alive() and not self._stop_event.is_set()
+        return (
+            self._thread is not None
+            and self._thread.is_alive()
+            and not self._stop_event.is_set()
+        )
 
     def wake(self) -> None:
         self._wake_event.set()
 
     @staticmethod
     def load_plan(path: Path) -> ActionPlan:
-        payload = json.loads(path.read_text(encoding='utf-8'))
+        payload = json.loads(path.read_text(encoding="utf-8"))
         return ActionPlan.model_validate(payload)
 
     def _run(self) -> None:
@@ -64,27 +75,45 @@ class SerialTaskWorker:
                     continue
             except Exception as exc:
                 # Store reads/writes can fail transiently; keep the consumer alive.
-                LOGGER.warning('task worker poll failed (%s)', type(exc).__name__)
+                LOGGER.warning("task worker poll failed (%s)", type(exc).__name__)
             self._wake_event.wait(self.poll_interval)
             self._wake_event.clear()
 
     def _execute_task(self, task: TaskRecord) -> None:
         try:
             if task.plan_path is None:
-                raise ValueError('missing plan_path')
+                raise ValueError("missing plan_path")
             plan = self.load_plan(Path(task.plan_path))
-            execute_action_plan(task, plan, sink=self.sink, store=self.queue.store)
+            execute_action_plan(
+                task,
+                plan,
+                sink=self.sink,
+                store=self.queue.store,
+                cf_executor=self.cf_executor,
+            )
         except Exception as exc:
             # Settle before logging: a broken sink must not strand a queued task.
-            if task.status != 'succeeded':
+            if task.status != "succeeded":
                 task.started_at = task.started_at or datetime.now(UTC)
-                task.status = 'failed'
+                task.status = "failed"
                 task.finished_at = datetime.now(UTC)
                 self.queue.store.update(task)
             # Plan validation can contain credentials; do not echo its payload.
-            message = f'worker failed: {type(exc).__name__}; task={task.id}\n'
+            message = f"worker failed: {type(exc).__name__}; task={task.id}\n"
             try:
-                append_task_chunk(task, message, sink=self.sink, stream='stderr', mirror_to_system=False)
-                append_system_chunk(self.sink, f'└─ 任务异常：{type(exc).__name__} · {task.id}\n')
+                append_task_chunk(
+                    task,
+                    message,
+                    sink=self.sink,
+                    stream="stderr",
+                    mirror_to_system=False,
+                )
+                append_system_chunk(
+                    self.sink, f"└─ 任务异常：{type(exc).__name__} · {task.id}\n"
+                )
             except Exception:
-                LOGGER.warning('task %s settled as %s; diagnostic log unavailable', task.id, task.status)
+                LOGGER.warning(
+                    "task %s settled as %s; diagnostic log unavailable",
+                    task.id,
+                    task.status,
+                )

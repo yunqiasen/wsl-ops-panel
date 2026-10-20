@@ -90,7 +90,9 @@ class AssetService:
         docker_recipe_service: DockerRecipeService | None = None,
         docker_version_service: DockerVersionService | None = None,
         config_root: Path | str = Path('config'),
+        cf_service=None,
     ) -> None:
+        self.cf_service = cf_service
         self._registry_service = registry_service
         self._docker_scanner = docker_scanner or scan_docker_containers
         self._systemd_scanner = systemd_scanner or scan_systemd_units
@@ -193,6 +195,10 @@ class AssetService:
             LOGGER.warning('failed to persist %s asset snapshot: %s', category_id, exc)
 
     def _build_assets_for_category(self, snapshot: RegistrySnapshot, category_id: str) -> list[AssetSnapshot]:
+        assets = self._raw_assets_for_category(snapshot, category_id)
+        return [self.cf_service.decorate(asset) for asset in assets] if self.cf_service else assets
+
+    def _raw_assets_for_category(self, snapshot: RegistrySnapshot, category_id: str) -> list[AssetSnapshot]:
         if category_id == 'docker':
             return build_docker_asset_snapshots(
                 snapshot,

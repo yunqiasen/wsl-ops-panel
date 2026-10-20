@@ -153,3 +153,93 @@ def test_prepare_cf_uses_verified_published_port_without_starting_a_tunnel(
     assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
     assert panel.store.list_all() == []
     assert not (tmp_path / "data/cf").exists()
+
+
+class FakeTunnelRuntime:
+    """A user-manager substitute; the CF lifecycle and persistence stay real."""
+
+    def __init__(self):
+        self.resources = {}
+        self.boot_id = "boot-fixture"
+
+    def start(self, owner, token, origin, *, timeout):
+        handle = {
+            "owner": owner,
+            "token": token,
+            "invocation_id": token,
+            "unit": f"fixture-{owner}.service",
+            "boot_id": self.boot_id,
+        }
+        self.resources[token] = {
+            "handle": handle,
+            "origin": origin,
+            "active": True,
+            "verified": False,
+            "url": "https://business-fixture.trycloudflare.com",
+        }
+        return handle
+
+    def observe(self, handle, *, timeout=5):
+        resource = self.resources.get(handle["token"])
+        return {
+            "active": bool(resource and resource["active"]),
+            "url": resource["url"] if resource else None,
+        }
+
+    def activate(self, handle):
+        self.resources[handle["token"]]["verified"] = True
+
+    def stop(self, handle, *, timeout=15):
+        if handle["token"] in self.resources:
+            self.resources[handle["token"]]["active"] = False
+
+
+def wait_for_task(panel, task_id):
+    import time
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        task = panel.store.get(task_id)
+        if task and task.status in {"succeeded", "failed", "interrupted"}:
+            return task
+        time.sleep(0.01)
+    raise AssertionError(f"task did not settle: {task_id}")
+
+
+def test_open_cf_is_verified_and_does_not_block_following_tasks(tmp_path, monkeypatch):
+    import sys
+    from app.adapters.base import ActionPlan
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    runtime = FakeTunnelRuntime()
+    panel.app.state.cf_service.runtime = runtime
+    response = panel.client.post(
+        "/api/bulk/actions/cf-create", json={"asset_ids": ["web"]}
+    )
+    assert response.status_code == 202
+    assert response.json()["queued_count"] == 1, response.json()
+    queued = response.json()["tasks"][0]
+    assert panel.client.get("/api/assets/web/cf").json()["state"] == "starting"
+    assert panel.client.get("/api/assets/web/cf").json()["current_url"] is None
+    ordinary = panel.app.state.task_queue.enqueue(
+        "ordinary",
+        "start",
+        plan=ActionPlan(commands=[[sys.executable, "-c", "print('next task')"]]),
+    )
+    panel.app.state.task_worker.start()
+    try:
+        assert wait_for_task(panel, queued["id"]).status == "succeeded"
+        assert wait_for_task(panel, ordinary.id).status == "succeeded"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "online"
+        assert status["current_url"] == "https://business-fixture.trycloudflare.com/"
+        assert status["last_verified_at"]
+        assert "https://business-fixture.trycloudflare.com/" in observed.requests
+        assert len(runtime.resources) == 1
+        assert next(iter(runtime.resources.values()))["active"] is True
+        assert next(iter(runtime.resources.values()))["verified"] is True
+        assert panel.containers[0].state == "running"
+        assert [p.name for p in panel.project.iterdir()] == ["compose.yaml"]
+    finally:
+        panel.app.state.task_worker.stop()

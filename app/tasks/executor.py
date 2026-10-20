@@ -1,3 +1,4 @@
+from collections.abc import Callable
 import shlex
 import subprocess
 from time import monotonic, sleep
@@ -642,6 +643,7 @@ def execute_action_plan(
     *,
     sink: SystemTerminalSink,
     store: TaskStore | None = None,
+    cf_executor: Callable | None = None,
 ) -> None:
     task.status = "running"
     task.started_at = datetime.now(UTC)
@@ -673,6 +675,14 @@ def execute_action_plan(
                     f"│  任务ID：{task.id}\n"
                 ),
             )
+            if plan.cf_operation is not None:
+                if cf_executor is None:
+                    raise ValueError("CF executor is not configured")
+                try:
+                    cf_executor(plan.cf_operation, task)
+                except ValueError as exc:
+                    append_task_chunk(task, f"CF: {exc}\n", sink=sink, stream="stderr")
+                    raise
             step_index = 0
             for command in plan.commands:
                 step_index += 1

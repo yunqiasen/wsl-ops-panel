@@ -20,7 +20,7 @@ def test_worker_executes_next_queued_task(tmp_path: Path, monkeypatch) -> None:
     sink = SystemTerminalSink(tmp_path / 'system.log')
     calls: list[str] = []
 
-    def fake_execute(task, plan, *, sink, store):
+    def fake_execute(task, plan, *, sink, store, cf_executor=None):
         calls.append(task.id)
         task.status = 'succeeded'
         store.update(task)
@@ -70,7 +70,7 @@ def test_worker_preserves_submission_order(tmp_path: Path, monkeypatch) -> None:
     sink = SystemTerminalSink(tmp_path / 'system.log')
     calls: list[str] = []
 
-    def fake_execute(task, plan, *, sink, store):
+    def fake_execute(task, plan, *, sink, store, cf_executor=None):
         calls.append(task.object_id)
         task.status = 'succeeded'
         store.update(task)

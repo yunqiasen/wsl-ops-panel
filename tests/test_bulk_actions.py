@@ -117,46 +117,43 @@ def test_bulk_cf_action_skips_node_asset_even_if_endpoint_exists(tmp_path: Path)
     ]
 
 
-def test_bulk_cf_action_continues_after_skipping_asset_without_cf_control(tmp_path: Path) -> None:
-    store = InMemoryTaskStore()
-    (tmp_path / 'categories').mkdir(parents=True, exist_ok=True)
-    (tmp_path / 'categories' / 'docker.yaml').write_text('id: docker\nlabel: Docker\norder: 10\n', encoding='utf-8')
-    (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
-    cpa_dir = tmp_path / 'cpa'
-    cpa_dir.mkdir()
-    (cpa_dir / 'scripts').mkdir()
-    (cpa_dir / 'scripts' / 'cftunnel-start.sh').write_text('#!/usr/bin/env bash\n', encoding='utf-8')
-    no_cf_dir = tmp_path / 'no-cf'
-    no_cf_dir.mkdir()
-    (tmp_path / 'objects' / 'cpa.yaml').write_text(
-        f'id: cpa\ncategory: docker\ntype: docker_compose\nname: CPA\nconfig:\n'
-        f'  project_dir: {cpa_dir}\n  compose_file: docker-compose.yml\n'
-        '  primary_container: cli-proxy-api\n  compose_service: cli-proxy-api\n',
-        encoding='utf-8',
-    )
-    (tmp_path / 'objects' / 'no-cf.yaml').write_text(
-        f'id: no_cf\ncategory: docker\ntype: docker_compose\nname: No CF\nconfig:\n'
-        f'  project_dir: {no_cf_dir}\n  compose_file: docker-compose.yml\n'
-        '  primary_container: no-cf\n  compose_service: no-cf\n',
-        encoding='utf-8',
-    )
-    containers = parse_docker_ps_lines(
-        [
-            f'{{"ID":"1","Image":"eceasy/cli-proxy-api:latest","Labels":"com.docker.compose.project=cpa,com.docker.compose.project.working_dir={cpa_dir},com.docker.compose.service=cli-proxy-api","Names":"cli-proxy-api","State":"running","Status":"Up 1 hour","Ports":"8317/tcp"}}',
-            f'{{"ID":"2","Image":"demo/no-cf:latest","Labels":"com.docker.compose.project=no-cf,com.docker.compose.project.working_dir={no_cf_dir},com.docker.compose.service=no-cf","Names":"no-cf","State":"running","Status":"Up 1 hour","Ports":"8080/tcp"}}',
-        ]
-    )
-    client = TestClient(create_app(config_root=tmp_path, docker_scanner=lambda: containers, task_store=store))
-    client.cookies.set(COOKIE_NAME, issue_session_token())
+def test_bulk_cf_action_continues_after_skipping_asset_without_http_entry(tmp_path: Path, monkeypatch) -> None:
+    import httpx
+    import json
+    import subprocess
+    import yaml
+    from tests.test_cf_tunnels import make_panel, attach_local_observation
 
-    response = client.post('/api/bulk/actions/cf-refresh', json={'asset_ids': ['no_cf', 'cpa']})
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    project = tmp_path / "no-http"
+    project.mkdir()
+    (project / "compose.yaml").write_text("services: {}\n")
+    (tmp_path / "config/objects/no-http.yaml").write_text(yaml.safe_dump({
+        "id": "no_http", "name": "No HTTP", "category": "docker", "type": "docker_compose",
+        "config": {"project_dir": str(project), "compose_file": "compose.yaml", "primary_container": "no-http", "compose_service": "web"},
+    }))
+    labels = {**panel.containers[0].labels, "com.docker.compose.project.working_dir": str(project)}
+    panel.containers.append(panel.containers[0].model_copy(update={"id": "b" * 64, "name": "no-http", "compose_working_dir": str(project), "labels": labels}))
+    panel.app.state.rebuild_registry_runtime()
+    original_run = subprocess.run
 
+    def run(command, **kwargs):
+        if command[:3] == ["docker", "container", "inspect"] and command[-1] == "no-http":
+            info = {**observed.info, "id": "b" * 64, "labels": labels, "ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18081"}]}}
+            return subprocess.CompletedProcess(command, 0, json.dumps(info), "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    panel.app.state.cf_service.http_client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200 if request.url.port == 18080 else 503, text="fixture")))
+    response = panel.client.post("/api/bulk/actions/cf-create", json={"asset_ids": ["no_http", "web"]})
     assert response.status_code == 202
     payload = response.json()
-    assert payload['queued_count'] == 1
-    assert [task['object_id'] for task in payload['tasks']] == ['cpa']
-    assert payload['skipped'] == [{'asset_id': 'no_cf', 'reason': 'action cf_refresh is not supported by no_cf'}]
-    assert [task.object_id for task in store.list_all()] == ['cpa']
+    assert payload["queued_count"] == 1
+    assert [task["object_id"] for task in payload["tasks"]] == ["web"]
+    assert [item["asset_id"] for item in payload["skipped"]] == ["no_http"]
+    assert "没有有效入口" in payload["skipped"][0]["reason"]
+    assert [task.object_id for task in panel.store.list_all()] == ["web"]
 
 
 def test_asset_level_stop_endpoint_enqueues_verified_host_plan(tmp_path: Path) -> None:
