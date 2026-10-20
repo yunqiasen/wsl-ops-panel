@@ -489,15 +489,17 @@ def test_node_category_does_not_render_cf_or_notify_bulk_actions(tmp_path: Path)
     assert 'data-bulk-action="notify-send"' not in response.text
 
 
-def test_project_category_filters_bulk_actions_to_project_asset_capabilities(tmp_path: Path) -> None:
+def test_project_category_offers_on_demand_cf_without_starting_the_project(tmp_path: Path) -> None:
     _write_registry_file(tmp_path, 'categories', 'project.yaml', 'id: project\nlabel: Project\norder: 11\nenabled: true\n')
     (tmp_path / 'objects').mkdir(parents=True, exist_ok=True)
+    source = tmp_path / "source"
+    source.mkdir()
     project_asset = AssetSnapshot(
         object_id='project__wsl-ops-panel',
         category='project',
         name='wsl-ops-panel',
         status='present',
-        metadata={'path': '/srv/wsl-ops-panel', 'stacks': ['python'], 'web_ui': {'enabled': False}},
+        metadata={'path': str(source), 'stacks': ['python'], 'web_ui': {'enabled': False}},
     )
     client = TestClient(create_app(config_root=tmp_path, project_scanner=lambda: [project_asset], task_store=InMemoryTaskStore()))
     _login(client)
@@ -507,10 +509,13 @@ def test_project_category_filters_bulk_actions_to_project_asset_capabilities(tmp
     assert response.status_code == 200
     assert 'data-bulk-action="update-latest"' in response.text
     assert 'data-bulk-action="deploy-version"' in response.text
-    assert 'data-bulk-action="cf-create"' not in response.text
-    assert 'data-bulk-action="cf-refresh"' not in response.text
-    assert 'data-bulk-action="cf-disable"' not in response.text
+    assert 'data-bulk-action="cf-create"' in response.text
+    assert 'data-bulk-action="cf-refresh"' in response.text
+    assert 'data-bulk-action="cf-disable"' in response.text
     assert 'data-bulk-action="notify-send"' not in response.text
+
+    assert 'data-cf-status="off"' in response.text
+    assert list(source.iterdir()) == []
 
 
 def test_systemd_category_renders_runtime_actions_without_cf_notify(tmp_path: Path) -> None:
