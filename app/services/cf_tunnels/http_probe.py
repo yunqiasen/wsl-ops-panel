@@ -8,6 +8,31 @@ import httpx
 from app.services.cf_tunnels.models import CFError
 
 
+def http_error_message(error: httpx.HTTPError) -> str:
+    # Classify locally, but never echo a URL, credential, or response body.
+    detail = str(error).lower()
+    if isinstance(error, httpx.TimeoutException):
+        return "HTTP 网络访问超时"
+    if any(word in detail for word in ("certificate", "ssl", "tls")):
+        return "HTTPS 证书验证或 TLS 握手失败"
+    if any(
+        word in detail
+        for word in (
+            "name or service not known",
+            "name resolution",
+            "nodename nor servname",
+            "getaddrinfo",
+            "dns",
+        )
+    ):
+        return "DNS 解析失败"
+    if isinstance(error, httpx.ConnectError):
+        return "TCP 连接失败"
+    if isinstance(error, httpx.RemoteProtocolError):
+        return "HTTP 协议响应无效"
+    return f"HTTP 网络访问失败 ({type(error).__name__})"
+
+
 def _interstitial_reason(headers: httpx.Headers, body: bytes) -> str | None:
     content = body.lower()
     if (

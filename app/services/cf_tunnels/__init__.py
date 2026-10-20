@@ -14,7 +14,7 @@ from app.models.assets import AssetSnapshot
 from app.services.agent_native_lock import exclusive_file_lock
 from app.services.cf_tunnels.models import CFError, CFOperation, TargetChoice
 from app.services.cf_tunnels.origins import owner_key, prepare_targets
-from app.services.cf_tunnels.http_probe import probe
+from app.services.cf_tunnels.http_probe import http_error_message, probe
 from app.services.cf_tunnels.storage import CFStore
 from app.services.cf_tunnels.locks import observe_lock
 from app.services.cf_tunnels.runtime import budget
@@ -387,7 +387,10 @@ class CFTunnelService:
                         exc
                         if isinstance(exc, CFError)
                         else CFError(
-                            "public_probe", f"公网核验失败 ({type(exc).__name__})"
+                            "public_probe",
+                            http_error_message(exc)
+                            if isinstance(exc, httpx.HTTPError)
+                            else f"公网核验失败 ({type(exc).__name__})",
                         )
                     )
                     self.store.update(
@@ -495,7 +498,10 @@ class CFTunnelService:
             return prepared
         except (httpx.HTTPError, OSError, SubprocessError) as exc:
             raise CFError(
-                "origin_probe", f"项目入口读取失败 ({type(exc).__name__})"
+                "origin_probe",
+                http_error_message(exc)
+                if isinstance(exc, httpx.HTTPError)
+                else f"项目入口读取失败 ({type(exc).__name__})",
             ) from exc
 
     def enqueue(
@@ -689,7 +695,7 @@ class CFTunnelService:
                         except httpx.HTTPError as exc:
                             last_error = CFError(
                                 "public_probe",
-                                f"公网访问核验失败 ({type(exc).__name__})",
+                                http_error_message(exc),
                             )
                     sleep(min(0.2, max(0, deadline - monotonic())))
                 raise last_error

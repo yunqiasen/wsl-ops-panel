@@ -70,3 +70,39 @@ def test_matching_application_login_response_remains_an_eligible_entry(
         assert panel.client.get("/api/assets/web/cf").json()["state"] == "online"
     finally:
         panel.app.state.task_worker.stop()
+
+
+@pytest.mark.parametrize(
+    "detail,label",
+    [
+        ("Name or service not known; private fixture", "DNS"),
+        ("certificate verify failed; private fixture", "TLS"),
+        ("connection refused; private fixture", "TCP"),
+    ],
+)
+def test_public_network_failures_keep_the_failed_layer_without_echoing_details(
+    tmp_path, monkeypatch, detail, label
+):
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    service = panel.app.state.cf_service
+    service.runtime = FakeTunnelRuntime()
+    service.public_timeout = 0.01
+
+    def respond(request):
+        if request.url.host.endswith("trycloudflare.com"):
+            raise httpx.ConnectError(detail, request=request)
+        return httpx.Response(200, text="business fixture")
+
+    service.http_transport = httpx.MockTransport(respond)
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["error"]["stage"] == "public_probe"
+        assert label in status["error"]["message"]
+        assert "private fixture" not in str(status)
+        assert status["current_url"] is None
+        assert not any(item["active"] for item in service.runtime.resources.values())
+    finally:
+        panel.app.state.task_worker.stop()
