@@ -144,6 +144,27 @@
     const elements = [...document.querySelectorAll('[data-cf-object]')];
     for (const element of elements) {
       states.set(element.dataset.cfObject, {state: element.dataset.cfStatus});
+      const openVerified = async event => {
+        if (event.button !== 0 && event.button !== 1) return;
+        event.preventDefault();
+        // Reserve the tab during the user gesture; navigate only after a fresh
+        // server observation, never to the href left behind in a sleeping tab.
+        const destination = window.open('about:blank', '_blank');
+        if (!destination) {
+          element.querySelector('[data-cf-error]').textContent = '浏览器拦截了新窗口，请允许后重试';
+          return;
+        }
+        destination.opener = null;
+        const policy = destination.document.createElement('meta');
+        policy.name = 'referrer'; policy.content = 'no-referrer';
+        destination.document.head.append(policy);
+        const status = await refresh(element.dataset.cfObject);
+        const url = status && currentUrl(status);
+        if (!url) { destination.close(); return; }
+        if (!destination.closed) destination.location.replace(url);
+      };
+      element.querySelector('[data-cf-url]').addEventListener('click', openVerified);
+      element.querySelector('[data-cf-url]').addEventListener('auxclick', openVerified);
       element.querySelector('[data-cf-copy]').addEventListener('click', async () => {
         const status = await refresh(element.dataset.cfObject);
         const url = status && currentUrl(status);
