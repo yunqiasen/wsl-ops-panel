@@ -478,3 +478,18 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 正式审查及补修详情：[双轴审查记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/review-all-modules-20261006.md)。
 
 加载验收：隔离 **832 项**、前端 **45 项**通过；本机/Tailscale/Router 健康均 200，11 模块正式页面正常，38 个业务容器及配置保持不变。[推送与加载记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/all-modules-load-verification-20261006.md)。
+
+
+## Docker / Project 按需 CF
+
+部署本期实现后，在 Docker / Project 分类选中项目，点击“开启 CF”。一个有效入口自动使用；多个入口先选择，取消保持原状。任务“已入队”与 CF“在线”分开显示，公网核验通过后才提供当前网址。
+
+- 默认关闭，浏览和发现项目不会创建隧道；没有专属 CF 脚本的新项目也按实际入口识别。
+- “关闭 CF”只关闭对应隧道，本地应用继续运行；再次开启复用有效选择并重新解析当前实例。“重建 CF”才主动重建连接。
+- 复制/打开前读取当前状态；失效网址只作文字历史记录。应用要求登录时明确显示“可达，需要登录”。
+- 旧 unit 保留外部管理和原有自启配置；只有明确关联的直接 Quick Tunnel 接受显式控制。仅脚本、masked、关联缺失/歧义、复杂命令或额外生命周期钩子保持原状并说明原因。
+- 面板以系统服务运行时，CF 子命令会读取当前用户已存在的 `/run/user/<uid>` 及会话 socket，补齐缺少的连接环境；父环境、全局权限、linger 和业务配置保持原样。用户管理器或 cloudflared 缺失时，任务报告对应阶段，安装仍归系统基础设施。
+- 新托管隧道在宿主重启后关闭；旧外部服务保留其原策略并显示待核验。面板短重启只核对已有连接。
+- 本期为 Quick Tunnel 临时网址与普通 HTTP 网页可达性；SSE 流式不列为支持，重建后网址会变化。
+
+规格、执行与审查记录位于 `docs/superpowers/specs/2026-10-20-wsl-ops-panel-on-demand-cf-tunnels.md` 和 `docs/superpowers/plans/2026-10-20-on-demand-cf-*.md`；正式加载与 Agent2API 公网验收状态以执行记录为准。
