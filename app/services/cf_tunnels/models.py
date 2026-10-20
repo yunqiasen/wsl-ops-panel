@@ -20,6 +20,7 @@ class CFOperation(BaseModel):
     action: Literal["cf_create", "cf_refresh", "cf_disable"]
     asset: AssetSnapshot
     target: TargetChoice | None = None
+    legacy: dict | None = None
 
 
 class CFError(ValueError):

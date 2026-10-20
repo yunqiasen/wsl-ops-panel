@@ -92,6 +92,8 @@ class CFStore:
                 last_task_id=operation.request_id,
                 asset=operation.asset.model_dump(mode="json"),
                 boot_id=boot_id,
+                management="external" if operation.legacy else "panel",
+                legacy=operation.legacy,
             )
             if operation.target:
                 record["selection_id"] = operation.target.id

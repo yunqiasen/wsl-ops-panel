@@ -18,6 +18,7 @@ from app.services.cf_tunnels.http_probe import http_error_message, probe
 from app.services.cf_tunnels.storage import CFStore
 from app.services.cf_tunnels.locks import observe_lock
 from app.services.cf_tunnels.runtime import budget
+from app.services.cf_tunnels.legacy import LegacyTunnelRuntime, inspect_legacy
 
 CF_ACTIONS = {"cf_create", "cf_refresh", "cf_disable"}
 
@@ -33,12 +34,28 @@ class CFTunnelService:
         self.prepare_timeout = 15.0
         self.probe_timeout = 5.0
         self.runtime = SystemdTunnelRuntime(self.data_root / "cf")
+        self.legacy_runtime = LegacyTunnelRuntime()
+        self.legacy_unit_roots = None
         self.public_timeout = 90.0
         self.clock = time
         self.asset_source = None
         self.task_store = None
         self._observer_stop = Event()
         self._observer_thread = None
+
+    def _runtime_for(self, handle):
+        return self.legacy_runtime if handle.get("kind") == "legacy" else self.runtime
+
+    def _legacy(self, asset):
+        record = self.store.get(self._key(asset)) or {}
+        if record.get("handle") and record["handle"].get("kind") != "legacy":
+            return None
+        legacy = inspect_legacy(asset, unit_roots=self.legacy_unit_roots)
+        if legacy and legacy.get("management") == "external_hint":
+            raise CFError("legacy_identity", legacy["reason"])
+        if legacy and legacy.get("load_state") == "masked":
+            raise CFError("legacy_masked", "旧隧道已被停用 (masked)，原状态保持不变")
+        return legacy
 
     def _key(self, asset):
         key = owner_key(asset)
@@ -73,6 +90,24 @@ class CFTunnelService:
         except ValueError:
             key = None
         record = self.store.get(key) if key else None
+        legacy = (record or {}).get("legacy")
+        if capable and not record:
+            try:
+                legacy = inspect_legacy(asset, unit_roots=self.legacy_unit_roots)
+            except CFError as exc:
+                legacy = {"management": "external_hint", "reason": str(exc)}
+        reason = None
+        if legacy:
+            reason = legacy.get("reason") or (
+                "旧隧道已被停用 (masked)，原状态保持不变"
+                if legacy.get("load_state") == "masked"
+                else "由既有 systemd 隧道管理，保留原自启配置"
+            )
+            if not record and (
+                legacy.get("management") == "external_hint"
+                or legacy.get("load_state") == "masked"
+            ):
+                capable = False
         pending = self.store.pending(key) if record else []
         if record:
             with observe_lock(
@@ -83,13 +118,16 @@ class CFTunnelService:
                     pending = self.store.pending(key)
                     if record.get("handle") and not pending:
                         record = self._observe_record(key, record)
-        state = (record or {}).get("state", "off")
+        state = (record or {}).get("state", "unknown" if legacy else "off")
         if pending:
             state = "stopping" if pending[-1][1] == "cf_disable" else "starting"
         return {
             "object_id": asset.object_id,
             "capable": capable,
-            "management": "panel" if record else "none",
+            "management": record.get("management", "panel")
+            if record
+            else (legacy or {}).get("management", "none"),
+            "reason": reason,
             "desired": (record or {}).get("desired", "off"),
             "state": state,
             "current_url": record.get("current_url")
@@ -107,7 +145,7 @@ class CFTunnelService:
         if not handle:
             return record
         try:
-            if handle.get("boot_id") != self.runtime.boot_id:
+            if handle.get("boot_id") != self._runtime_for(handle).boot_id:
                 return self.store.update(
                     key,
                     state="off",
@@ -118,7 +156,7 @@ class CFTunnelService:
                     error=None,
                     history_url=record.get("current_url") or record.get("history_url"),
                 )
-            observed = self.runtime.observe(handle)
+            observed = self._runtime_for(handle).observe(handle)
             if not observed["active"]:
                 return self.store.update(
                     key,
@@ -354,7 +392,9 @@ class CFTunnelService:
                 try:
                     from app.services.cf_tunnels.runtime import quick_url
 
-                    observed = self.runtime.observe(record["handle"])
+                    observed = self._runtime_for(record["handle"]).observe(
+                        record["handle"]
+                    )
                     if not observed["active"] or not observed.get("url"):
                         raise CFError("cf_connect", "CF 当前连接尚未提供有效网址")
                     public = quick_url(observed["url"]) + target["path"]
@@ -411,7 +451,7 @@ class CFTunnelService:
         )
         try:
             if record.get("handle"):
-                self.runtime.stop(record["handle"], timeout=15)
+                self._runtime_for(record["handle"]).stop(record["handle"], timeout=15)
             self.store.update(
                 key, state="off", handle=None, error=None, last_verified_at=None
             )
@@ -430,7 +470,7 @@ class CFTunnelService:
         handle = record.get("handle")
         if handle:
             try:
-                self.runtime.stop(handle, timeout=15)
+                self._runtime_for(handle).stop(handle, timeout=15)
                 handle = None
             except Exception as exc:
                 message = str(exc) if isinstance(exc, CFError) else type(exc).__name__
@@ -448,7 +488,9 @@ class CFTunnelService:
         if asset.category not in {"docker", "project"}:
             return asset
         status = self.status(asset)
-        actions = list(asset.supports_actions)
+        actions = [
+            action for action in asset.supports_actions if action not in CF_ACTIONS
+        ]
         if status["capable"]:
             actions = list(dict.fromkeys([*actions, *sorted(CF_ACTIONS)]))
         metadata = dict(asset.metadata)
@@ -458,6 +500,7 @@ class CFTunnelService:
             enabled=status["capable"],
             supported_actions=sorted(CF_ACTIONS) if status["capable"] else [],
             current_url=status["current_url"],
+            reason=status.get("reason"),
         )
         capabilities["cf_tunnel"] = cf
         metadata.update(cf=status, capabilities=capabilities)
@@ -467,6 +510,7 @@ class CFTunnelService:
 
     def prepare(self, asset: AssetSnapshot) -> dict[str, object]:
         try:
+            legacy = self._legacy(asset)
             prepared = prepare_targets(
                 asset,
                 self.http_transport,
@@ -474,6 +518,18 @@ class CFTunnelService:
                 probe_timeout=self.probe_timeout,
                 proc_root=self.proc_root,
             )
+            if legacy:
+                prepared["targets"] = [
+                    item
+                    for item in prepared["targets"]
+                    if item["origin"].rstrip("/") == legacy["origin"].rstrip("/")
+                ]
+                if not prepared["targets"]:
+                    raise CFError(
+                        "legacy_origin",
+                        "旧隧道源站与当前项目入口不一致，原服务保持原样",
+                    )
+            prepared["management"] = "external" if legacy else "panel"
             record = self.store.get(owner_key(asset)) or {}
             saved = record.get("selection_id") or record.get("target", {}).get("id")
             valid = [item for item in prepared["targets"] if item["reachable"]]
@@ -514,6 +570,12 @@ class CFTunnelService:
         from app.adapters.base import ActionPlan
 
         key = self._key(asset) if action == "cf_disable" else owner_key(asset)
+        record = self.store.get(key)
+        legacy = (
+            record.get("legacy")
+            if action == "cf_disable" and record
+            else self._legacy(asset)
+        )
         if action != "cf_disable":
             prepared = self.prepare(asset)
             targets = [item for item in prepared["targets"] if item["reachable"]]
@@ -543,6 +605,7 @@ class CFTunnelService:
             action=action,
             asset=asset,
             target=choice,
+            legacy=legacy,
         )
         plan = ActionPlan(
             commands=[], cf_operation=operation, command_timeout_seconds=120
@@ -614,7 +677,9 @@ class CFTunnelService:
                     ):
                         handle = existing
                     else:
-                        self.runtime.stop(existing, timeout=budget(total_deadline, 15))
+                        self._runtime_for(existing).stop(
+                            existing, timeout=budget(total_deadline, 15)
+                        )
                         self.store.update(
                             key,
                             handle=None,
@@ -628,11 +693,13 @@ class CFTunnelService:
                         active_generation=operation.request_id,
                         launch_pending=True,
                     )
-                    handle = self.runtime.start(
+                    runtime = self.legacy_runtime if operation.legacy else self.runtime
+                    handle = runtime.start(
                         key,
                         operation.request_id,
                         target["origin"],
                         timeout=budget(total_deadline, 10),
+                        **({"legacy": operation.legacy} if operation.legacy else {}),
                     )
                 self.store.update(
                     key,
@@ -644,7 +711,7 @@ class CFTunnelService:
                 deadline = min(total_deadline, monotonic() + self.public_timeout)
                 last_error = CFError("cf_connect", "CF 网址建立超时")
                 while monotonic() < deadline:
-                    observed = self.runtime.observe(
+                    observed = self._runtime_for(handle).observe(
                         handle, timeout=budget(deadline, stage="cf_connect")
                     )
                     if not observed["active"]:
@@ -677,7 +744,7 @@ class CFTunnelService:
                                     last_probe_attempt=self.clock(),
                                     error=None,
                                 )
-                                self.runtime.activate(
+                                self._runtime_for(handle).activate(
                                     handle, timeout=budget(total_deadline)
                                 )
                                 self.store.settle_request(
@@ -709,7 +776,7 @@ class CFTunnelService:
                 cleanup = {}
                 if handle:
                     try:
-                        self.runtime.stop(handle)
+                        self._runtime_for(handle).stop(handle)
                         handle = None
                     except Exception:
                         error = CFError("cleanup", f"{error}；隧道仍待清理")
