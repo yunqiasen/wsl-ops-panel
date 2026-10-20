@@ -87,8 +87,17 @@ def prepare_targets(
         raise CFError("origin_probe", "项目容器尚未运行")
     targets = []
     for exposed, bindings in (info.get("ports") or {}).items():
-        if not exposed.endswith("/tcp") or not isinstance(bindings, list):
+        if not exposed.endswith("/tcp"):
             continue
+        source = "published_port"
+        if not isinstance(bindings, list):
+            source = "container_network"
+            bindings = [
+                {"HostIp": network[field], "HostPort": exposed.split("/", 1)[0]}
+                for network in (info.get("networks") or {}).values()
+                for field in ("IPAddress", "GlobalIPv6Address")
+                if network.get(field) and info.get("network_mode") != "host"
+            ]
         for binding in bindings:
             address = ipaddress.ip_address(binding.get("HostIp") or "0.0.0.0")
             host = (
@@ -110,7 +119,7 @@ def prepare_targets(
                 "name": f"{primary.compose_service} · {exposed}",
                 "origin": origin,
                 "path": "/",
-                "source": "published_port",
+                "source": source,
                 **checked,
             }
             if not any(t["id"] == target["id"] for t in targets):
