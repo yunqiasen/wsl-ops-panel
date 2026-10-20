@@ -14,6 +14,7 @@ from app.services.cf_tunnels.models import CFError, CFOperation, TargetChoice
 from app.services.cf_tunnels.origins import owner_key, prepare_targets, remaining
 from app.services.cf_tunnels.http_probe import probe
 from app.services.cf_tunnels.storage import CFStore
+from app.services.cf_tunnels.locks import observe_lock
 
 CF_ACTIONS = {"cf_create", "cf_refresh", "cf_disable"}
 
@@ -41,6 +42,12 @@ class CFTunnelService:
             key = None
         record = self.store.get(key) if key else None
         pending = self.store.pending(key) if record else []
+        if record and record.get("handle") and not pending:
+            with observe_lock(
+                self.data_root / "cf" / f"{key}.runtime.lock"
+            ) as acquired:
+                if acquired:
+                    record = self._observe_record(key, self.store.get(key))
         state = (record or {}).get("state", "off")
         if pending:
             state = "stopping" if pending[-1][1] == "cf_disable" else "starting"
@@ -59,6 +66,39 @@ class CFTunnelService:
             "error": (record or {}).get("error"),
             "pending_action": pending[-1][1] if pending else None,
         }
+
+    def _observe_record(self, key, record):
+        handle = record.get("handle")
+        if not handle:
+            return record
+        try:
+            observed = self.runtime.observe(handle)
+            if not observed["active"]:
+                return self.store.update(
+                    key,
+                    state="error",
+                    current_url=None,
+                    history_url=record.get("current_url") or record.get("history_url"),
+                    handle=None,
+                    error={
+                        "stage": "runtime",
+                        "message": "CF 托管进程已退出，请重新开启",
+                    },
+                )
+        except (CFError, OSError, SubprocessError) as exc:
+            error = (
+                exc
+                if isinstance(exc, CFError)
+                else CFError("runtime", f"CF 运行核对失败 ({type(exc).__name__})")
+            )
+            return self.store.update(
+                key,
+                state="error",
+                current_url=None,
+                history_url=record.get("current_url") or record.get("history_url"),
+                error=error.as_dict(),
+            )
+        return record
 
     def decorate(self, asset: AssetSnapshot) -> AssetSnapshot:
         if asset.category not in {"docker", "project"}:
