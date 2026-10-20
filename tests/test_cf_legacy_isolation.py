@@ -95,3 +95,32 @@ def test_same_named_unrelated_old_resource_is_untouched_by_new_tunnel_on_and_off
         assert legacy.unit.read_bytes() == original
     finally:
         panel.app.state.task_worker.stop()
+
+
+@pytest.mark.parametrize("location", ["unit_file", "live_dropin"])
+def test_old_unit_with_extra_lifecycle_commands_is_not_controlled(
+    tmp_path, monkeypatch, location
+):
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    legacy = attach_legacy(panel, tmp_path, monkeypatch)
+    # Stopping a unit can execute more than cloudflared's stop. Such hooks do
+    # not belong to the panel's direct Quick Tunnel compatibility path.
+    if location == "unit_file":
+        legacy.unit.write_text(legacy.unit.read_text().replace("[Install]", "ExecStop=/usr/bin/business-stop-fixture\n\n[Install]"))
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["management"] == "external_hint"
+        assert status["capable"] is False
+        response = panel.client.post("/api/bulk/actions/cf-disable", json={"asset_ids": ["web"]})
+        assert response.json()["queued_count"] == 0
+        assert legacy.commands == []
+    else:
+        legacy.info["ExecStop"] = "/usr/bin/business-stop-fixture"
+        panel.app.state.task_worker.start()
+        try:
+            assert submit_cf(panel, "cf-disable").status == "failed"
+        finally:
+            panel.app.state.task_worker.stop()
+        assert not any("stop" in command for command in legacy.commands)
+    assert legacy.info["ActiveState"] == "active"
+    assert panel.containers[0].state == "running"

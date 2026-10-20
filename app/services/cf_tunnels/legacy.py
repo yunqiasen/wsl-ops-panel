@@ -34,6 +34,11 @@ _KNOWN_SCRIPT_PATHS: list[str] = ["scripts/cftunnel-start.sh"]
 _KNOWN_DOMAIN_PATHS: list[str] = ["logs/cftunnel-domain.txt"]
 
 _ACTIVE_JOB_STATES = frozenset({"active", "activating", "deactivating"})
+_EXTRA_COMMAND_KEYS = ("ExecCondition", "ExecStartPre", "ExecStartPost", "ExecStop", "ExecStopPost")
+
+
+def _has_extra_commands(info):
+    return any(info.get(key) for key in _EXTRA_COMMAND_KEYS)
 
 
 # --------------------------------------------------------------------------- #
@@ -343,6 +348,7 @@ def inspect_legacy(
                     exec_info is not None
                     and exec_info["is_cloudflared"]
                     and exec_info["origin"] is not None
+                    and not _has_extra_commands(parsed)
                 ):
                     working_dir = parsed.get("WorkingDirectory", "")
                     if (
@@ -393,7 +399,7 @@ def inspect_legacy(
         )
     if matched:
         path, scope, parsed, exec_info = matched[0]
-        if exec_info["is_cloudflared"] and exec_info["origin"] is not None:
+        if exec_info["is_cloudflared"] and exec_info["origin"] is not None and not _has_extra_commands(parsed):
             return {
                 "management": "external",
                 "unit": path.name,
@@ -507,7 +513,8 @@ class LegacyTunnelRuntime:
                 "show",
                 unit,
                 "--property=LoadState,ActiveState,MainPID,InvocationID,"
-                "Description,FragmentPath,WorkingDirectory,ExecStart,Transient",
+                "Description,FragmentPath,WorkingDirectory,ExecStart,Transient,"
+                + ",".join(_EXTRA_COMMAND_KEYS),
             ),
             timeout=timeout,
             stage="legacy_runtime",
@@ -533,6 +540,9 @@ class LegacyTunnelRuntime:
             raise CFError("legacy_masked", "旧隧道单元处于 masked 状态")
         if load_state == "not-found":
             raise CFError("legacy_identity", "旧隧道单元未找到")
+
+        if _has_extra_commands(info):
+            raise CFError("legacy_identity", "旧隧道包含额外的生命周期命令，原服务保持原样")
 
         expected_fp = expected.get("fragment_path", "")
         actual_fp = info.get("FragmentPath", "")
