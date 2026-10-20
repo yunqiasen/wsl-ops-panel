@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 from subprocess import SubprocessError
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from uuid import uuid4
 
 import httpx
@@ -31,6 +31,7 @@ class CFTunnelService:
         self.probe_timeout = 5.0
         self.runtime = SystemdTunnelRuntime(self.data_root / "cf")
         self.public_timeout = 90.0
+        self.clock = time
 
     def status(self, asset: AssetSnapshot) -> dict[str, object]:
         capable = (asset.category == "docker" and bool(asset.containers)) or (
@@ -72,6 +73,17 @@ class CFTunnelService:
         if not handle:
             return record
         try:
+            if handle.get("boot_id") != self.runtime.boot_id:
+                return self.store.update(
+                    key,
+                    state="off",
+                    desired="off",
+                    handle=None,
+                    current_url=None,
+                    last_verified_at=None,
+                    error=None,
+                    history_url=record.get("current_url") or record.get("history_url"),
+                )
             observed = self.runtime.observe(handle)
             if not observed["active"]:
                 return self.store.update(
@@ -98,6 +110,25 @@ class CFTunnelService:
                 history_url=record.get("current_url") or record.get("history_url"),
                 error=error.as_dict(),
             )
+        if record.get("state") == "online":
+            try:
+                age = (
+                    self.clock()
+                    - datetime.fromisoformat(record["last_verified_at"]).timestamp()
+                )
+            except (KeyError, TypeError, ValueError):
+                age = 61
+            if not 0 <= age < 60:
+                return self.store.update(
+                    key,
+                    state="error",
+                    current_url=None,
+                    history_url=record.get("current_url") or record.get("history_url"),
+                    error={
+                        "stage": "freshness",
+                        "message": "公网核验已过期，等待重新核验",
+                    },
+                )
         return record
 
     def decorate(self, asset: AssetSnapshot) -> AssetSnapshot:
@@ -318,7 +349,9 @@ class CFTunnelService:
                                     key,
                                     state="online",
                                     current_url=public,
-                                    last_verified_at=datetime.now(UTC).isoformat(),
+                                    last_verified_at=datetime.fromtimestamp(
+                                        self.clock(), UTC
+                                    ).isoformat(),
                                     error=None,
                                 )
                                 self.runtime.activate(handle)
