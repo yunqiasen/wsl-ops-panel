@@ -120,6 +120,10 @@ def _plan_steps(plan_text: str) -> list[str]:
         payload = json.loads(plan_text)
     except json.JSONDecodeError:
         return []
+    if payload.get('cf_operation'):
+        if payload['cf_operation'].get('action') == 'cf_disable':
+            return ['核对 CF 归属', '关闭对应隧道', '确认已关闭（本地项目保持运行）']
+        return ['核对项目入口', '独立托管 CF 隧道', '核验公网访问', '发布当前网址']
     steps: list[str] = []
     for command in [*(payload.get('commands') or []), *(payload.get('success_commands') or [])]:
         if isinstance(command, list):

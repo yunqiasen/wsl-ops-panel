@@ -124,7 +124,7 @@
       <div><small>Docker Image</small><strong>{{ asset.metadata.image_repository or asset.metadata.runtime.image if asset.metadata.runtime else 'unknown' }}</strong></div>
       <div><small>包主页</small><strong>{{ package_info.package_url or package_info.homepage or 'unknown' }}</strong></div>
       <div><small>首选访问地址</small><strong>{{ asset.metadata.primary_url or 'unknown' }}</strong></div>
-      <div><small>CF 链接</small><strong>{{ asset.metadata.capabilities.cf_tunnel.current_url if asset.metadata.capabilities and asset.metadata.capabilities.cf_tunnel else 'unknown' }}</strong></div>
+      {% if asset.metadata.cf %}{% include 'partials/cf_status.html' %}{% endif %}
       <div><small>原始 Docker 端口</small><strong>{{ asset.metadata.display_ports or asset.metadata.ports or (asset.metadata.runtime.ports if asset.metadata.runtime else 'unknown') }}</strong></div>
     </div>
     {% if asset.metadata.service_endpoints %}

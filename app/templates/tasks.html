@@ -22,7 +22,7 @@
 <section class="task-feed task-feed--readable">
   {% for item in task_items %}
   {% set task = item.task %}
-  <article class="task-card task-card--{{ task.status }} task-readable-card">
+  <article id="task-{{ task.id }}" class="task-card task-card--{{ task.status }} task-readable-card">
     <header class="task-readable-head">
       <div class="task-status-mark task-status-mark--{{ item.status_tone }}">{{ item.status_label }}</div>
       <div class="task-readable-title">

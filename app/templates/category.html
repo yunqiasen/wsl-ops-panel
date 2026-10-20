@@ -42,7 +42,10 @@
     <small>Agent 扫描会按选中的设备入队。</small>
   </div>
   {% endif %}
-  <div id="task-flash" class="bulk-flash" data-bulk-result></div>
+  {% if selected_category and selected_category.id in ['docker', 'project'] %}
+  <p class="cf-notice" data-cf-notice>CF 默认关闭，按需开启；关闭 CF 不影响本地项目。临时网址重建后会变化，开放的是整个 HTTP 服务。Quick Tunnel 有 200 个进行中请求上限，SSE 流式暂不支持，也无可用性保证。</p>
+  {% endif %}
+  <div id="task-flash" class="bulk-flash" data-bulk-result role="status"></div>
 </section>
 {% endif %}
 
@@ -219,6 +222,8 @@
       {% endif %}
     </div>
 
+    {% if asset.metadata.cf %}{% include 'partials/cf_status.html' %}{% endif %}
+
     {% if asset.category == 'docker' %}
     <div class="metric-strip metric-strip--four">
       <span><small>当前版本</small><strong>{{ asset.current_version or 'unknown' }}</strong></span>
@@ -257,7 +262,7 @@
         <span class="capability-pill {{ 'is-enabled' if capability.enabled else 'is-disabled' }}">
           <i aria-hidden="true"></i>
           <strong>{{ capability_labels.get(key, key) }}</strong>
-          <small>{{ '已开启' if capability.enabled else '未开启' }}</small>
+          <small>{{ ('可按需接入' if capability.enabled else '暂不适用') if key == 'cf_tunnel' else ('已开启' if capability.enabled else '未开启') }}</small>
         </span>
         {% endfor %}
       {% else %}
@@ -322,7 +327,7 @@
         <span class="capability-pill {{ 'is-enabled' if capability.enabled else 'is-disabled' }}">
           <i aria-hidden="true"></i>
           <strong>{{ capability_labels.get(key, key) }}</strong>
-          <small>{{ '已开启' if capability.enabled else '未开启' }}</small>
+          <small>{{ ('可按需接入' if capability.enabled else '暂不适用') if key == 'cf_tunnel' else ('已开启' if capability.enabled else '未开启') }}</small>
         </span>
         {% endfor %}
       {% endif %}

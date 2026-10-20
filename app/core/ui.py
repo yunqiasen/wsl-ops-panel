@@ -48,6 +48,7 @@ def static_asset_version() -> str:
     candidates = [
         STATIC_ROOT / 'app.css',
         STATIC_ROOT / 'app.js',
+        STATIC_ROOT / 'cf-tunnels.js',
         STATIC_ROOT / 'vendor' / 'xterm' / 'xterm.js',
         STATIC_ROOT / 'vendor' / 'xterm' / 'addon-fit.js',
         STATIC_ROOT / 'vendor' / 'xterm' / 'addon-unicode11.js',

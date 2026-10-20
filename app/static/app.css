@@ -8601,3 +8601,19 @@ body[data-page="agent"] .agent-provider-editor [data-agent-provider-settings] {
     transition: none !important;
   }
 }
+
+/* On-demand access stays visually separate from local runtime controls. */
+.cf-access { border: 1px solid var(--line); border-left: 3px solid var(--line-strong); border-radius: 10px; background: var(--surface-soft); padding: 12px 14px; display: grid; gap: 7px; min-width: 0; }
+.cf-access[data-cf-status="online"] { border-left-color: var(--success); }
+.cf-access[data-cf-status="error"] { border-left-color: var(--warning); }
+.cf-access__heading { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.cf-access__heading span, .cf-access small { color: var(--muted); }
+.cf-access[data-cf-status="online"] [data-cf-state] { color: var(--success); }
+.cf-access__link { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cf-access__link a { overflow-wrap: anywhere; font-size: 12px; flex: 1; min-width: 0; }
+.cf-access__link button { flex-shrink: 0; }
+.cf-access small:empty { display: none; }
+.cf-access__task { font-size: 12px; justify-self: start; }
+.cf-notice { color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 78ch; margin-top: 8px; }
+.cf-access [hidden] { display: none !important; }
+@media (max-width: 480px) { .cf-access__link { flex-wrap: wrap; } .cf-access__link a { flex-basis: 100%; } }

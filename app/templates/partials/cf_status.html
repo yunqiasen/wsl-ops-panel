@@ -1,0 +1,12 @@
+{% set cf = asset.metadata.cf %}
+{% set cf_labels = {'off': '已关闭', 'starting': '开启中', 'online': '在线', 'stopping': '关闭中', 'error': '异常'} %}
+<section class="cf-access" data-cf-object="{{ asset.object_id }}" data-cf-status="{{ cf.state }}" aria-label="CF 公网访问">
+  <div class="cf-access__heading"><span>CF 访问</span><strong data-cf-state aria-live="polite">{{ cf_labels.get(cf.state, '待核验') }}</strong></div>
+  <div class="cf-access__link">
+    <a data-cf-url{% if cf.current_url %} href="{{ cf.current_url }}"{% else %} hidden{% endif %} target="_blank" rel="noreferrer">{{ cf.current_url or '' }}</a>
+    <button type="button" class="ghost-button compact-button" data-cf-copy{% if not cf.current_url %} disabled{% endif %}>复制网址</button>
+  </div>
+  <small data-cf-error role="status">{{ cf.error.message if cf.error else '' }}</small>
+  <small data-cf-verified>{% if cf.last_verified_at %}核验：{{ cf.last_verified_at }}{% endif %}</small>
+  <a data-cf-task class="cf-access__task"{% if cf.last_task_id %} href="/tasks#task-{{ cf.last_task_id }}"{% else %} hidden{% endif %}>查看任务</a>
+</section>

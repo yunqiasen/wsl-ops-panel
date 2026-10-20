@@ -687,6 +687,10 @@
       setGroupPending(actionButtons, true, button);
       setFlash(result, `正在提交“${button.dataset.actionLabel || action}”任务…`, { success: true });
       try {
+        if (action.startsWith('cf-') && window.WslCFTunnels) {
+          await window.WslCFTunnels.submit(action, supportedAssetIds, result);
+          return;
+        }
         const targets = selectedRemoteTargets();
         const localSelected = targets.includes('__local__');
         const remoteNodeIds = targets.filter((target) => target !== '__local__');

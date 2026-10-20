@@ -436,7 +436,9 @@ def test_category_page_renders_bulk_controls_and_detail_is_read_only(tmp_path: P
     assert 'data-bulk-action="update-latest"' in category.text
     assert 'data-action-label="更新最新版"' in category.text
     assert 'data-bulk-action="deploy-version"' in category.text
-    assert 'data-bulk-action="cf-refresh"' not in category.text
+    assert 'data-bulk-action="cf-refresh"' in category.text
+    assert 'data-cf-status="off"' in category.text
+    assert '可按需接入' in category.text
     assert 'data-bulk-action="notify-send"' in category.text
     assert 'data-select-all-assets' in category.text
     assert 'data-clear-selection' in category.text
