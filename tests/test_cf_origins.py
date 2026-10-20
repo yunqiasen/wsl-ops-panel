@@ -83,3 +83,31 @@ def test_explicit_choice_is_checked_then_re_resolved_on_reopen(tmp_path, monkeyp
         ] == ["http://127.0.0.1:19091"]
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_equivalent_container_network_addresses_choose_a_reachable_route(
+    tmp_path, monkeypatch
+):
+    import httpx
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    observed.info["ports"] = {"8080/tcp": None}
+    observed.info["networks"] = {
+        "isolated": {"IPAddress": "172.21.0.2"},
+        "reachable": {"IPAddress": "172.22.0.2"},
+    }
+
+    def respond(request):
+        if request.url.host == "172.21.0.2":
+            raise httpx.ConnectError("route unavailable", request=request)
+        return httpx.Response(200, text="business fixture")
+
+    panel.app.state.cf_service.http_transport = httpx.MockTransport(respond)
+    response = panel.client.get("/api/assets/web/cf/targets")
+    assert response.status_code == 200, response.json()
+    assert len(response.json()["targets"]) == 1
+    target = response.json()["targets"][0]
+    assert target["origin"] == "http://172.22.0.2:8080"
+    assert target["reachable"] is True
+    assert panel.store.list_all() == []

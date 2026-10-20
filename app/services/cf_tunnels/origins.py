@@ -86,6 +86,7 @@ def prepare_targets(
     if not info.get("running"):
         raise CFError("origin_probe", "项目容器尚未运行")
     targets = []
+    failures = []
     for exposed, bindings in (info.get("ports") or {}).items():
         if not exposed.endswith("/tcp"):
             continue
@@ -110,11 +111,30 @@ def prepare_targets(
                 continue
             authority = f"[{host}]" if ":" in host else host
             origin = f"http://{authority}:{port}"
-            checked = probe(
-                transport, f"{origin}/", timeout=remaining(deadline, probe_timeout)
-            )
+            target_id = digest([key, primary.compose_service, exposed, "http"])
+            existing = next((item for item in targets if item["id"] == target_id), None)
+            if existing and existing["reachable"]:
+                continue
+            limit = remaining(deadline, probe_timeout)
+            try:
+                checked = probe(transport, f"{origin}/", timeout=limit)
+            except (httpx.HTTPError, CFError) as exc:
+                failure = (
+                    exc
+                    if isinstance(exc, CFError)
+                    else CFError(
+                        "origin_probe", f"项目入口读取失败 ({type(exc).__name__})"
+                    )
+                )
+                failures.append(failure)
+                checked = {
+                    "reachable": False,
+                    "status_code": None,
+                    "fingerprint": None,
+                    "reason": str(failure),
+                }
             target = {
-                "id": digest([key, primary.compose_service, exposed, "http"]),
+                "id": target_id,
                 "revision": digest([key, info["id"], info.get("started_at"), origin]),
                 "name": f"{primary.compose_service} · {exposed}",
                 "origin": origin,
@@ -122,6 +142,10 @@ def prepare_targets(
                 "source": source,
                 **checked,
             }
-            if not any(t["id"] == target["id"] for t in targets):
+            if existing is None:
                 targets.append(target)
+            elif target["reachable"]:
+                targets[targets.index(existing)] = target
+    if failures and not any(target["reachable"] for target in targets):
+        raise failures[0]
     return {"targets": targets, "selected_id": None}
