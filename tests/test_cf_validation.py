@@ -139,3 +139,22 @@ def test_source_project_does_not_claim_an_unowned_listening_port(tmp_path, monke
     assert response.json()["queued_count"] == 0
     assert not panel.store.list_all()
     assert (tmp_path / "source/app.py").read_text() == "# source only\n"
+
+
+def test_refreshing_off_cards_does_not_probe_origins_or_create_tunnel_records(
+    tmp_path, monkeypatch
+):
+    from tests.test_cf_tunnels import FakeTunnelRuntime
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    runtime = FakeTunnelRuntime()
+    panel.app.state.cf_service.runtime = runtime
+    for _ in range(4):
+        response = panel.client.get("/api/assets/web/cf")
+        assert response.status_code == 200
+        assert response.json()["state"] == "off"
+    assert observed.requests == []
+    assert runtime.resources == {}
+    assert panel.store.list_all() == []
+    assert not (tmp_path / "data/cf").exists()
