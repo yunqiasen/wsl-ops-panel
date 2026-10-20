@@ -121,11 +121,13 @@ class CFTunnelService:
             if not observed["active"]:
                 return self.store.update(
                     key,
-                    state="error",
+                    state="off" if record.get("desired") == "off" else "error",
                     current_url=None,
                     history_url=record.get("current_url") or record.get("history_url"),
                     handle=None,
-                    error={
+                    error=None
+                    if record.get("desired") == "off"
+                    else {
                         "stage": "runtime",
                         "message": "CF 托管进程已退出，请重新开启",
                     },
@@ -253,6 +255,12 @@ class CFTunnelService:
                 record = self._observe_record(key, self.store.get(key))
                 if not record.get("handle"):
                     continue
+                if record.get("desired") == "off":
+                    try:
+                        self._close_record(key, record)
+                    except CFError:
+                        pass  # The exact resource and cleanup error remain for retry.
+                    continue
                 try:
                     object_id = record["asset"]["object_id"]
                     assets = self.asset_source()
@@ -345,6 +353,30 @@ class CFTunnelService:
                         or record.get("history_url"),
                         error=error.as_dict(),
                     )
+
+    def _close_record(self, key, record):
+        self.store.update(
+            key,
+            state="stopping",
+            current_url=None,
+            history_url=record.get("current_url") or record.get("history_url"),
+        )
+        try:
+            if record.get("handle"):
+                self.runtime.stop(record["handle"], timeout=15)
+            self.store.update(
+                key, state="off", handle=None, error=None, last_verified_at=None
+            )
+        except Exception as exc:
+            error = (
+                CFError(exc.stage, f"{exc}；原隧道仍待清理")
+                if isinstance(exc, CFError)
+                else CFError(
+                    "cleanup", f"CF 关闭失败 ({type(exc).__name__})，原隧道仍待清理"
+                )
+            )
+            self.store.update(key, state="error", error=error.as_dict())
+            raise error from exc
 
     def _cleanup_record(self, key, record, error):
         handle = record.get("handle")
@@ -487,32 +519,13 @@ class CFTunnelService:
             self.store.settle_request(operation.request_id, "running")
             record = self.store.get(key) or {}
             if operation.action == "cf_disable":
-                self.store.update(
-                    key,
-                    state="stopping",
-                    current_url=None,
-                    history_url=record.get("current_url") or record.get("history_url"),
-                )
                 try:
-                    if record.get("handle"):
-                        self.runtime.stop(record["handle"], timeout=15)
-                    self.store.update(
-                        key, state="off", handle=None, error=None, last_verified_at=None
-                    )
+                    self._close_record(key, record)
                     self.store.settle_request(operation.request_id, "succeeded")
                     return
-                except Exception as exc:
-                    error = (
-                        CFError(exc.stage, f"{exc}；原隧道仍待清理")
-                        if isinstance(exc, CFError)
-                        else CFError(
-                            "cleanup",
-                            f"CF 关闭失败 ({type(exc).__name__})，原隧道仍待清理",
-                        )
-                    )
-                    self.store.update(key, state="error", error=error.as_dict())
+                except CFError:
                     self.store.settle_request(operation.request_id, "failed")
-                    raise error from exc
+                    raise
             self.store.update(key, state="starting", current_url=None, error=None)
             handle = None
             try:

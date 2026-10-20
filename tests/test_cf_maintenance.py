@@ -91,3 +91,50 @@ def test_maintenance_rechecks_online_entries_and_cleans_only_a_stopped_source_tu
         )  # CF never issued a business stop command.
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_maintenance_never_revives_a_failed_close_and_retries_only_its_cleanup(
+    tmp_path, monkeypatch
+):
+    from app.services.cf_tunnels.models import CFError
+
+    class BusyRuntime(FakeTunnelRuntime):
+        failing = True
+
+        def stop(self, handle, *, timeout=15):
+            if self.failing:
+                raise CFError("cleanup", "服务管理器繁忙")
+            super().stop(handle, timeout=timeout)
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    service = panel.app.state.cf_service
+    runtime = BusyRuntime()
+    service.runtime = runtime
+    clock = [1792460000.1234567]
+    service.clock = lambda: clock[0]
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        assert submit_cf(panel, "cf-disable").status == "failed"
+        observed.requests.clear()
+        clock[0] += 31
+        service.maintain()
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["desired"] == "off"
+        assert status["state"] == "error"
+        assert status["current_url"] is None
+        assert status["error"]["stage"] == "cleanup"
+        assert observed.requests == []
+        assert next(iter(runtime.resources.values()))["active"] is True
+        runtime.failing = False
+        service.maintain()
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "off"
+        assert status["current_url"] is None
+        assert status["error"] is None
+        assert observed.requests == []
+        assert not any(resource["active"] for resource in runtime.resources.values())
+        assert panel.containers[0].state == "running"
+    finally:
+        panel.app.state.task_worker.stop()
