@@ -19,6 +19,7 @@ class DelayedManager:
             "MainPID": "0",
         }
         self.timeouts = []
+        self.command_delays = {}
         self.delay = 5
         self.next_delay = 3
         binary = tmp_path / "cloudflared"
@@ -38,7 +39,7 @@ class DelayedManager:
                 return original_run(command, **kwargs)
             limit = kwargs["timeout"]
             self.timeouts.append(limit)
-            delay = self.delay
+            delay = self.command_delays.get(tuple(command[:3]), self.delay)
             self.delay = self.next_delay
             self.clock += min(delay, limit)
             if command[0] == "systemd-run":
@@ -163,5 +164,71 @@ def test_final_runtime_activation_is_inside_the_total_open_budget(
         assert status["current_url"] is None
         assert manager.info["ActiveState"] == "inactive"
         assert manager.clock <= 135
+    finally:
+        panel.app.state.task_worker.stop()
+
+
+def test_close_timeout_is_bounded_and_keeps_only_the_owned_resource_for_retry(
+    tmp_path, monkeypatch
+):
+    from tests.test_cf_tunnels import attach_local_observation, make_panel, submit_cf
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    manager = DelayedManager(tmp_path, monkeypatch)
+    manager.delay = manager.next_delay = 0
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        manager.command_delays[("systemctl", "--user", "stop")] = 20
+        started = manager.clock
+        assert submit_cf(panel, "cf-disable").status == "failed"
+        assert manager.clock - started <= 15
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "cleanup"
+        assert status["current_url"] is None
+        assert manager.info["ActiveState"] == "active"
+        manager.command_delays.clear()
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        assert manager.info["ActiveState"] == "inactive"
+    finally:
+        panel.app.state.task_worker.stop()
+
+
+@pytest.mark.parametrize(
+    "change", ["missing_binary", "unreadable_url", "different_invocation"]
+)
+def test_close_uses_runtime_ownership_not_binary_or_domain_files(
+    tmp_path, monkeypatch, change
+):
+    from tests.test_cf_tunnels import attach_local_observation, make_panel, submit_cf
+
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+    manager = DelayedManager(tmp_path, monkeypatch)
+    manager.delay = manager.next_delay = 0
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        observed.requests.clear()
+        if change == "missing_binary":
+            (tmp_path / "cloudflared").unlink()
+        elif change == "unreadable_url":
+            (manager.directory / "url.json").chmod(0)
+        else:
+            manager.info["InvocationID"] = "e" * 32
+        task = submit_cf(panel, "cf-disable")
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["current_url"] is None
+        if change == "different_invocation":
+            assert task.status == "failed"
+            assert status["error"]["stage"] == "runtime_identity"
+            assert manager.info["ActiveState"] == "active"
+        else:
+            assert task.status == "succeeded"
+            assert manager.info["ActiveState"] == "inactive"
+        assert observed.requests == []
+        assert panel.containers[0].state == "running"
     finally:
         panel.app.state.task_worker.stop()
