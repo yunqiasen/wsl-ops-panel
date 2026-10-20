@@ -297,3 +297,110 @@ def test_open_reuses_online_tunnel_and_only_refresh_rebuilds_it(tmp_path, monkey
         assert sum(resource["active"] for resource in runtime.resources.values()) == 1
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_origin_inspection_timeout_is_a_readable_error_not_server_failure(
+    tmp_path, monkeypatch
+):
+    import subprocess
+
+    panel = make_panel(tmp_path)
+    original_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[:3] == ["docker", "container", "inspect"]:
+            raise subprocess.TimeoutExpired(command, 5)
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    response = panel.client.get("/api/assets/web/cf/targets")
+    assert response.status_code == 400
+    assert "入口" in response.json()["detail"]
+    assert panel.store.list_all() == []
+    assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
+
+
+def test_public_failure_cleans_tunnel_and_reports_stage(tmp_path, monkeypatch):
+    import httpx
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    runtime = FakeTunnelRuntime()
+    service = panel.app.state.cf_service
+    service.runtime = runtime
+    service.public_timeout = 0.03
+    service.http_client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                503 if request.url.host.endswith("trycloudflare.com") else 200,
+                text="fixture",
+            )
+        )
+    )
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "public_probe"
+        assert status["current_url"] is None
+        assert not any(resource["active"] for resource in runtime.resources.values())
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+    finally:
+        panel.app.state.task_worker.stop()
+
+
+def test_missing_dependency_is_reported_without_starting_resource(
+    tmp_path, monkeypatch
+):
+    from app.services.cf_tunnels.models import CFError
+
+    class MissingDependency(FakeTunnelRuntime):
+        def start(self, *args, **kwargs):
+            raise CFError("dependency", "缺少 cloudflared")
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    runtime = MissingDependency()
+    panel.app.state.cf_service.runtime = runtime
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["error"]["stage"] == "dependency"
+        assert status["current_url"] is None
+        assert runtime.resources == {}
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+    finally:
+        panel.app.state.task_worker.stop()
+
+
+def test_failed_close_retains_owned_resource_for_retry(tmp_path, monkeypatch):
+    from app.services.cf_tunnels.models import CFError
+
+    class DelayedStop(FakeTunnelRuntime):
+        failing = True
+
+        def stop(self, handle, *, timeout=15):
+            if self.failing:
+                raise CFError("cleanup", "服务管理器繁忙")
+            super().stop(handle, timeout=timeout)
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    runtime = DelayedStop()
+    panel.app.state.cf_service.runtime = runtime
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        assert submit_cf(panel, "cf-disable").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["error"]["stage"] == "cleanup"
+        assert status["current_url"] is None
+        assert any(resource["active"] for resource in runtime.resources.values())
+        runtime.failing = False
+        assert submit_cf(panel, "cf-disable").status == "succeeded"
+        assert not any(resource["active"] for resource in runtime.resources.values())
+    finally:
+        panel.app.state.task_worker.stop()

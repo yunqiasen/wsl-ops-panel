@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from subprocess import SubprocessError
 from time import monotonic, sleep
 from uuid import uuid4
 
@@ -77,7 +78,7 @@ class CFTunnelService:
     def prepare(self, asset: AssetSnapshot) -> dict[str, object]:
         try:
             return prepare_targets(asset, self.http_client)
-        except (httpx.HTTPError, OSError) as exc:
+        except (httpx.HTTPError, OSError, SubprocessError) as exc:
             raise CFError(
                 "origin_probe", f"项目入口读取失败 ({type(exc).__name__})"
             ) from exc
