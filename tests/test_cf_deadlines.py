@@ -1,6 +1,7 @@
 """Deterministic external-manager delays exercise the real runtime's time budgets."""
 
 from pathlib import Path
+import json
 import subprocess
 
 import pytest
@@ -55,6 +56,15 @@ class DelayedManager:
                     "Transient": "yes",
                 }
                 self.directory = Path(command[command.index("--directory") + 1])
+                token = command[command.index("--token") + 1]
+                (self.directory / "url.json").write_text(
+                    json.dumps(
+                        {
+                            "token": token,
+                            "url": "https://deadline-fixture.trycloudflare.com",
+                        }
+                    )
+                )
             if delay > limit:
                 raise subprocess.TimeoutExpired(command, limit)
             if command[:3] == ["systemctl", "--user", "stop"]:
@@ -117,3 +127,41 @@ def test_close_cancels_an_activating_owned_unit_even_before_its_pid_is_registere
     manager.info.update(ActiveState="activating", MainPID="0")
     runtime.stop(handle, timeout=15)
     assert manager.info["ActiveState"] == "inactive"
+
+
+def test_final_runtime_activation_is_inside_the_total_open_budget(
+    tmp_path, monkeypatch
+):
+    import httpx
+    from tests.test_cf_tunnels import attach_local_observation, make_panel, submit_cf
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    manager = DelayedManager(tmp_path, monkeypatch)
+    manager.delay = manager.next_delay = 0
+    monkeypatch.setattr("app.services.cf_tunnels.monotonic", lambda: manager.clock)
+    monkeypatch.setattr("app.services.cf_tunnels.sleep", manager.sleep)
+    monkeypatch.setattr(
+        "app.services.cf_tunnels.origins.monotonic", lambda: manager.clock
+    )
+    service = panel.app.state.cf_service
+    # Stretch the nested phase to exercise the independent hard outer budget.
+    service.public_timeout = 120
+
+    def respond(request):
+        if request.url.host.endswith("trycloudflare.com"):
+            manager.clock = 119
+            manager.delay = manager.next_delay = 3
+        return httpx.Response(200, text="business fixture")
+
+    service.http_transport = httpx.MockTransport(respond)
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "failed"
+        status = panel.client.get("/api/assets/web/cf").json()
+        assert status["state"] == "error"
+        assert status["current_url"] is None
+        assert manager.info["ActiveState"] == "inactive"
+        assert manager.clock <= 135
+    finally:
+        panel.app.state.task_worker.stop()

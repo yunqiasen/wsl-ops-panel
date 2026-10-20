@@ -178,8 +178,8 @@ class SystemdTunnelRuntime:
                 pass
         return {"active": active and int(info.get("MainPID") or 0) > 0, "url": url}
 
-    def activate(self, handle: dict) -> None:
-        if not self.observe(handle)["active"]:
+    def activate(self, handle: dict, *, timeout: float = 5) -> None:
+        if not self.observe(handle, timeout=timeout)["active"]:
             raise CFError("runtime", "核验完成时 CF 进程已退出")
         path = self._directory(handle) / "verified"
         path.write_text(handle["token"])

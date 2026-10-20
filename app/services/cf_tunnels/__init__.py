@@ -13,10 +13,11 @@ import httpx
 from app.models.assets import AssetSnapshot
 from app.services.agent_native_lock import exclusive_file_lock
 from app.services.cf_tunnels.models import CFError, CFOperation, TargetChoice
-from app.services.cf_tunnels.origins import owner_key, prepare_targets, remaining
+from app.services.cf_tunnels.origins import owner_key, prepare_targets
 from app.services.cf_tunnels.http_probe import probe
 from app.services.cf_tunnels.storage import CFStore
 from app.services.cf_tunnels.locks import observe_lock
+from app.services.cf_tunnels.runtime import budget
 
 CF_ACTIONS = {"cf_create", "cf_refresh", "cf_disable"}
 
@@ -594,7 +595,12 @@ class CFTunnelService:
                 if target is None:
                     raise CFError("origin_identity", "入口或容器实例已变化，请重新开启")
                 existing = record.get("handle")
-                if existing and self.runtime.observe(existing)["active"]:
+                if (
+                    existing
+                    and self.runtime.observe(existing, timeout=budget(total_deadline))[
+                        "active"
+                    ]
+                ):
                     if (
                         operation.action == "cf_create"
                         and record.get("target", {}).get("revision")
@@ -602,7 +608,7 @@ class CFTunnelService:
                     ):
                         handle = existing
                     else:
-                        self.runtime.stop(existing, timeout=15)
+                        self.runtime.stop(existing, timeout=budget(total_deadline, 15))
                         self.store.update(
                             key,
                             handle=None,
@@ -617,7 +623,10 @@ class CFTunnelService:
                         launch_pending=True,
                     )
                     handle = self.runtime.start(
-                        key, operation.request_id, target["origin"], timeout=10
+                        key,
+                        operation.request_id,
+                        target["origin"],
+                        timeout=budget(total_deadline, 10),
                     )
                 self.store.update(
                     key,
@@ -629,7 +638,9 @@ class CFTunnelService:
                 deadline = min(total_deadline, monotonic() + self.public_timeout)
                 last_error = CFError("cf_connect", "CF 网址建立超时")
                 while monotonic() < deadline:
-                    observed = self.runtime.observe(handle)
+                    observed = self.runtime.observe(
+                        handle, timeout=budget(deadline, stage="cf_connect")
+                    )
                     if not observed["active"]:
                         raise CFError("cf_connect", "CF 托管进程已退出")
                     url = observed.get("url")
@@ -641,7 +652,9 @@ class CFTunnelService:
                             checked = probe(
                                 self.http_transport,
                                 public,
-                                timeout=remaining(deadline, self.probe_timeout),
+                                timeout=budget(
+                                    deadline, self.probe_timeout, stage="public_probe"
+                                ),
                                 stage="public_probe",
                             )
                             if (
@@ -658,7 +671,9 @@ class CFTunnelService:
                                     last_probe_attempt=self.clock(),
                                     error=None,
                                 )
-                                self.runtime.activate(handle)
+                                self.runtime.activate(
+                                    handle, timeout=budget(total_deadline)
+                                )
                                 self.store.settle_request(
                                     operation.request_id, "succeeded"
                                 )

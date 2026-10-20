@@ -184,7 +184,7 @@ class FakeTunnelRuntime:
             "url": resource["url"] if resource else None,
         }
 
-    def activate(self, handle):
+    def activate(self, handle, *, timeout=5):
         self.resources[handle["token"]]["verified"] = True
 
     def stop(self, handle, *, timeout=15):
