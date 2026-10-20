@@ -63,7 +63,7 @@ def make_panel(tmp_path: Path, **overrides):
     app = create_app(
         config_root=config,
         docker_scanner=lambda: containers,
-        project_scanner=lambda: [],
+        project_scanner=overrides.pop("project_scanner", lambda: []),
         systemd_scanner=lambda: [],
         node_scanner=lambda: [],
         python_scanner=lambda: [],

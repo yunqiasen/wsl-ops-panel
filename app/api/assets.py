@@ -245,7 +245,7 @@ def enqueue_asset_action(request: Request, object_id: str, *, action: str, versi
         if not asset.actionable and asset.category in {'node', 'python', 'agent_cli'}:
             _ensure_asset_actionable(asset)
         raise HTTPException(status_code=400, detail=f'action {action} is not supported by {object_id}')
-    if action in {"cf_create", "cf_refresh", "cf_disable"} and asset.category == "docker":
+    if action in {"cf_create", "cf_refresh", "cf_disable"} and asset.category in {"docker", "project"}:
         try:
             task, plan = request.app.state.cf_service.enqueue(request.app.state.task_queue, asset, action, choice=cf_target)
         except ValueError as exc:

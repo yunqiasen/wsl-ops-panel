@@ -25,13 +25,16 @@ class CFTunnelService:
         self.data_root = Path(data_root)
         self.store = CFStore(self.data_root / "state.db")
         self.http_transport: httpx.AsyncBaseTransport | None = None
+        self.proc_root = Path("/proc")
         self.prepare_timeout = 15.0
         self.probe_timeout = 5.0
         self.runtime = SystemdTunnelRuntime(self.data_root / "cf")
         self.public_timeout = 90.0
 
     def status(self, asset: AssetSnapshot) -> dict[str, object]:
-        capable = asset.category == "docker" and bool(asset.containers)
+        capable = (asset.category == "docker" and bool(asset.containers)) or (
+            asset.category == "project" and bool(asset.metadata.get("path"))
+        )
         try:
             key = owner_key(asset)
         except ValueError:
@@ -58,7 +61,7 @@ class CFTunnelService:
         }
 
     def decorate(self, asset: AssetSnapshot) -> AssetSnapshot:
-        if asset.category != "docker":
+        if asset.category not in {"docker", "project"}:
             return asset
         status = self.status(asset)
         actions = list(asset.supports_actions)
@@ -85,6 +88,7 @@ class CFTunnelService:
                 self.http_transport,
                 timeout=self.prepare_timeout,
                 probe_timeout=self.probe_timeout,
+                proc_root=self.proc_root,
             )
             record = self.store.get(owner_key(asset)) or {}
             saved = record.get("selection_id") or record.get("target", {}).get("id")

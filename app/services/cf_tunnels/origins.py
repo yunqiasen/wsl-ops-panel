@@ -15,6 +15,7 @@ import httpx
 from app.models.assets import AssetSnapshot, DockerContainerSnapshot
 from app.services.cf_tunnels.http_probe import probe
 from app.services.cf_tunnels.models import CFError
+from app.services.cf_tunnels.processes import listeners
 
 _DOCKER_FIELDS = (
     '{"id":{{json .Id}},"name":{{json .Name}},"running":{{json .State.Running}},'
@@ -32,9 +33,16 @@ def digest(value: object) -> str:
 
 def owner_key(asset: AssetSnapshot) -> str:
     directory = asset.metadata.get("project_dir") or asset.metadata.get("path")
-    if asset.category != "docker" or not isinstance(directory, str) or not directory:
-        raise CFError("origin_identity", "项目尚缺少可确认的 Docker 归属")
-    return digest([asset.category, str(Path(directory).resolve())])
+    if (
+        asset.category not in {"docker", "project"}
+        or not isinstance(directory, str)
+        or not directory
+    ):
+        raise CFError("origin_identity", "项目尚缺少可确认的本地目录归属")
+    context = sorted(
+        {item.compose_project for item in asset.containers if item.compose_project}
+    )
+    return digest([asset.category, str(Path(directory).resolve()), context])
 
 
 def inspect_container(name: str, *, timeout: float = 5) -> dict[str, Any]:
@@ -64,9 +72,22 @@ def prepare_targets(
     *,
     timeout: float = 15,
     probe_timeout: float = 5,
+    proc_root: Path = Path("/proc"),
 ) -> dict[str, object]:
     deadline = monotonic() + timeout
     key = owner_key(asset)
+    if asset.category == "project":
+        return {
+            "targets": _project_targets(
+                asset,
+                transport,
+                key=key,
+                deadline=deadline,
+                probe_timeout=probe_timeout,
+                proc_root=proc_root,
+            ),
+            "selected_id": None,
+        }
     primary = next(
         (c for c in asset.containers if c.name == asset.primary_container_name), None
     )
@@ -191,4 +212,62 @@ def _container_targets(
                 targets[targets.index(existing)] = target
     if failures and not any(target["reachable"] for target in targets):
         raise failures[0]
+    return targets
+
+
+def _project_targets(asset, transport, *, key, deadline, probe_timeout, proc_root):
+    root = Path(asset.metadata["path"]).resolve(strict=True)
+    targets = []
+    for listener in listeners(proc_root, timeout=remaining(deadline, 5)):
+        cwd = Path(listener["cwd"])
+        if listener["owner_type"] == "unknown" or not cwd.is_relative_to(root):
+            continue
+        port = listener["port"]
+        host = ipaddress.ip_address(listener["address"].replace("*", "0.0.0.0"))
+        if host.is_unspecified:
+            host = ipaddress.ip_address("::1" if host.version == 6 else "127.0.0.1")
+        authority = f"[{host}]" if host.version == 6 else str(host)
+        origin = f"http://{authority}:{port}"
+        role = (
+            listener.get("unit")
+            or f"{cwd.relative_to(root)}:{listener['process_name']}"
+        )
+        target_id = digest([key, role, port, "http"])
+        existing = next((item for item in targets if item["id"] == target_id), None)
+        if existing and existing["reachable"]:
+            continue
+        try:
+            checked = probe(
+                transport, origin + "/", timeout=remaining(deadline, probe_timeout)
+            )
+        except (httpx.HTTPError, CFError) as exc:
+            checked = {
+                "reachable": False,
+                "status_code": None,
+                "fingerprint": None,
+                "reason": str(exc)
+                if isinstance(exc, CFError)
+                else f"项目入口读取失败 ({type(exc).__name__})",
+            }
+        target = {
+            "id": target_id,
+            "revision": digest(
+                [
+                    key,
+                    listener["pid"],
+                    listener["start_time"],
+                    root.stat().st_ino,
+                    origin,
+                ]
+            ),
+            "name": f"{role} · {port}/tcp",
+            "origin": origin,
+            "path": "/",
+            "source": "project_listener",
+            **checked,
+        }
+        if existing is None:
+            targets.append(target)
+        elif target["reachable"]:
+            targets[targets.index(existing)] = target
     return targets

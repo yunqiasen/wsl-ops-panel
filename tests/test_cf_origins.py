@@ -165,3 +165,77 @@ def test_all_owned_compose_services_are_candidates_not_only_primary(
         == 0
     )
     assert panel.store.list_all() == []
+
+
+def test_project_uses_owned_listener_not_a_port_hint_and_rechecks_pid(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    from app.models.assets import AssetSnapshot
+    from tests.test_cf_tunnels import wait_for_task
+
+    root = tmp_path / "local-project"
+    root.mkdir()
+    (root / "app.py").write_text("# a source project, not a launch command\n")
+    project = AssetSnapshot(
+        object_id="project__fixture",
+        name="Local Project",
+        category="project",
+        status="present",
+        metadata={"path": str(root), "web_ui": {"port": "19999", "url_path": "/"}},
+    )
+    panel = make_panel(tmp_path, project_scanner=lambda: [project])
+    attach_local_observation(panel, monkeypatch)
+    runtime = FakeTunnelRuntime()
+    service = panel.app.state.cf_service
+    service.runtime = runtime
+    service.proc_root = tmp_path / "proc"
+    pid = service.proc_root / "3101"
+    pid.mkdir(parents=True)
+    (pid / "stat").write_text("3101 (python) " + " ".join(["S"] + ["0"] * 18 + ["101"]))
+    (pid / "comm").write_text("python\n")
+    (pid / "cgroup").write_text("0::/user.slice/user-1000.slice/session.scope\n")
+    (pid / "cwd").symlink_to(root, target_is_directory=True)
+    current = {"pid": 3101}
+    original = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "ss":
+            text = f'LISTEN 0 128 127.0.0.1:18181 0.0.0.0:* users:(("python",pid={current["pid"]},fd=3))\n'
+            return subprocess.CompletedProcess(command, 0, text, "")
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    prepared = panel.client.get("/api/assets/project__fixture/cf/targets")
+    assert prepared.status_code == 200, prepared.json()
+    target = prepared.json()["targets"][0]
+    assert target["origin"] == "http://127.0.0.1:18181"
+    assert target["source"] == "project_listener"
+    panel.app.state.task_worker.start()
+    try:
+
+        def submit(action, choice=None):
+            payload = {"asset_ids": [project.object_id]}
+            if choice:
+                payload["cf_target_map"] = {project.object_id: choice}
+            return panel.client.post(f"/api/bulk/actions/{action}", json=payload).json()
+
+        started = submit("cf-create")
+        assert started["queued_count"] == 1, started
+        assert wait_for_task(panel, started["tasks"][0]["id"]).status == "succeeded"
+        stopped = submit("cf-disable")
+        assert wait_for_task(panel, stopped["tasks"][0]["id"]).status == "succeeded"
+        pid.rename(service.proc_root / "3102")
+        current["pid"] = 3102
+        old = submit("cf-create", {k: target[k] for k in ("id", "revision")})
+        assert old["queued_count"] == 0
+        reopened = submit("cf-create")
+        assert reopened["queued_count"] == 1
+        assert wait_for_task(panel, reopened["tasks"][0]["id"]).status == "succeeded"
+        assert len(runtime.resources) == 2
+        assert (
+            root / "app.py"
+        ).read_text() == "# a source project, not a launch command\n"
+        assert current["pid"] == 3102
+    finally:
+        panel.app.state.task_worker.stop()
