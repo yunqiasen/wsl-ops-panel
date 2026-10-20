@@ -8,10 +8,13 @@ import json
 from pathlib import Path
 import subprocess
 from typing import Any
+from time import monotonic
 
 import httpx
 
 from app.models.assets import AssetSnapshot
+from app.services.cf_tunnels.http_probe import probe
+from app.services.cf_tunnels.models import CFError
 
 _DOCKER_FIELDS = (
     '{"id":{{json .Id}},"name":{{json .Name}},"running":{{json .State.Running}},'
@@ -34,13 +37,13 @@ def owner_key(asset: AssetSnapshot) -> str:
     return digest([asset.category, str(Path(directory).resolve())])
 
 
-def inspect_container(name: str) -> dict[str, Any]:
+def inspect_container(name: str, *, timeout: float = 5) -> dict[str, Any]:
     completed = subprocess.run(
         ["docker", "container", "inspect", "--format", _DOCKER_FIELDS, name],
         check=True,
         capture_output=True,
         text=True,
-        timeout=5,
+        timeout=timeout,
     )
     result = json.loads(completed.stdout)
     if not isinstance(result, dict):
@@ -48,33 +51,28 @@ def inspect_container(name: str) -> dict[str, Any]:
     return result
 
 
-def probe(client: httpx.Client, url: str) -> dict[str, object]:
-    with client.stream("GET", url, timeout=5, follow_redirects=False) as response:
-        body = bytearray()
-        for part in response.iter_bytes(chunk_size=8192):
-            body.extend(part[: 65536 - len(body)])
-            if len(body) >= 65536:
-                break
-        return {
-            "status_code": response.status_code,
-            "reachable": 200 <= response.status_code < 300,
-            "fingerprint": digest(
-                [
-                    response.headers.get("content-type", "").split(";")[0],
-                    bytes(body).hex(),
-                ]
-            ),
-        }
+def remaining(deadline: float, maximum: float) -> float:
+    value = min(maximum, deadline - monotonic())
+    if value <= 0:
+        raise CFError("origin_probe", "项目入口准备超时")
+    return value
 
 
-def prepare_targets(asset: AssetSnapshot, client: httpx.Client) -> dict[str, object]:
+def prepare_targets(
+    asset: AssetSnapshot,
+    transport: httpx.AsyncBaseTransport | None,
+    *,
+    timeout: float = 15,
+    probe_timeout: float = 5,
+) -> dict[str, object]:
+    deadline = monotonic() + timeout
     key = owner_key(asset)
     primary = next(
         (c for c in asset.containers if c.name == asset.primary_container_name), None
     )
     if primary is None:
         raise ValueError("项目尚缺少主容器")
-    info = inspect_container(primary.name)
+    info = inspect_container(primary.name, timeout=remaining(deadline, 5))
     labels = info.get("labels") or {}
     expected_dir = str(Path(str(asset.metadata["project_dir"])).resolve())
     observed_dir = labels.get("com.docker.compose.project.working_dir")
@@ -103,7 +101,9 @@ def prepare_targets(asset: AssetSnapshot, client: httpx.Client) -> dict[str, obj
                 continue
             authority = f"[{host}]" if ":" in host else host
             origin = f"http://{authority}:{port}"
-            checked = probe(client, f"{origin}/")
+            checked = probe(
+                transport, f"{origin}/", timeout=remaining(deadline, probe_timeout)
+            )
             target = {
                 "id": digest([key, primary.compose_service, exposed, "http"]),
                 "revision": digest([key, info["id"], info.get("started_at"), origin]),

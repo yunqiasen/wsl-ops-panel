@@ -128,9 +128,7 @@ def attach_local_observation(panel, monkeypatch):
             headers={"content-type": "text/html"},
         )
 
-    panel.app.state.cf_service.http_client = httpx.Client(
-        transport=httpx.MockTransport(respond), trust_env=False
-    )
+    panel.app.state.cf_service.http_transport = httpx.MockTransport(respond)
     return SimpleNamespace(info=info, requests=requests)
 
 
@@ -329,12 +327,10 @@ def test_public_failure_cleans_tunnel_and_reports_stage(tmp_path, monkeypatch):
     service = panel.app.state.cf_service
     service.runtime = runtime
     service.public_timeout = 0.03
-    service.http_client = httpx.Client(
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                503 if request.url.host.endswith("trycloudflare.com") else 200,
-                text="fixture",
-            )
+    service.http_transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            503 if request.url.host.endswith("trycloudflare.com") else 200,
+            text="fixture",
         )
     )
     panel.app.state.task_worker.start()

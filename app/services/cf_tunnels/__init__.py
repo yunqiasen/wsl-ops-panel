@@ -11,7 +11,8 @@ import httpx
 from app.models.assets import AssetSnapshot
 from app.services.agent_native_lock import exclusive_file_lock
 from app.services.cf_tunnels.models import CFError, CFOperation, TargetChoice
-from app.services.cf_tunnels.origins import owner_key, prepare_targets, probe
+from app.services.cf_tunnels.origins import owner_key, prepare_targets, remaining
+from app.services.cf_tunnels.http_probe import probe
 from app.services.cf_tunnels.storage import CFStore
 
 CF_ACTIONS = {"cf_create", "cf_refresh", "cf_disable"}
@@ -23,7 +24,9 @@ class CFTunnelService:
 
         self.data_root = Path(data_root)
         self.store = CFStore(self.data_root / "state.db")
-        self.http_client = httpx.Client(trust_env=False)
+        self.http_transport: httpx.AsyncBaseTransport | None = None
+        self.prepare_timeout = 15.0
+        self.probe_timeout = 5.0
         self.runtime = SystemdTunnelRuntime(self.data_root / "cf")
         self.public_timeout = 90.0
 
@@ -77,7 +80,12 @@ class CFTunnelService:
 
     def prepare(self, asset: AssetSnapshot) -> dict[str, object]:
         try:
-            return prepare_targets(asset, self.http_client)
+            return prepare_targets(
+                asset,
+                self.http_transport,
+                timeout=self.prepare_timeout,
+                probe_timeout=self.probe_timeout,
+            )
         except (httpx.HTTPError, OSError, SubprocessError) as exc:
             raise CFError(
                 "origin_probe", f"项目入口读取失败 ({type(exc).__name__})"
@@ -136,6 +144,7 @@ class CFTunnelService:
 
     def execute(self, operation: CFOperation, task) -> None:
         key = operation.owner
+        total_deadline = monotonic() + 120
         with exclusive_file_lock(self.data_root / "cf" / f"{key}.runtime.lock"):
             if self.store.request_status(operation.request_id) != "queued":
                 raise CFError("persistence", "CF 任务记录已失效")
@@ -204,7 +213,7 @@ class CFTunnelService:
                     target=target,
                     active_generation=operation.request_id,
                 )
-                deadline = monotonic() + self.public_timeout
+                deadline = min(total_deadline, monotonic() + self.public_timeout)
                 last_error = CFError("cf_connect", "CF 网址建立超时")
                 while monotonic() < deadline:
                     observed = self.runtime.observe(handle)
@@ -216,7 +225,12 @@ class CFTunnelService:
 
                         public = quick_url(url) + target["path"]
                         try:
-                            checked = probe(self.http_client, public)
+                            checked = probe(
+                                self.http_transport,
+                                public,
+                                timeout=remaining(deadline, self.probe_timeout),
+                                stage="public_probe",
+                            )
                             if (
                                 checked["reachable"]
                                 and checked["fingerprint"] == target["fingerprint"]
@@ -236,7 +250,7 @@ class CFTunnelService:
                             last_error = CFError(
                                 "public_probe", "公网响应与项目入口不一致"
                             )
-                        except httpx.HTTPError as exc:
+                        except (httpx.HTTPError, CFError) as exc:
                             last_error = CFError(
                                 "public_probe",
                                 f"公网访问核验失败 ({type(exc).__name__})",

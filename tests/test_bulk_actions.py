@@ -145,7 +145,7 @@ def test_bulk_cf_action_continues_after_skipping_asset_without_http_entry(tmp_pa
         return original_run(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
-    panel.app.state.cf_service.http_client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200 if request.url.port == 18080 else 503, text="fixture")))
+    panel.app.state.cf_service.http_transport = httpx.MockTransport(lambda request: httpx.Response(200 if request.url.port == 18080 else 503, text="fixture"))
     response = panel.client.post("/api/bulk/actions/cf-create", json={"asset_ids": ["no_http", "web"]})
     assert response.status_code == 202
     payload = response.json()
