@@ -1,7 +1,7 @@
 # Docker / Project 按需 CF 隧道规格
 
 日期：2026-10-20
-状态：用户回复“进入”后已批准全部实现，按 #4 → #5 → #6 执行。
+状态：#4 → #5 → #6 已实现；用户确认后完成正式合入、推送、仅面板加载及 Agent2API 正式网页验收。
 
 追踪：[GitHub #3](https://github.com/yunqiasen/wsl-ops-panel/issues/3)
 

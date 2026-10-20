@@ -493,3 +493,8 @@ sudo systemctl start wsl-ops-panel.service wsl-agent-router.service
 - 本期为 Quick Tunnel 临时网址与普通 HTTP 网页可达性；SSE 流式不列为支持，重建后网址会变化。
 
 规格、执行与审查记录位于 `docs/superpowers/specs/2026-10-20-wsl-ops-panel-on-demand-cf-tunnels.md` 和 `docs/superpowers/plans/2026-10-20-on-demand-cf-*.md`；正式加载与 Agent2API 公网验收状态以执行记录为准。
+
+
+### 按需 CF 正式加载结果（2026-10-20）
+
+`0dff144` 已合入并推送至 `phase1-complete`，仅面板受控短重启。合入快照 Python 984、Node 46、CF 浏览器 5 场景通过；31 个业务容器、Router 与原配置保持不变。Agent2API 已通过正式网页完成开启、公网访问、关闭、本地健康、再次开启，三条实际任务全部成功；临时网址的最终 HTTP 200 与周期核验均已保存证据。详见 [正式验收记录](/home/div/1_Project_dir/AI/wsl-ops-panel/docs/superpowers/plans/2026-10-20-cf-live-verification.md)。
