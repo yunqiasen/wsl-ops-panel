@@ -288,3 +288,52 @@ def test_host_network_uses_only_listeners_of_current_container_processes(
     assert targets[0]["origin"] == "http://[::1]:18282"
     assert observed.requests == ["http://[::1]:18282/"]
     assert not panel.store.list_all()
+
+
+def test_existing_page_path_and_same_origin_login_redirect_are_verified(
+    tmp_path, monkeypatch
+):
+    import httpx
+    import yaml
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    config = tmp_path / "config/objects/web.yaml"
+    settings = yaml.safe_load(config.read_text())
+    settings["config"]["endpoints"] = [{"container_port": "8080", "path": "/dashboard"}]
+    config.write_text(yaml.safe_dump(settings))
+    panel.app.state.rebuild_registry_runtime()
+    runtime = FakeTunnelRuntime()
+    panel.app.state.cf_service.runtime = runtime
+    requests = []
+
+    def respond(request):
+        requests.append(str(request.url))
+        if request.url.path == "/dashboard":
+            return httpx.Response(302, headers={"location": "/login"})
+        if request.url.path == "/login":
+            return httpx.Response(
+                401,
+                text="Business fixture login",
+                headers={"content-type": "text/html"},
+            )
+        return httpx.Response(404, text="not here")
+
+    panel.app.state.cf_service.http_transport = httpx.MockTransport(respond)
+    prepared = panel.client.get("/api/assets/web/cf/targets")
+    assert prepared.status_code == 200
+    target = prepared.json()["targets"][0]
+    assert target["reachable"] is True
+    assert target["path"] == "/dashboard"
+    assert target["protocol"] == "http"
+    assert target["requires_login"] is True
+    panel.app.state.task_worker.start()
+    try:
+        assert submit_cf(panel, "cf-create").status == "succeeded"
+        assert (
+            panel.client.get("/api/assets/web/cf").json()["current_url"]
+            == "https://business-fixture.trycloudflare.com/dashboard"
+        )
+        assert "https://business-fixture.trycloudflare.com/login" in requests
+    finally:
+        panel.app.state.task_worker.stop()

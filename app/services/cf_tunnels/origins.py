@@ -175,6 +175,7 @@ def _container_targets(
                 probe_timeout=probe_timeout,
                 source="host_network",
                 instance=[info["id"], info.get("started_at")],
+                path=_page_path(asset, listener["port"]),
             )
             _merge_target(result, target)
         return result
@@ -204,13 +205,14 @@ def _container_targets(
                 continue
             authority = f"[{host}]" if ":" in host else host
             origin = f"http://{authority}:{port}"
-            target_id = digest([key, container.compose_service, exposed, "http"])
+            path = _page_path(asset, port, exposed.split("/", 1)[0])
+            target_id = digest([key, container.compose_service, exposed, "http", path])
             existing = next((item for item in targets if item["id"] == target_id), None)
             if existing and existing["reachable"]:
                 continue
             limit = remaining(deadline, probe_timeout)
             try:
-                checked = probe(transport, f"{origin}/", timeout=limit)
+                checked = probe(transport, origin + path, timeout=limit)
             except (httpx.HTTPError, CFError) as exc:
                 failure = (
                     exc
@@ -228,10 +230,13 @@ def _container_targets(
                 }
             target = {
                 "id": target_id,
-                "revision": digest([key, info["id"], info.get("started_at"), origin]),
+                "revision": digest(
+                    [key, info["id"], info.get("started_at"), origin, path]
+                ),
                 "name": f"{container.compose_service} · {exposed}",
                 "origin": origin,
-                "path": "/",
+                "path": path,
+                "protocol": "http",
                 "source": source,
                 **checked,
             }
@@ -266,6 +271,7 @@ def _project_targets(asset, transport, *, key, deadline, probe_timeout, proc_roo
             probe_timeout=probe_timeout,
             source="project_listener",
             instance=[root.stat().st_dev, root.stat().st_ino],
+            path=_page_path(asset, listener["port"]),
         )
         _merge_target(targets, target)
     return targets
@@ -280,7 +286,7 @@ def _merge_target(targets, target):
 
 
 def _listener_target(
-    listener, transport, *, key, role, deadline, probe_timeout, source, instance
+    listener, transport, *, key, role, deadline, probe_timeout, source, instance, path
 ):
     port = listener["port"]
     host = ipaddress.ip_address(listener["address"].replace("*", "0.0.0.0"))
@@ -290,7 +296,7 @@ def _listener_target(
     origin = f"http://{authority}:{port}"
     try:
         checked = probe(
-            transport, origin + "/", timeout=remaining(deadline, probe_timeout)
+            transport, origin + path, timeout=remaining(deadline, probe_timeout)
         )
     except (httpx.HTTPError, CFError) as exc:
         checked = {
@@ -302,13 +308,35 @@ def _listener_target(
             else f"项目入口读取失败 ({type(exc).__name__})",
         }
     return {
-        "id": digest([key, role, port, "http"]),
+        "id": digest([key, role, port, "http", path]),
         "revision": digest(
-            [key, listener["pid"], listener["start_time"], instance, origin]
+            [key, listener["pid"], listener["start_time"], instance, origin, path]
         ),
         "name": f"{role} · {port}/tcp",
         "origin": origin,
-        "path": "/",
+        "path": path,
+        "protocol": "http",
         "source": source,
         **checked,
     }
+
+
+def _page_path(asset, port, container_port=None):
+    endpoints = asset.metadata.get("service_endpoints") or []
+    for endpoint in sorted(endpoints, key=lambda item: not item.get("primary")):
+        if str(endpoint.get("host_port")) != str(port) and (
+            container_port is None
+            or str(endpoint.get("container_port")) != str(container_port)
+        ):
+            continue
+        path = endpoint.get("path") or "/"
+        if (
+            not isinstance(path, str)
+            or not path.startswith("/")
+            or path.startswith("//")
+            or "\\" in path
+            or any(ord(c) < 32 for c in path)
+        ):
+            raise CFError("origin_identity", "项目网页路径格式错误")
+        return path
+    return "/"
