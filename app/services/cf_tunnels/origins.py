@@ -237,7 +237,11 @@ def _container_targets(
                     deadline=deadline,
                     probe_timeout=probe_timeout,
                 )
-                origin, protocol = checked.pop("origin"), checked.pop("protocol")
+                origin, protocol, path = (
+                    checked.pop("origin"),
+                    checked.pop("protocol"),
+                    checked.pop("path"),
+                )
                 target_id = digest(
                     [key, container.compose_service, exposed, protocol, path]
                 )
@@ -268,10 +272,7 @@ def _container_targets(
                 "source": source,
                 **checked,
             }
-            if existing is None:
-                targets.append(target)
-            elif target["reachable"]:
-                targets[targets.index(existing)] = target
+            _merge_target(targets, target)
     if failures and not any(target["reachable"] for target in targets):
         raise failures[0]
     return targets
@@ -323,7 +324,11 @@ def _listener_target(
         checked = _probe_origin(
             transport, origin, path, deadline=deadline, probe_timeout=probe_timeout
         )
-        origin, protocol = checked.pop("origin"), checked.pop("protocol")
+        origin, protocol, path = (
+            checked.pop("origin"),
+            checked.pop("protocol"),
+            checked.pop("path"),
+        )
     except (httpx.HTTPError, CFError) as exc:
         checked = {
             "reachable": False,
@@ -369,16 +374,28 @@ def _page_path(asset, port, container_port=None):
 
 
 def _probe_origin(transport, origin, path, *, deadline, probe_timeout):
-    # Try TLS only on a protocol/connect mismatch; an HTTP timeout still ends at its limit.
-    try:
-        checked = probe(
-            transport, origin + path, timeout=remaining(deadline, probe_timeout)
-        )
-    except (httpx.ConnectError, httpx.RemoteProtocolError):
-        checked = None
-    if checked is None or checked["status_code"] in {400, 426}:
-        origin = "https:" + origin.removeprefix("http:")
-        checked = probe(
-            transport, origin + path, timeout=remaining(deadline, probe_timeout)
-        )
-    return {**checked, "origin": origin, "protocol": origin.split(":", 1)[0]}
+    # Try TLS on protocol mismatch; use root only when an old page no longer exists.
+    paths = [path] if path == "/" else [path, "/"]
+    for candidate_path in paths:
+        try:
+            checked = probe(
+                transport,
+                origin + candidate_path,
+                timeout=remaining(deadline, probe_timeout),
+            )
+        except (httpx.ConnectError, httpx.RemoteProtocolError):
+            checked = None
+        if checked is None or checked["status_code"] in {400, 426}:
+            origin = "https:" + origin.removeprefix("http:")
+            checked = probe(
+                transport,
+                origin + candidate_path,
+                timeout=remaining(deadline, probe_timeout),
+            )
+        if checked["status_code"] != 404 or candidate_path == "/":
+            return {
+                **checked,
+                "origin": origin,
+                "protocol": origin.split(":", 1)[0],
+                "path": candidate_path,
+            }

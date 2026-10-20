@@ -391,3 +391,27 @@ def test_replacing_project_directory_requires_a_fresh_entry_choice(
         assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
     finally:
         panel.app.state.task_worker.stop()
+
+
+def test_stale_page_hint_falls_back_to_the_same_service_root(tmp_path, monkeypatch):
+    import httpx
+    import yaml
+
+    panel = make_panel(tmp_path)
+    attach_local_observation(panel, monkeypatch)
+    config = tmp_path / "config/objects/web.yaml"
+    settings = yaml.safe_load(config.read_text())
+    settings["config"]["endpoints"] = [{"container_port": "8080", "path": "/old-page"}]
+    config.write_text(yaml.safe_dump(settings))
+    panel.app.state.rebuild_registry_runtime()
+    panel.app.state.cf_service.http_transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200 if request.url.path == "/" else 404, text="Business page"
+        )
+    )
+    result = panel.client.get("/api/assets/web/cf/targets")
+    assert result.status_code == 200
+    target = result.json()["targets"][0]
+    assert target["reachable"] is True
+    assert target["path"] == "/"
+    assert not panel.store.list_all()
