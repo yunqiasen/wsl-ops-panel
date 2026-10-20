@@ -8,6 +8,23 @@ import httpx
 from app.services.cf_tunnels.models import CFError
 
 
+def _interstitial_reason(headers: httpx.Headers, body: bytes) -> str | None:
+    content = body.lower()
+    if (
+        headers.get("cf-mitigated", "").lower() == "challenge"
+        or b"_cf_chl_opt" in content
+        or b"/cdn-cgi/challenge-platform/" in content
+    ):
+        return "Cloudflare 验证页面，尚未到达项目业务页面"
+    if (
+        b"cf-error-details" in content
+        or b"cf-error-code" in content
+        or b"cloudflare tunnel error" in content
+    ):
+        return "Cloudflare 错误页面，项目入口尚未连通"
+    return None
+
+
 def probe(
     transport: httpx.AsyncBaseTransport | None,
     url: str,
@@ -55,16 +72,26 @@ def probe(
                         content_type = response.headers.get("content-type", "").split(
                             ";"
                         )[0]
-                        login = response.status_code in {401, 403}
-                        reachable = 200 <= response.status_code < 300 or login
+                        interstitial = _interstitial_reason(
+                            response.headers, bytes(body)
+                        )
+                        login = response.status_code in {401, 403} and not interstitial
+                        reachable = not interstitial and (
+                            200 <= response.status_code < 300 or login
+                        )
                         return {
                             "status_code": response.status_code,
                             "reachable": reachable,
                             "requires_login": login,
-                            "reason": "可达，需要登录"
-                            if login
-                            else (
-                                None if reachable else f"HTTP {response.status_code}"
+                            "reason": interstitial
+                            or (
+                                "可达，需要登录"
+                                if login
+                                else (
+                                    None
+                                    if reachable
+                                    else f"HTTP {response.status_code}"
+                                )
                             ),
                             "fingerprint": hashlib.sha256(
                                 f"{response.status_code}:{content_type}".encode()

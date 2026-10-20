@@ -679,7 +679,8 @@ class CFTunnelService:
                                 )
                                 return
                             last_error = CFError(
-                                "public_probe", "公网响应与项目入口不一致"
+                                "public_probe",
+                                checked.get("reason") or "公网响应与项目入口不一致",
                             )
                         except CFError as exc:
                             if exc.stage != "public_probe":
