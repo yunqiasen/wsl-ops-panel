@@ -92,3 +92,64 @@ def test_viewing_new_project_cf_is_off_without_creating_a_tunnel(
     assert panel.store.list_all() == []
     assert not (tmp_path / "data/cf").exists()
     assert [p.name for p in panel.project.iterdir()] == ["compose.yaml"]
+
+
+def attach_local_observation(panel, monkeypatch):
+    """Replace Docker and HTTP only, leaving the entire CF/application path real."""
+    import json
+    import subprocess
+    import httpx
+
+    info = {
+        "id": "a" * 64,
+        "name": "/business-web",
+        "running": True,
+        "started_at": "2026-10-20T00:00:00Z",
+        "network_mode": "business_default",
+        "ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18080"}]},
+        "networks": {"business_default": {"IPAddress": "172.20.0.2"}},
+        "labels": dict(panel.containers[0].labels),
+    }
+    original_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[:3] == ["docker", "container", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps(info), "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    requests = []
+
+    def respond(request):
+        requests.append(str(request.url))
+        return httpx.Response(
+            200,
+            text="<html><title>Business fixture</title></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    panel.app.state.cf_service.http_client = httpx.Client(
+        transport=httpx.MockTransport(respond), trust_env=False
+    )
+    return SimpleNamespace(info=info, requests=requests)
+
+
+def test_prepare_cf_uses_verified_published_port_without_starting_a_tunnel(
+    tmp_path: Path, monkeypatch
+) -> None:
+    panel = make_panel(tmp_path)
+    observed = attach_local_observation(panel, monkeypatch)
+
+    response = panel.client.get("/api/assets/web/cf/targets")
+
+    assert response.status_code == 200
+    targets = response.json()["targets"]
+    assert len(targets) == 1
+    assert targets[0]["origin"] == "http://127.0.0.1:18080"
+    assert targets[0]["source"] == "published_port"
+    assert targets[0]["reachable"] is True
+    assert targets[0]["id"] and targets[0]["revision"]
+    assert observed.requests == ["http://127.0.0.1:18080/"]
+    assert panel.client.get("/api/assets/web/cf").json()["state"] == "off"
+    assert panel.store.list_all() == []
+    assert not (tmp_path / "data/cf").exists()
